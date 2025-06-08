@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime
 from utils.helpers import EmbedBuilder
 from config.constants import TicketStatus
+import asyncio
 
 class TicketView(discord.ui.View):
     def __init__(self, bot, ticket_id: str):
@@ -12,9 +13,46 @@ class TicketView(discord.ui.View):
         self.bot = bot
         self.ticket_id = ticket_id
     
-    @discord.ui.button(label="Close Ticket", style=discord.ButtonStyle.danger, emoji="🔒")
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Close & Transcript", style=discord.ButtonStyle.danger, emoji="📄")
+    async def close_and_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
+            # Check if user is admin or ticket creator
+            if self.bot.db.is_postgresql:
+                ticket = await self.bot.db.connection.fetchrow(
+                    "SELECT * FROM tickets WHERE ticket_id = $1", self.ticket_id
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM tickets WHERE ticket_id = ?", (self.ticket_id,)
+                )
+                ticket = await cursor.fetchone()
+            
+            if not ticket:
+                embed = EmbedBuilder.error("Error", "Ticket not found in database")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            ticket_user_id = ticket['user_id'] if self.bot.db.is_postgresql else ticket[3]
+            
+            if not (self.bot.admin_manager.is_admin(interaction.user) or str(interaction.user.id) == ticket_user_id):
+                embed = EmbedBuilder.error("Permission Denied", "Only admins or the ticket creator can close tickets")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            await interaction.response.defer()
+            
+            # Create transcript
+            transcript = await self.bot.ticket_manager.create_transcript(interaction.channel)
+            
+            # Get ticket creator
+            ticket_user = interaction.guild.get_member(int(ticket_user_id))
+            
+            # Send transcript
+            success = await self.bot.ticket_manager.send_transcript(
+                interaction.guild, transcript, self.ticket_id, ticket_user or interaction.user
+            )
+            
+            # Update ticket status
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
                     "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
@@ -27,17 +65,31 @@ class TicketView(discord.ui.View):
                 )
                 await self.bot.db.connection.commit()
             
-            embed = EmbedBuilder.success("Ticket Closed", f"Ticket {self.ticket_id} has been closed")
-            await interaction.response.send_message(embed=embed)
+            if success:
+                embed = EmbedBuilder.success(
+                    "Ticket Closed", 
+                    f"Ticket {self.ticket_id} has been closed and transcript saved.\n"
+                    f"This channel will be deleted in 10 seconds."
+                )
+            else:
+                embed = EmbedBuilder.warning(
+                    "Ticket Closed", 
+                    f"Ticket {self.ticket_id} has been closed but transcript could not be saved.\n"
+                    f"This channel will be deleted in 10 seconds."
+                )
             
-            # Disable all buttons
-            for item in self.children:
-                item.disabled = True
-            await interaction.edit_original_response(view=self)
+            await interaction.followup.send(embed=embed)
+            
+            # Delete channel after 10 seconds
+            await asyncio.sleep(10)
+            try:
+                await interaction.channel.delete(reason=f"Ticket {self.ticket_id} closed")
+            except:
+                pass
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to close ticket: {str(e)}")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 class Tickets(commands.Cog):
     """Support ticket system"""
@@ -52,33 +104,55 @@ class Tickets(commands.Cog):
         priority="Ticket priority (low, medium, high)"
     )
     async def create_ticket(self, interaction: discord.Interaction, title: str, description: str, priority: str = "medium"):
+        # Check if ticket system is configured
+        config = self.bot.ticket_manager.get_ticket_config(str(interaction.guild.id))
+        if not config:
+            embed = EmbedBuilder.error(
+                "Ticket System Not Configured",
+                "The ticket system has not been set up. Please ask an administrator to run `/ticket-setup`"
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
         valid_priorities = ["low", "medium", "high"]
         if priority not in valid_priorities:
             priority = "medium"
         
         ticket_id = f"TICKET-{str(uuid.uuid4())[:8].upper()}"
         
+        await interaction.response.defer()
+        
         try:
-            # Create ticket in database (adapted for PostgreSQL/SQLite)
+            # Create ticket channel
+            channel = await self.bot.ticket_manager.create_ticket_channel(
+                interaction.guild, ticket_id, interaction.user, title
+            )
+            
+            if not channel:
+                embed = EmbedBuilder.error("Error", "Failed to create ticket channel. Please check bot permissions.")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+            
+            # Create ticket in database
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
-                    """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, created_at)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                    """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
                     ticket_id, str(interaction.guild.id), str(interaction.user.id), 
-                    title, description, TicketStatus.OPEN.value, priority, datetime.utcnow()
+                    title, description, TicketStatus.OPEN.value, priority, str(channel.id), datetime.utcnow()
                 )
             else:
                 await self.bot.db.connection.execute(
-                    """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (ticket_id, str(interaction.guild.id), str(interaction.user.id), 
-                     title, description, TicketStatus.OPEN.value, priority, datetime.utcnow())
+                     title, description, TicketStatus.OPEN.value, priority, str(channel.id), datetime.utcnow())
                 )
                 await self.bot.db.connection.commit()
             
-            # Create ticket embed
+            # Create ticket embed for the channel
             embed = discord.Embed(
-                title=f"🎫 New Ticket: {ticket_id}",
+                title=f"🎫 Ticket: {ticket_id}",
                 description=description,
                 color=0x5865F2
             )
@@ -87,15 +161,24 @@ class Tickets(commands.Cog):
             embed.add_field(name="Status", value="Open", inline=True)
             embed.add_field(name="Created by", value=interaction.user.mention, inline=True)
             embed.timestamp = datetime.utcnow()
-            embed.set_footer(text="Powered by Railway 🚄")
             
             view = TicketView(self.bot, ticket_id)
             
-            await interaction.response.send_message(embed=embed, view=view)
+            # Send initial message in ticket channel
+            await channel.send(f"Welcome {interaction.user.mention}! Your ticket has been created.", embed=embed, view=view)
+            
+            # Respond to user
+            embed_response = EmbedBuilder.success(
+                "Ticket Created",
+                f"Your ticket **{ticket_id}** has been created!\n"
+                f"Channel: {channel.mention}\n"
+                f"Priority: {priority.title()}"
+            )
+            await interaction.followup.send(embed=embed_response, ephemeral=True)
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to create ticket: {str(e)}")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
     
     @app_commands.command(name="list-tickets", description="List all tickets")
     @app_commands.describe(
@@ -158,12 +241,14 @@ class Tickets(commands.Cog):
                     title = ticket['title']
                     status = ticket['status']
                     priority = ticket['priority']
+                    channel_id = ticket['channel_id']
                 else:
                     ticket_id = ticket[1]
                     user_id = ticket[3]
                     title = ticket[5]
                     status = ticket[7]
                     priority = ticket[8]
+                    channel_id = ticket[9]
                 
                 ticket_user = interaction.guild.get_member(int(user_id))
                 user_name = ticket_user.display_name if ticket_user else "Unknown"
@@ -171,12 +256,20 @@ class Tickets(commands.Cog):
                 status_emoji = "🟢" if status == "open" else "🔴"
                 priority_emoji = {"low": "🔵", "medium": "🟡", "high": "🔴"}.get(priority, "🟡")
                 
+                # Create channel link if channel exists
+                channel_link = "Channel Deleted"
+                if channel_id:
+                    channel = interaction.guild.get_channel(int(channel_id))
+                    if channel:
+                        channel_link = channel.mention
+                
                 embed.add_field(
                     name=f"{status_emoji} {ticket_id}",
                     value=f"**Title:** {title}\n"
                           f"**User:** {user_name}\n"
                           f"**Priority:** {priority_emoji} {priority.title()}\n"
-                          f"**Status:** {status.title()}",
+                          f"**Status:** {status.title()}\n"
+                          f"**Channel:** {channel_link}",
                     inline=True
                 )
             
@@ -186,19 +279,23 @@ class Tickets(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to fetch tickets: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="assign-ticket", description="Assign a ticket to a user")
+    @app_commands.command(name="assign-ticket", description="Assign a ticket to a user (Admin only)")
     @app_commands.describe(
         ticket_id="Ticket ID to assign",
         assignee="User to assign the ticket to"
     )
     async def assign_ticket(self, interaction: discord.Interaction, ticket_id: str, assignee: discord.Member):
+        if not self.bot.admin_manager.is_admin(interaction.user):
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can assign tickets")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
         try:
             if self.bot.db.is_postgresql:
                 result = await self.bot.db.connection.execute(
                     "UPDATE tickets SET assignee_id = $1, updated_at = $2 WHERE ticket_id = $3 AND guild_id = $4",
                     str(assignee.id), datetime.utcnow(), ticket_id, str(interaction.guild.id)
                 )
-                # PostgreSQL returns command tag, check if any rows were affected
                 rows_affected = 1 if result == "UPDATE 1" else 0
             else:
                 result = await self.bot.db.connection.execute(

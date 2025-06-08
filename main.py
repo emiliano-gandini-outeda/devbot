@@ -31,6 +31,8 @@ class SlackBot(commands.Bot):
         )
         
         self.db = None
+        self.admin_manager = None
+        self.ticket_manager = None
     
     async def setup_hook(self):
         """Setup database and load cogs"""
@@ -39,6 +41,14 @@ class SlackBot(commands.Bot):
             self.db = DatabaseManager()
             await self.db.init_database()
             logger.info("Database initialized successfully")
+            
+            # Initialize managers
+            from utils.admin import AdminManager
+            from utils.ticket_manager import TicketManager
+            self.admin_manager = AdminManager(self)
+            self.ticket_manager = TicketManager(self)
+            await self.admin_manager.load_admin_roles()
+            await self.ticket_manager.load_ticket_configs()
             
             # Load all cogs
             cogs = [
@@ -52,7 +62,9 @@ class SlackBot(commands.Bot):
                 'cogs.privacy',
                 'cogs.reminders',
                 'cogs.notifications',
-                'cogs.intelligence'
+                'cogs.intelligence',
+                'cogs.admin',
+                'cogs.help'
             ]
             
             for cog in cogs:
@@ -81,30 +93,21 @@ class SlackBot(commands.Bot):
         logger.error(f'An error occurred in {event}', exc_info=True)
 
 async def main():
-    # Validate environment variables before starting
-    try:
-        Settings.validate_required_env_vars()
-    except ValueError as e:
-        logger.error(f"Configuration error: {e}")
-        return
-
     bot = SlackBot()
     
     try:
-        logger.info("Starting Discord bot on Railway...")
         await bot.start(Settings.DISCORD_TOKEN)
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Bot encountered an error: {e}")
-        raise
     finally:
         if bot.db:
             await bot.db.close()
         await bot.close()
-        logger.info("Bot shutdown complete")
 
 if __name__ == "__main__":
-    # Railway compatibility - no HTTP server needed for Discord bots
-    logger.info("Initializing Discord bot for Railway deployment...")
+    # Railway compatibility
+    port = int(os.environ.get("PORT", 8080))
+    logger.info(f"Starting bot on Railway (port {port})")
     asyncio.run(main())

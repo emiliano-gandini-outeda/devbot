@@ -37,7 +37,7 @@ class Notifications(commands.Cog):
                         break
     
     async def send_keyword_alert(self, user, message, keyword):
-        """Send keyword alert to user"""
+        """Send keyword alert to user via DM"""
         try:
             embed = discord.Embed(
                 title="🔔 Keyword Alert",
@@ -49,11 +49,21 @@ class Notifications(commands.Cog):
             embed.add_field(name="Author", value=message.author.mention, inline=True)
             embed.add_field(name="Message", value=message.content[:1000], inline=False)
             embed.add_field(name="Jump to Message", value=f"[Click here]({message.jump_url})", inline=False)
-            embed.set_footer(text="Powered by Railway 🚄")
             
-            await user.send(embed=embed)
-        except discord.Forbidden:
-            pass  # User has DMs disabled
+            # Try to send DM
+            try:
+                await user.send(embed=embed)
+            except discord.Forbidden:
+                # If DM fails, try to send in the same channel as a mention
+                try:
+                    alert_embed = discord.Embed(
+                        title="🔔 Keyword Alert",
+                        description=f"{user.mention} Your keyword **{keyword}** was mentioned in this message: {message.jump_url}",
+                        color=0x5865F2
+                    )
+                    await message.channel.send(embed=alert_embed, delete_after=30)
+                except:
+                    pass  # If both fail, silently ignore
         except Exception as e:
             print(f"Error sending keyword alert: {e}")
     

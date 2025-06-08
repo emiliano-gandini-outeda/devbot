@@ -4,6 +4,7 @@ from discord import app_commands
 import json
 from datetime import datetime
 from utils.helpers import EmbedBuilder
+import io
 
 class Privacy(commands.Cog):
     """Privacy and data management commands"""
@@ -110,21 +111,22 @@ class Privacy(commands.Cog):
             
             # Create and send the export file
             export_json = json.dumps(data_export, indent=2, default=str)
+
+            file_buffer = io.BytesIO(export_json.encode('utf-8'))
             file = discord.File(
-                fp=discord.utils.MISSING,
-                filename=f"railway_bot_data_export_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+                file_buffer,
+                filename=f"data_export_{user_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
             )
-            file.fp = discord.io.BytesIO(export_json.encode('utf-8'))
-            
+
             embed = EmbedBuilder.success(
                 "Data Export Ready",
-                "Your personal data has been exported from Railway. This includes:\n"
+                "Your personal data has been exported. This includes:\n"
                 "• Support tickets\n"
                 "• Reminders\n"
                 "• Workflows you created\n\n"
                 "The data is provided in JSON format."
             )
-            
+
             await interaction.followup.send(embed=embed, file=file, ephemeral=True)
             
         except Exception as e:

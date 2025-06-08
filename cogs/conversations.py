@@ -34,8 +34,14 @@ class Conversations(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to create thread: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="archive-thread", description="Archive the current thread")
+    @app_commands.command(name="archive-thread", description="Archive the current thread (Admin only)")
     async def archive_thread(self, interaction: discord.Interaction):
+        # Check if user is admin
+        if not self.bot.admin_manager.is_admin(interaction.user):
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can archive threads")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
         if not isinstance(interaction.channel, discord.Thread):
             embed = EmbedBuilder.error("Not a Thread", "This command can only be used in threads")
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -45,6 +51,9 @@ class Conversations(commands.Cog):
             await interaction.channel.edit(archived=True)
             embed = EmbedBuilder.success("Thread Archived", f"Thread **{interaction.channel.name}** has been archived")
             await interaction.response.send_message(embed=embed)
+        except discord.Forbidden:
+            embed = EmbedBuilder.error("Permission Error", "I don't have permission to archive this thread")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to archive thread: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
