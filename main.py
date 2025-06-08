@@ -81,21 +81,30 @@ class SlackBot(commands.Bot):
         logger.error(f'An error occurred in {event}', exc_info=True)
 
 async def main():
+    # Validate environment variables before starting
+    try:
+        Settings.validate_required_env_vars()
+    except ValueError as e:
+        logger.error(f"Configuration error: {e}")
+        return
+
     bot = SlackBot()
     
     try:
+        logger.info("Starting Discord bot on Railway...")
         await bot.start(Settings.DISCORD_TOKEN)
     except KeyboardInterrupt:
         logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Bot encountered an error: {e}")
+        raise
     finally:
         if bot.db:
             await bot.db.close()
         await bot.close()
+        logger.info("Bot shutdown complete")
 
 if __name__ == "__main__":
-    # Railway compatibility
-    port = int(os.environ.get("PORT", 8080))
-    logger.info(f"Starting bot on Railway (port {port})")
+    # Railway compatibility - no HTTP server needed for Discord bots
+    logger.info("Initializing Discord bot for Railway deployment...")
     asyncio.run(main())

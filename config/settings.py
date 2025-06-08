@@ -11,7 +11,6 @@ class Settings:
     
     # Railway-specific environment
     RAILWAY_ENVIRONMENT: str = os.getenv('RAILWAY_ENVIRONMENT', 'development')
-    PORT: int = int(os.getenv('PORT', '8080'))
     
     # Google Integration
     GOOGLE_CLIENT_ID: str = os.getenv('GOOGLE_CLIENT_ID', '')
