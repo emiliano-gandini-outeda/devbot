@@ -309,44 +309,49 @@ async def main():
     max_retries = 5
     retry_delay = 5
     
-    for attempt in range(max_retries):
-        try:
-            logger.info(f"Starting bot (attempt {attempt + 1}/{max_retries})")
-            await bot.start(Settings.DISCORD_TOKEN)
-            break  # If we get here, the bot started successfully
-            
-        except discord.LoginFailure:
-            logger.error("Invalid Discord token provided")
-            break  # Don't retry on authentication failures
-            
-        except discord.HTTPException as e:
-            if e.status == 429:  # Rate limited
-                logger.warning(f"Rate limited, waiting {retry_delay * 2} seconds...")
-                await asyncio.sleep(retry_delay * 2)
-            else:
-                logger.error(f"HTTP error: {e}")
+    try:
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Starting bot (attempt {attempt + 1}/{max_retries})")
+                await bot.start(Settings.DISCORD_TOKEN)
+                break  # If we get here, the bot started successfully
                 
-        except (discord.ConnectionClosed, discord.GatewayNotFound) as e:
-            logger.warning(f"Connection issue (attempt {attempt + 1}): {e}")
-            if attempt < max_retries - 1:
-                logger.info(f"Retrying in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2  # Exponential backoff
+            except discord.LoginFailure:
+                logger.error("Invalid Discord token provided")
+                break  # Don't retry on authentication failures
+                
+            except discord.HTTPException as e:
+                if e.status == 429:  # Rate limited
+                    logger.warning(f"Rate limited, waiting {retry_delay * 2} seconds...")
+                    await asyncio.sleep(retry_delay * 2)
+                else:
+                    logger.error(f"HTTP error: {e}")
+                    
+            except (discord.ConnectionClosed, discord.GatewayNotFound) as e:
+                logger.warning(f"Connection issue (attempt {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                
+            except KeyboardInterrupt:
+                logger.info("Bot stopped by user")
+                break
+                
+            except Exception as e:
+                logger.error(f"Unexpected error (attempt {attempt + 1}): {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+        else:
+            # This executes if the for loop completes without breaking
+            logger.error(f"Failed to start bot after {max_retries} attempts")
             
-        except KeyboardInterrupt:
-            logger.info("Bot stopped by user")
-            break
-            
-        except Exception as e:
-            logger.error(f"Unexpected error (attempt {attempt + 1}): {e}", exc_info=True)
-            if attempt < max_retries - 1:
-                logger.info(f"Retrying in {retry_delay} seconds...")
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2
-            
-    else:
-        logger.error(f"Failed to start bot after {max_retries} attempts")
-    
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
     finally:
         if not bot.is_closed():
             await bot.close()
