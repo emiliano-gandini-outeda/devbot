@@ -6,6 +6,7 @@ from discord import Intents
 from dotenv import load_dotenv
 from config.settings import Settings
 from utils.db import DatabaseManager
+import discord
 
 # Load environment variables
 load_dotenv()
@@ -17,6 +18,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Reduce discord.py logging noise
+logging.getLogger('discord.gateway').setLevel(logging.WARNING)
+logging.getLogger('discord.client').setLevel(logging.WARNING)
+
 class SlackBot(commands.Bot):
     def __init__(self):
         intents = Intents.default()
@@ -27,7 +32,10 @@ class SlackBot(commands.Bot):
         super().__init__(
             command_prefix=Settings.PREFIX,
             intents=intents,
-            help_command=None
+            help_command=None,
+            # Add connection resilience settings
+            heartbeat_timeout=60.0,
+            guild_ready_timeout=5.0
         )
         
         self.db = None
@@ -35,10 +43,14 @@ class SlackBot(commands.Bot):
         self.ticket_manager = None
         self.logging_manager = None
         self.workflow_manager = None
+        self._ready_fired = False
     
     async def setup_hook(self):
         """Setup database and load cogs"""
         try:
+            # Validate required environment variables
+            Settings.validate_required_env_vars()
+            
             # Initialize database
             self.db = DatabaseManager()
             await self.db.init_database()
@@ -89,14 +101,19 @@ class SlackBot(commands.Bot):
                     logger.error(f"❌ Failed to load cog {cog}: {e}", exc_info=True)
 
             logger.info(f"Loaded {len(loaded_cogs)}/{len(cogs)} cogs successfully")
-            
-            # Don't sync commands in setup_hook - do it in on_ready to avoid blocking
             logger.info("Setup hook completed successfully")
                 
         except Exception as e:
             logger.error(f"Error in setup_hook: {e}", exc_info=True)
+            raise
     
     async def on_ready(self):
+        """Called when bot is ready"""
+        if self._ready_fired:
+            logger.info(f'{self.user} reconnected to Discord!')
+            return
+            
+        self._ready_fired = True
         logger.info(f'{self.user} has connected to Discord!')
         logger.info(f'Bot is in {len(self.guilds)} guilds')
         
@@ -116,6 +133,14 @@ class SlackBot(commands.Bot):
         
         logger.info(f'Bot deployment successful! 🚄')
 
+    async def on_disconnect(self):
+        """Called when bot disconnects"""
+        logger.warning("Bot disconnected from Discord")
+
+    async def on_resumed(self):
+        """Called when bot resumes connection"""
+        logger.info("Bot resumed connection to Discord")
+
     async def sync_commands_to_guilds(self):
         """Sync commands to all guilds asynchronously"""
         try:
@@ -125,21 +150,34 @@ class SlackBot(commands.Bot):
             await self.register_cog_commands()
             
             synced_count = 0
+            failed_guilds = []
             
             for guild in self.guilds:
                 try:
-                    # Sync commands to this specific guild
-                    synced = await self.tree.sync(guild=guild)
-                    synced_count += len(synced)
-                    logger.info(f"✅ Synced {len(synced)} commands to guild: {guild.name} ({guild.id})")
+                    # Add retry logic for command syncing
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            synced = await self.tree.sync(guild=guild)
+                            synced_count += len(synced)
+                            logger.info(f"✅ Synced {len(synced)} commands to guild: {guild.name} ({guild.id})")
+                            break
+                        except discord.HTTPException as e:
+                            if attempt == max_retries - 1:
+                                raise
+                            logger.warning(f"Retry {attempt + 1}/{max_retries} for guild {guild.name}: {e}")
+                            await asyncio.sleep(2 ** attempt)  # Exponential backoff
                     
-                    # Small delay to avoid hitting rate limits
-                    await asyncio.sleep(0.5)
+                    # Delay to avoid rate limits
+                    await asyncio.sleep(1.0)
                     
                 except Exception as e:
                     logger.error(f"❌ Failed to sync commands to guild {guild.name}: {e}")
+                    failed_guilds.append(guild.name)
             
             logger.info(f"✅ Command sync completed! Total: {synced_count} commands across {len(self.guilds)} guilds")
+            if failed_guilds:
+                logger.warning(f"Failed to sync to {len(failed_guilds)} guilds: {', '.join(failed_guilds)}")
             
         except Exception as e:
             logger.error(f"❌ Failed to sync commands: {e}", exc_info=True)
@@ -149,15 +187,15 @@ class SlackBot(commands.Bot):
         try:
             logger.info("Registering cog commands to command tree...")
             
-            # We don't need to clear commands, just make sure all cog commands are added
             # Collect all commands from cogs
             commands_to_add = []
+            existing_command_names = [cmd.name for cmd in self.tree.get_commands()]
+            
             for cog_name, cog in self.cogs.items():
                 if hasattr(cog, '__cog_app_commands__'):
                     for command in cog.__cog_app_commands__:
                         # Check if command is already in the tree
-                        existing_commands = [cmd.name for cmd in self.tree.get_commands()]
-                        if command.name not in existing_commands:
+                        if command.name not in existing_command_names:
                             commands_to_add.append(command)
                             logger.debug(f"Adding command /{command.name} from {cog_name}")
             
@@ -211,7 +249,7 @@ class SlackBot(commands.Bot):
                     synced = await self.tree.sync(guild=guild)
                     synced_count += len(synced)
                     await ctx.send(f"✅ {guild.name}: {len(synced)} commands")
-                    await asyncio.sleep(0.5)  # Rate limit protection - increased delay
+                    await asyncio.sleep(1.0)  # Rate limit protection
                 except Exception as e:
                     await ctx.send(f"❌ {guild.name}: {e}")
             
@@ -257,22 +295,70 @@ class SlackBot(commands.Bot):
         except Exception as e:
             logger.error(f"❌ Failed to sync commands to new guild {guild.name}: {e}")
 
+    async def close(self):
+        """Clean shutdown"""
+        logger.info("Bot is shutting down...")
+        if self.db:
+            await self.db.close()
+        await super().close()
+
 async def main():
+    """Main function with improved error handling"""
     bot = SlackBot()
     
-    try:
-        await bot.start(Settings.DISCORD_TOKEN)
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Bot encountered an error: {e}")
+    max_retries = 5
+    retry_delay = 5
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"Starting bot (attempt {attempt + 1}/{max_retries})")
+            await bot.start(Settings.DISCORD_TOKEN)
+            break  # If we get here, the bot started successfully
+            
+        except discord.LoginFailure:
+            logger.error("Invalid Discord token provided")
+            break  # Don't retry on authentication failures
+            
+        except discord.HTTPException as e:
+            if e.status == 429:  # Rate limited
+                logger.warning(f"Rate limited, waiting {retry_delay * 2} seconds...")
+                await asyncio.sleep(retry_delay * 2)
+            else:
+                logger.error(f"HTTP error: {e}")
+                
+        except (discord.ConnectionClosed, discord.GatewayNotFound) as e:
+            logger.warning(f"Connection issue (attempt {attempt + 1}): {e}")
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            
+        except KeyboardInterrupt:
+            logger.info("Bot stopped by user")
+            break
+            
+        except Exception as e:
+            logger.error(f"Unexpected error (attempt {attempt + 1}): {e}", exc_info=True)
+            if attempt < max_retries - 1:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+            
+    else:
+        logger.error(f"Failed to start bot after {max_retries} attempts")
+    
     finally:
-        if bot.db:
-            await bot.db.close()
-        await bot.close()
+        if not bot.is_closed():
+            await bot.close()
 
 if __name__ == "__main__":
     # Deployment compatibility
     port = int(os.environ.get("PORT", 8080))
-    logger.info(f"Starting bot (port {port})")
-    asyncio.run(main())
+    logger.info(f"Starting Discord bot on Railway (port {port})")
+    
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Application terminated by user")
+    except Exception as e:
+        logger.error(f"Application failed to start: {e}", exc_info=True)
