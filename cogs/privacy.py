@@ -185,6 +185,89 @@ class Privacy(commands.Cog):
         embed.set_footer(text="Deployed on Railway 🚄")
         
         await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="get-data", description="Get information about your stored data")
+    async def get_data(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            user_id = str(interaction.user.id)
+            guild_id = str(interaction.guild.id)
+            data_summary = {}
+            
+            # Check tickets
+            if self.bot.db.is_postgresql:
+                tickets = await self.bot.db.connection.fetch(
+                    "SELECT COUNT(*) as count FROM tickets WHERE user_id = $1 AND guild_id = $2",
+                    user_id, guild_id
+                )
+                data_summary['tickets'] = tickets[0]['count'] if tickets else 0
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT COUNT(*) as count FROM tickets WHERE user_id = ? AND guild_id = ?",
+                    (user_id, guild_id)
+                )
+                result = await cursor.fetchone()
+                data_summary['tickets'] = result[0] if result else 0
+            
+            # Check reminders
+            if self.bot.db.is_postgresql:
+                reminders = await self.bot.db.connection.fetch(
+                    "SELECT COUNT(*) as count FROM reminders WHERE user_id = $1 AND guild_id = $2",
+                    user_id, guild_id
+                )
+                data_summary['reminders'] = reminders[0]['count'] if reminders else 0
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT COUNT(*) as count FROM reminders WHERE user_id = ? AND guild_id = ?",
+                    (user_id, guild_id)
+                )
+                result = await cursor.fetchone()
+                data_summary['reminders'] = result[0] if result else 0
+            
+            # Check keywords
+            if self.bot.db.is_postgresql:
+                keywords = await self.bot.db.connection.fetch(
+                    "SELECT COUNT(*) as count FROM keywords WHERE user_id = $1 AND guild_id = $2",
+                    user_id, guild_id
+                )
+                data_summary['keywords'] = keywords[0]['count'] if keywords else 0
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT COUNT(*) as count FROM keywords WHERE user_id = ? AND guild_id = ?",
+                    (user_id, guild_id)
+                )
+                result = await cursor.fetchone()
+                data_summary['keywords'] = result[0] if result else 0
+            
+            embed = discord.Embed(
+                title="📊 Your Data Summary",
+                description=f"Data stored for {interaction.user.mention} in {interaction.guild.name}",
+                color=0x5865F2
+            )
+            
+            embed.add_field(name="🎫 Tickets", value=str(data_summary['tickets']), inline=True)
+            embed.add_field(name="⏰ Reminders", value=str(data_summary['reminders']), inline=True)
+            embed.add_field(name="🔔 Keywords", value=str(data_summary['keywords']), inline=True)
+            
+            total_items = sum(data_summary.values())
+            embed.add_field(name="📈 Total Items", value=str(total_items), inline=False)
+            
+            embed.add_field(
+                name="ℹ️ Data Types",
+                value="• **Tickets**: Support tickets you've created\n"
+                      "• **Reminders**: Reminders you've set\n"
+                      "• **Keywords**: Keywords you're watching for notifications",
+                inline=False
+            )
+            
+            embed.set_footer(text="Use /privacy-policy to learn more about data handling")
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to retrieve data summary: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 class ConfirmDeleteView(discord.ui.View):
     def __init__(self, bot, user_id: int):
@@ -236,7 +319,7 @@ async def setup(bot):
     await bot.add_cog(cog)
     
     # Ensure commands are added to the tree
-    for command in cog.__cog_app_commands__:
+    for command in cog.get_app_commands():
         if command not in bot.tree.get_commands():
             bot.tree.add_command(command)
     

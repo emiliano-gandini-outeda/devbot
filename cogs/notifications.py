@@ -1,205 +1,208 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import json
 from utils.helpers import EmbedBuilder
+import json
 
 class Notifications(commands.Cog):
-    """Notification management and keyword alerts"""
+    """Keyword notification system"""
     
     def __init__(self, bot):
         self.bot = bot
-        self.user_keywords = {}  # In-memory storage for keywords
-        self.muted_threads = {}  # In-memory storage for muted threads
-    
-    async def load_user_keywords(self):
-        """Load user keywords from database"""
-        try:
-            if self.bot.db.is_postgresql:
-                rows = await self.bot.db.connection.fetch(
-                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'keywords'"
-                )
-                for row in rows:
-                    user_id = row['user_id']
-                    keywords = row['data_content'].get('keywords', []) if isinstance(row['data_content'], dict) else json.loads(row['data_content']).get('keywords', [])
-                    self.user_keywords[user_id] = keywords
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'keywords'"
-                )
-                rows = await cursor.fetchall()
-                for row in rows:
-                    user_id = row[0]
-                    keywords = json.loads(row[1]).get('keywords', [])
-                    self.user_keywords[user_id] = keywords
-        except Exception as e:
-            print(f"Error loading user keywords: {e}")
-    
-    async def save_user_keywords(self, user_id: str):
-        """Save user keywords to database"""
-        try:
-            keywords = self.user_keywords.get(user_id, [])
-            data = {"keywords": keywords}
-        
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, data_type, data_content)
-                       VALUES ($1, $2, $3)
-                       ON CONFLICT ON CONSTRAINT unique_user_data DO UPDATE SET 
-                       data_content = $3, updated_at = CURRENT_TIMESTAMP""",
-                    user_id, 'keywords', json.dumps(data)
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, data_type, data_content)
-                       VALUES (?, ?, ?)""",
-                    (user_id, 'keywords', json.dumps(data))
-                )
-                await self.bot.db.connection.commit()
-        except Exception as e:
-            print(f"Error saving user keywords: {e}")
     
     @commands.Cog.listener()
     async def on_message(self, message):
-        """Check for keyword alerts in messages"""
-        if message.author.bot or not message.guild:
+        """Listen for keyword mentions"""
+        if message.author.bot:
             return
         
-        # Check for keyword mentions
-        await self.check_keyword_alerts(message)
-    
-    async def check_keyword_alerts(self, message):
-        """Check if message contains any user's keywords"""
-        content_lower = message.content.lower()
-        
-        for user_id, keywords in self.user_keywords.items():
-            if user_id == str(message.author.id):
-                continue  # Don't alert users about their own messages
-            
-            for keyword in keywords:
-                if keyword.lower() in content_lower:
-                    user = self.bot.get_user(int(user_id))
-                    if user:
-                        await self.send_keyword_alert(user, message, keyword)
-                        break
-    
-    async def send_keyword_alert(self, user, message, keyword):
-        """Send keyword alert to user via DM"""
         try:
+            # Get keywords for this guild
+            if self.bot.db.is_postgresql:
+                keywords = await self.bot.db.connection.fetch(
+                    "SELECT * FROM keywords WHERE guild_id = $1",
+                    str(message.guild.id)
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM keywords WHERE guild_id = ?",
+                    (str(message.guild.id),)
+                )
+                keywords = await cursor.fetchall()
+            
+            if not keywords:
+                return
+            
+            message_content = message.content.lower()
+            
+            for keyword_row in keywords:
+                if self.bot.db.is_postgresql:
+                    keyword = keyword_row['keyword'].lower()
+                    user_id = keyword_row['user_id']
+                else:
+                    keyword = keyword_row[3].lower()  # keyword column
+                    user_id = keyword_row[2]  # user_id column
+                
+                if keyword in message_content:
+                    # Don't notify if the user mentioned the keyword themselves
+                    if str(message.author.id) == user_id:
+                        continue
+                    
+                    user = message.guild.get_member(int(user_id))
+                    if user:
+                        try:
+                            embed = discord.Embed(
+                                title="🔔 Keyword Mentioned",
+                                description=f"Your keyword **{keyword}** was mentioned in {message.channel.mention}",
+                                color=0xFEE75C
+                            )
+                            embed.add_field(name="Message", value=message.content[:1000], inline=False)
+                            embed.add_field(name="Author", value=message.author.mention, inline=True)
+                            embed.add_field(name="Channel", value=message.channel.mention, inline=True)
+                            embed.add_field(name="Jump to Message", value=f"[Click here]({message.jump_url})", inline=True)
+                            embed.set_footer(text="devBot Keyword Notification")
+                            
+                            await user.send(embed=embed)
+                        except discord.Forbidden:
+                            # User has DMs disabled, skip
+                            pass
+                        except Exception as e:
+                            print(f"Error sending keyword notification: {e}")
+        
+        except Exception as e:
+            print(f"Error in keyword listener: {e}")
+    
+    @app_commands.command(name="add-keyword", description="Add a keyword to get notified when it's mentioned")
+    @app_commands.describe(keyword="Keyword to watch for")
+    async def add_keyword(self, interaction: discord.Interaction, keyword: str):
+        keyword = keyword.lower().strip()
+        
+        if len(keyword) < 2:
+            embed = EmbedBuilder.error("Invalid Keyword", "Keywords must be at least 2 characters long")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        try:
+            # Check if keyword already exists for this user
+            if self.bot.db.is_postgresql:
+                existing = await self.bot.db.connection.fetchrow(
+                    "SELECT * FROM keywords WHERE guild_id = $1 AND user_id = $2 AND keyword = $3",
+                    str(interaction.guild.id), str(interaction.user.id), keyword
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM keywords WHERE guild_id = ? AND user_id = ? AND keyword = ?",
+                    (str(interaction.guild.id), str(interaction.user.id), keyword)
+                )
+                existing = await cursor.fetchone()
+            
+            if existing:
+                embed = EmbedBuilder.warning("Already Exists", f"You're already watching for the keyword **{keyword}**")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            # Add keyword
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "INSERT INTO keywords (guild_id, user_id, keyword) VALUES ($1, $2, $3)",
+                    str(interaction.guild.id), str(interaction.user.id), keyword
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "INSERT INTO keywords (guild_id, user_id, keyword) VALUES (?, ?, ?)",
+                    (str(interaction.guild.id), str(interaction.user.id), keyword)
+                )
+                await self.bot.db.connection.commit()
+            
+            embed = EmbedBuilder.success(
+                "Keyword Added",
+                f"You'll now be notified when **{keyword}** is mentioned in this server"
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to add keyword: {str(e)}")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="remove-keyword", description="Remove a keyword from your watch list")
+    @app_commands.describe(keyword="Keyword to stop watching")
+    async def remove_keyword(self, interaction: discord.Interaction, keyword: str):
+        keyword = keyword.lower().strip()
+        
+        try:
+            if self.bot.db.is_postgresql:
+                result = await self.bot.db.connection.execute(
+                    "DELETE FROM keywords WHERE guild_id = $1 AND user_id = $2 AND keyword = $3",
+                    str(interaction.guild.id), str(interaction.user.id), keyword
+                )
+                rows_affected = 1 if result == "DELETE 1" else 0
+            else:
+                result = await self.bot.db.connection.execute(
+                    "DELETE FROM keywords WHERE guild_id = ? AND user_id = ? AND keyword = ?",
+                    (str(interaction.guild.id), str(interaction.user.id), keyword)
+                )
+                await self.bot.db.connection.commit()
+                rows_affected = result.rowcount
+            
+            if rows_affected == 0:
+                embed = EmbedBuilder.error("Not Found", f"You're not watching for the keyword **{keyword}**")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            embed = EmbedBuilder.success(
+                "Keyword Removed",
+                f"You'll no longer be notified when **{keyword}** is mentioned"
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to remove keyword: {str(e)}")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="list-keywords", description="List your watched keywords")
+    async def list_keywords(self, interaction: discord.Interaction):
+        try:
+            if self.bot.db.is_postgresql:
+                keywords = await self.bot.db.connection.fetch(
+                    "SELECT keyword FROM keywords WHERE guild_id = $1 AND user_id = $2 ORDER BY keyword",
+                    str(interaction.guild.id), str(interaction.user.id)
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT keyword FROM keywords WHERE guild_id = ? AND user_id = ? ORDER BY keyword",
+                    (str(interaction.guild.id), str(interaction.user.id))
+                )
+                keywords = await cursor.fetchall()
+            
+            if not keywords:
+                embed = EmbedBuilder.info("No Keywords", "You're not watching any keywords in this server")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            keyword_list = []
+            for row in keywords:
+                keyword = row['keyword'] if self.bot.db.is_postgresql else row[0]
+                keyword_list.append(f"• {keyword}")
+            
             embed = discord.Embed(
-                title="🔔 Keyword Alert",
-                description=f"Your keyword **{keyword}** was mentioned",
+                title="🔔 Your Keywords",
+                description="\n".join(keyword_list),
                 color=0x5865F2
             )
-            embed.add_field(name="Server", value=message.guild.name, inline=True)
-            embed.add_field(name="Channel", value=message.channel.mention, inline=True)
-            embed.add_field(name="Author", value=message.author.mention, inline=True)
-            embed.add_field(name="Message", value=message.content[:1000], inline=False)
-            embed.add_field(name="Jump to Message", value=f"[Click here]({message.jump_url})", inline=False)
+            embed.set_footer(text=f"Watching {len(keyword_list)} keywords in this server")
             
-            # Try to send DM
-            try:
-                await user.send(embed=embed)
-            except discord.Forbidden:
-                # If DM fails, try to send in the same channel as a mention
-                try:
-                    alert_embed = discord.Embed(
-                        title="🔔 Keyword Alert",
-                        description=f"{user.mention} Your keyword **{keyword}** was mentioned in this message: {message.jump_url}",
-                        color=0x5865F2
-                    )
-                    await message.channel.send(embed=alert_embed, delete_after=30)
-                except:
-                    pass  # If both fail, silently ignore
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
         except Exception as e:
-            print(f"Error sending keyword alert: {e}")
-    
-    @app_commands.command(name="add-keyword", description="Add a keyword to get notified about")
-    @app_commands.describe(keyword="Keyword to monitor for mentions")
-    async def add_keyword(self, interaction: discord.Interaction, keyword: str):
-        user_id = str(interaction.user.id)
-        
-        if user_id not in self.user_keywords:
-            self.user_keywords[user_id] = []
-        
-        if keyword.lower() in [k.lower() for k in self.user_keywords[user_id]]:
-            embed = EmbedBuilder.warning("Already Exists", f"You're already monitoring the keyword: **{keyword}**")
+            embed = EmbedBuilder.error("Error", f"Failed to fetch keywords: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        if len(self.user_keywords[user_id]) >= 10:
-            embed = EmbedBuilder.error("Limit Reached", "You can only monitor up to 10 keywords")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        self.user_keywords[user_id].append(keyword)
-        await self.save_user_keywords(user_id)
-        
-        embed = EmbedBuilder.success(
-            "Keyword Added",
-            f"You'll now receive notifications when **{keyword}** is mentioned"
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    @app_commands.command(name="remove-keyword", description="Remove a keyword from monitoring")
-    @app_commands.describe(keyword="Keyword to stop monitoring")
-    async def remove_keyword(self, interaction: discord.Interaction, keyword: str):
-        user_id = str(interaction.user.id)
-        
-        if user_id not in self.user_keywords or not self.user_keywords[user_id]:
-            embed = EmbedBuilder.error("No Keywords", "You don't have any keywords being monitored")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        # Find and remove keyword (case insensitive)
-        removed = False
-        for i, k in enumerate(self.user_keywords[user_id]):
-            if k.lower() == keyword.lower():
-                self.user_keywords[user_id].pop(i)
-                removed = True
-                break
-        
-        if not removed:
-            embed = EmbedBuilder.error("Not Found", f"Keyword **{keyword}** is not being monitored")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        await self.save_user_keywords(user_id)
-        
-        embed = EmbedBuilder.success(
-            "Keyword Removed",
-            f"You'll no longer receive notifications for **{keyword}**"
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    @app_commands.command(name="list-keywords", description="List your monitored keywords")
-    async def list_keywords(self, interaction: discord.Interaction):
-        user_id = str(interaction.user.id)
-        
-        if user_id not in self.user_keywords or not self.user_keywords[user_id]:
-            embed = EmbedBuilder.info("No Keywords", "You don't have any keywords being monitored")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        keywords = self.user_keywords[user_id]
-        embed = discord.Embed(
-            title="🔔 Your Monitored Keywords",
-            description="\n".join([f"• {keyword}" for keyword in keywords]),
-            color=0x5865F2
-        )
-        embed.set_footer(text=f"Monitoring {len(keywords)}/10 keywords • devBot")
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
     cog = Notifications(bot)
     await bot.add_cog(cog)
     
-    # Load user keywords on startup
-    await cog.load_user_keywords()
-    
     # Ensure commands are added to the tree
-    for command in cog.__cog_app_commands__:
+    for command in cog.get_app_commands():
         if command not in bot.tree.get_commands():
             bot.tree.add_command(command)
     

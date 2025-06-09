@@ -198,7 +198,7 @@ async def setup(bot):
     await bot.add_cog(cog)
     
     # Ensure commands are added to the tree
-    for command in cog.__cog_app_commands__:
+    for command in cog.get_app_commands():
         if command not in bot.tree.get_commands():
             bot.tree.add_command(command)
     

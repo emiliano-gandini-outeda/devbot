@@ -575,9 +575,18 @@ class Ticket(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.ticket_commands = TicketCommands(bot)
+    
+    async def cog_load(self):
+        # Add the ticket commands group to the command tree
         self.bot.tree.add_command(self.ticket_commands)
 
 async def setup(bot):
     cog = Ticket(bot)
     await bot.add_cog(cog)
-    print(f"🎫 Successfully loaded Ticket cog")
+    
+    # Ensure all commands are properly registered
+    # The ticket commands are registered in cog_load
+    
+    # Print success message with command count
+    command_count = len(cog.ticket_commands.commands)
+    print(f"🎫 Successfully loaded Ticket cog with {command_count} commands")
