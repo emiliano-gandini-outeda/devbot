@@ -125,13 +125,13 @@ class SlackBot(commands.Bot):
                 
                 try:
                     if guild_only:
-                        # Get all commands from the tree
-                        all_commands = [cmd for cmd in self.tree.get_commands() if cmd.name != "admin_sync"]
+                        # Get all commands from the tree INCLUDING admin commands
+                        all_commands = self.tree.get_commands()
                         
                         # Clear existing guild commands first
                         self.tree.clear_commands(guild=interaction.guild)
                         
-                        # Add all commands to guild
+                        # Add all commands to guild (including admin commands)
                         for command in all_commands:
                             self.tree.add_command(command, guild=interaction.guild)
                         
@@ -162,8 +162,8 @@ class SlackBot(commands.Bot):
                 await interaction.response.defer(ephemeral=True)
                 
                 try:
-                    # Get all commands except admin commands
-                    all_commands = [cmd for cmd in self.tree.get_commands() if not cmd.name.startswith("admin_")]
+                    # Get ALL commands from the tree
+                    all_commands = self.tree.get_commands()
                     
                     if not all_commands:
                         await interaction.followup.send("❌ No commands found in command tree!")
@@ -233,6 +233,14 @@ class SlackBot(commands.Bot):
                     embed.add_field(
                         name=f"📦 Loaded Cogs ({len(loaded_cogs)})",
                         value=", ".join(loaded_cogs) if loaded_cogs else "None",
+                        inline=False
+                    )
+                    
+                    # List all commands for debugging
+                    command_names = [cmd.name for cmd in all_commands]
+                    embed.add_field(
+                        name=f"📋 All Commands ({len(command_names)})",
+                        value=", ".join(sorted(command_names)) if command_names else "None",
                         inline=False
                     )
                     
@@ -347,7 +355,7 @@ class SlackBot(commands.Bot):
         # Only sync once when the bot first starts
         if not self._synced:
             # Wait a moment for all cogs to fully initialize
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             
             # Sync commands once with automatic global clearing
             await self.sync_commands_with_auto_clear()
@@ -413,6 +421,10 @@ class SlackBot(commands.Bot):
                 logger.warning("No commands found to sync!")
                 return
             
+            # Log all command names for debugging
+            command_names = [cmd.name for cmd in all_commands]
+            logger.info(f"Commands to sync: {', '.join(sorted(command_names))}")
+            
             # Always sync to individual guilds and clear global commands
             logger.info("Syncing to individual guilds and clearing global commands...")
             
@@ -421,7 +433,7 @@ class SlackBot(commands.Bot):
                     # Clear existing guild commands first
                     self.tree.clear_commands(guild=guild)
                     
-                    # Copy global commands to guild
+                    # Copy ALL commands to guild (including admin commands)
                     for command in all_commands:
                         self.tree.add_command(command, guild=guild)
                     
@@ -429,6 +441,10 @@ class SlackBot(commands.Bot):
                     guild_synced = await self.tree.sync(guild=guild)
                     logger.info(f"✅ Synced {len(guild_synced)} commands to {guild.name}")
                     self._guild_synced.add(guild.id)
+                    
+                    # Log synced command names for this guild
+                    synced_names = [cmd['name'] for cmd in guild_synced]
+                    logger.info(f"Synced commands for {guild.name}: {', '.join(sorted(synced_names))}")
                     
                 except Exception as e:
                     logger.error(f"❌ Failed to sync to guild {guild.name}: {e}")
@@ -440,10 +456,6 @@ class SlackBot(commands.Bot):
                 logger.info(f"✅ Cleared global commands. {len(global_synced)} global commands remain.")
             except Exception as e:
                 logger.error(f"❌ Failed to clear global commands: {e}")
-            
-            # List synced commands for debugging
-            command_names = [cmd.name for cmd in all_commands]
-            logger.info(f"Synced commands: {', '.join(sorted(command_names))}")
             
         except Exception as e:
             logger.error(f"❌ Failed to sync commands: {e}", exc_info=True)
