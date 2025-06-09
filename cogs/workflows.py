@@ -343,6 +343,12 @@ async def setup(bot):
     try:
         cog = Workflows(bot)
         await bot.add_cog(cog)
+        
+        # Ensure commands are added to the tree
+        for command in cog.__cog_app_commands__:
+            if command not in bot.tree.get_commands():
+                bot.tree.add_command(command)
+        
         # List all commands from this cog for debugging
         commands = [c.name for c in cog.get_app_commands()]
         print(f"🔄 Successfully loaded {len(commands)} workflow commands: {', '.join(commands)}")

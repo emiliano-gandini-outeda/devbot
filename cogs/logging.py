@@ -116,4 +116,12 @@ class Logging(commands.Cog):
         await self.bot.workflow_manager.check_thread_create_triggers(thread)
 
 async def setup(bot):
-    await bot.add_cog(Logging(bot))
+    cog = Logging(bot)
+    await bot.add_cog(cog)
+    
+    # Ensure commands are added to the tree
+    for command in cog.__cog_app_commands__:
+        if command not in bot.tree.get_commands():
+            bot.tree.add_command(command)
+    
+    print(f"📊 Successfully loaded Logging cog with {len(cog.get_app_commands())} commands")

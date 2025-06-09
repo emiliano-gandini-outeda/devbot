@@ -179,7 +179,7 @@ class Tickets(commands.Cog):
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to create ticket: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed_response, ephemeral=True)
     
     @app_commands.command(name="ticket-private", description="Make ticket private (only assigned users can read)")
     async def ticket_private(self, interaction: discord.Interaction):
@@ -499,4 +499,12 @@ class Tickets(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
-    await bot.add_cog(Tickets(bot))
+    cog = Tickets(bot)
+    await bot.add_cog(cog)
+    
+    # Ensure commands are added to the tree
+    for command in cog.__cog_app_commands__:
+        if command not in bot.tree.get_commands():
+            bot.tree.add_command(command)
+    
+    print(f"🎫 Successfully loaded Tickets cog with {len(cog.get_app_commands())} commands")

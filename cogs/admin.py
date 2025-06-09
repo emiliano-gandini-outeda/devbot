@@ -363,9 +363,17 @@ class Admin(commands.Cog):
         
         for cog_name, cmds in cog_commands.items():
             commands_text = "\n".join([f"- /{cmd.name}" for cmd in cmds])
-            await ctx.send(f"**{cog_name} Commands**:\n```\n{commands_text}\n```")
+            await ctx.send(f"**{cog_name} Commands**:\n\`\`\`\n{commands_text}\n\`\`\`")
         
         await ctx.send(f"Total commands: {len(all_commands)}")
 
 async def setup(bot):
-    await bot.add_cog(Admin(bot))
+    cog = Admin(bot)
+    await bot.add_cog(cog)
+    
+    # Ensure commands are added to the tree
+    for command in cog.__cog_app_commands__:
+        if command not in bot.tree.get_commands():
+            bot.tree.add_command(command)
+    
+    print(f"🛡️ Successfully loaded Admin cog with {len(cog.get_app_commands())} commands")

@@ -58,4 +58,12 @@ class NotionIntegrations(commands.Cog):
         await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot):
-    await bot.add_cog(NotionIntegrations(bot))
+    cog = NotionIntegrations(bot)
+    await bot.add_cog(cog)
+    
+    # Ensure commands are added to the tree
+    for command in cog.__cog_app_commands__:
+        if command not in bot.tree.get_commands():
+            bot.tree.add_command(command)
+    
+    print(f"📚 Successfully loaded Notion Integrations cog with {len(cog.get_app_commands())} commands")

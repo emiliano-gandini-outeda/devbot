@@ -231,4 +231,12 @@ class Notifications(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
-    await bot.add_cog(Notifications(bot))
+    cog = Notifications(bot)
+    await bot.add_cog(cog)
+    
+    # Ensure commands are added to the tree
+    for command in cog.__cog_app_commands__:
+        if command not in bot.tree.get_commands():
+            bot.tree.add_command(command)
+    
+    print(f"🔔 Successfully loaded Notifications cog with {len(cog.get_app_commands())} commands")

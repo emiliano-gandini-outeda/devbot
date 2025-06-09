@@ -446,3 +446,10 @@ async def setup(bot):
     github_cog = GitHubIntegrations(bot)
     await github_cog.load_tracked_repos()
     await bot.add_cog(github_cog)
+    
+    # Ensure commands are added to the tree
+    for command in github_cog.__cog_app_commands__:
+        if command not in bot.tree.get_commands():
+            bot.tree.add_command(command)
+    
+    print(f"🐙 Successfully loaded GitHub Integrations cog with {len(github_cog.get_app_commands())} commands")

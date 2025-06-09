@@ -125,4 +125,12 @@ class Conversations(commands.Cog):
         await interaction.followup.send(embed=embed)
 
 async def setup(bot):
-    await bot.add_cog(Conversations(bot))
+    cog = Conversations(bot)
+    await bot.add_cog(cog)
+    
+    # Ensure commands are added to the tree
+    for command in cog.__cog_app_commands__:
+        if command not in bot.tree.get_commands():
+            bot.tree.add_command(command)
+    
+    print(f"💬 Successfully loaded Conversations cog with {len(cog.get_app_commands())} commands")
