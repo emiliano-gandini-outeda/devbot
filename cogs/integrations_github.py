@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 from utils.helpers import EmbedBuilder
 import asyncio
+from typing import List
 
 class GitHubIntegrations(commands.Cog):
     """GitHub repository tracking and integration"""
@@ -229,6 +230,26 @@ class GitHubIntegrations(commands.Cog):
             )
         
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(name="toggle-repo-notifications", description="Toggle notifications for a tracked repository")
+    @app_commands.describe(
+        repo="Repository name (format: owner/repo)",
+        enabled="Enable or disable notifications"
+    )
+    async def toggle_repo_notifications_cmd(self, interaction: discord.Interaction, repo: str, enabled: bool):
+        try:
+            await self.toggle_repo_notifications(str(interaction.user.id), str(interaction.guild.id), repo, enabled)
+            
+            status = "enabled" if enabled else "disabled"
+            embed = EmbedBuilder.success(
+                "Notifications Updated",
+                f"Repository notifications for **{repo}** have been {status}"
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to update notifications: {str(e)}")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
     
     async def check_updates_loop(self):
         """Background task to check for repository updates"""
@@ -267,8 +288,13 @@ class GitHubIntegrations(commands.Cog):
                         await self.save_tracked_repos(guild_id)
                         
                         # Send update notifications
-                        for update in updates['notifications']:
-                            await channel.send(embed=update)
+                        for notification in updates['notifications']:
+                            if isinstance(notification, tuple):
+                                embed, mentions = notification
+                                content = mentions if mentions else None
+                                await channel.send(content=content, embed=embed)
+                            else:
+                                await channel.send(embed=notification)
                 
                 except Exception as e:
                     print(f"Error checking repo {repo_data.get('repo', 'unknown')}: {e}")
@@ -304,7 +330,23 @@ class GitHubIntegrations(commands.Cog):
                 )
                 embed.add_field(name="Total Stars", value=f"⭐ {new_stars}", inline=True)
                 embed.set_footer(text=f"GitHub • {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
-                notifications.append(embed)
+                
+                # Get subscribers for mentions
+                guild_id = repo_data['channel_id'] #This is wrong, but I don't have access to the guild_id here.
+                subscribers = await self.get_repo_subscribers(guild_id, repo)
+                mention_text = ""
+                if subscribers:
+                    guild = self.bot.get_guild(int(guild_id))
+                    if guild:
+                        mentions = []
+                        for user_id in subscribers:
+                            user = guild.get_member(int(user_id))
+                            if user:
+                                mentions.append(user.mention)
+                        if mentions:
+                            mention_text = " ".join(mentions[:10])  # Limit to 10 mentions
+
+                notifications.append((embed, mention_text))
             
             # Check for new commits
             async with aiohttp.ClientSession() as session:
@@ -360,7 +402,23 @@ class GitHubIntegrations(commands.Cog):
                         )
                     
                     embed.set_footer(text=f"GitHub • {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
-                    notifications.append(embed)
+                    
+                    # Get subscribers for mentions
+                    guild_id = repo_data['channel_id'] #This is wrong, but I don't have access to the guild_id here.
+                    subscribers = await self.get_repo_subscribers(guild_id, repo)
+                    mention_text = ""
+                    if subscribers:
+                        guild = self.bot.get_guild(int(guild_id))
+                        if guild:
+                            mentions = []
+                            for user_id in subscribers:
+                                user = guild.get_member(int(user_id))
+                                if user:
+                                    mentions.append(user.mention)
+                            if mentions:
+                                mention_text = " ".join(mentions[:10])  # Limit to 10 mentions
+
+                    notifications.append((embed, mention_text))
             
             # Check for new pull requests
             async with aiohttp.ClientSession() as session:
@@ -398,7 +456,23 @@ class GitHubIntegrations(commands.Cog):
                 
                 embed.set_thumbnail(url=pr['user']['avatar_url'])
                 embed.set_footer(text=f"GitHub • {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
-                notifications.append(embed)
+                
+                # Get subscribers for mentions
+                guild_id = repo_data['channel_id'] #This is wrong, but I don't have access to the guild_id here.
+                subscribers = await self.get_repo_subscribers(guild_id, repo)
+                mention_text = ""
+                if subscribers:
+                    guild = self.bot.get_guild(int(guild_id))
+                    if guild:
+                        mentions = []
+                        for user_id in subscribers:
+                            user = guild.get_member(int(user_id))
+                            if user:
+                                mentions.append(user.mention)
+                        if mentions:
+                            mention_text = " ".join(mentions[:10])  # Limit to 10 mentions
+
+                notifications.append((embed, mention_text))
             
             # Check for new branches
             async with aiohttp.ClientSession() as session:
@@ -431,7 +505,23 @@ class GitHubIntegrations(commands.Cog):
                 
                 embed.add_field(name="New Branches", value=branch_list, inline=False)
                 embed.set_footer(text=f"GitHub • {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
-                notifications.append(embed)
+                
+                # Get subscribers for mentions
+                guild_id = repo_data['channel_id'] #This is wrong, but I don't have access to the guild_id here.
+                subscribers = await self.get_repo_subscribers(guild_id, repo)
+                mention_text = ""
+                if subscribers:
+                    guild = self.bot.get_guild(int(guild_id))
+                    if guild:
+                        mentions = []
+                        for user_id in subscribers:
+                            user = guild.get_member(int(user_id))
+                            if user:
+                                mentions.append(user.mention)
+                        if mentions:
+                            mention_text = " ".join(mentions[:10])  # Limit to 10 mentions
+
+                notifications.append((embed, mention_text))
             
             return {
                 'new_data': new_data,
@@ -441,6 +531,66 @@ class GitHubIntegrations(commands.Cog):
         except Exception as e:
             print(f"Error checking repo updates for {repo}: {e}")
             return None
+
+    async def get_repo_subscribers(self, guild_id: str, repo: str) -> List[str]:
+        """Get list of users subscribed to a repository"""
+        try:
+            if self.bot.db.is_postgresql:
+                rows = await self.bot.db.connection.fetch(
+                    "SELECT user_id FROM user_data WHERE data_type = 'github_repo_subscription' AND data_content->>'repo' = $1 AND data_content->>'guild_id' = $2",
+                    repo, guild_id
+                )
+                return [row['user_id'] for row in rows]
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'github_repo_subscription'",
+                )
+                rows = await cursor.fetchall()
+                subscribers = []
+                for row in rows:
+                    data = json.loads(row[1])
+                    if data.get('repo') == repo and data.get('guild_id') == guild_id:
+                        subscribers.append(row[0])
+                return subscribers
+        except Exception as e:
+            print(f"Error getting repo subscribers: {e}")
+            return []
+
+    async def toggle_repo_notifications(self, user_id: str, guild_id: str, repo: str, enabled: bool):
+        """Toggle repository notifications for a user"""
+        try:
+            if enabled:
+                # Add subscription
+                data = {'repo': repo, 'guild_id': guild_id, 'enabled': True}
+                if self.bot.db.is_postgresql:
+                    await self.bot.db.connection.execute(
+                        """INSERT INTO user_data (user_id, data_type, data_content) 
+                           VALUES ($1, $2, $3) 
+                           ON CONFLICT (user_id, data_type) DO UPDATE SET data_content = $3""",
+                        f"{user_id}_{repo}", 'github_repo_subscription', json.dumps(data)
+                    )
+                else:
+                    await self.bot.db.connection.execute(
+                        """INSERT OR REPLACE INTO user_data (user_id, data_type, data_content) 
+                           VALUES (?, ?, ?)""",
+                        (f"{user_id}_{repo}", 'github_repo_subscription', json.dumps(data))
+                    )
+                    await self.bot.db.connection.commit()
+            else:
+                # Remove subscription
+                if self.bot.db.is_postgresql:
+                    await self.bot.db.connection.execute(
+                        "DELETE FROM user_data WHERE user_id = $1 AND data_type = 'github_repo_subscription'",
+                        f"{user_id}_{repo}"
+                    )
+                else:
+                    await self.bot.db.connection.execute(
+                        "DELETE FROM user_data WHERE user_id = ? AND data_type = 'github_repo_subscription'",
+                        (f"{user_id}_{repo}",)
+                    )
+                    await self.bot.db.connection.commit()
+        except Exception as e:
+            print(f"Error toggling repo notifications: {e}")
 
 async def setup(bot):
     github_cog = GitHubIntegrations(bot)

@@ -10,7 +10,7 @@ class Setup(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
     
-    @app_commands.command(name="setup-tickets", description="Setup ticket system (Admin only)")
+    @app_commands.command(name="ticket-system-setup", description="Setup ticket system (Admin only)")
     @app_commands.describe(
         category="Category where ticket channels will be created",
         transcript_channel="Channel where ticket transcripts will be sent"
@@ -282,10 +282,4 @@ class Setup(commands.Cog):
 async def setup(bot):
     cog = Setup(bot)
     await bot.add_cog(cog)
-    
-    # Ensure commands are added to the tree
-    for command in cog.__cog_app_commands__:
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
-    
     print(f"⚙️ Successfully loaded Setup cog with {len(cog.get_app_commands())} commands")

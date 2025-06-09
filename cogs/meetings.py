@@ -302,6 +302,77 @@ class Meetings(commands.Cog):
         self.bot.meeting_manager.active_views[meeting_id] = view
         
         await interaction.response.send_message(embed=embed, view=view)
+
+    @app_commands.command(name="admin-meeting", description="Create a server-wide meeting announcement (Admin only)")
+    @app_commands.describe(
+        name="Meeting name",
+        time="When to start the meeting (e.g., '1h', '30m', '2d')",
+        description="Meeting description",
+        voice_channel="Voice channel for the meeting",
+        mention_type="Who to mention (here or everyone)"
+    )
+    async def admin_meeting(self, interaction: discord.Interaction, name: str, time: str, 
+                           description: str, voice_channel: discord.VoiceChannel, mention_type: str = "here"):
+        if not self.bot.admin_manager.is_admin(interaction.user):
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can create server-wide meetings")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        if mention_type not in ["here", "everyone"]:
+            mention_type = "here"
+        
+        # Parse time
+        duration = TimeParser.parse_duration(time)
+        if not duration:
+            embed = EmbedBuilder.error(
+                "Invalid Time Format",
+                "Please use format like: `1h`, `30m`, `2d`, `1h30m`"
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        start_time = datetime.utcnow() + duration
+        
+        # Create meeting
+        meeting_id = await self.bot.meeting_manager.create_meeting(
+            str(interaction.guild.id),
+            str(interaction.user.id),
+            name,
+            description,
+            start_time,
+            str(interaction.channel.id),
+            str(voice_channel.id)
+        )
+        
+        # Create meeting announcement embed
+        embed = discord.Embed(
+            title=f"📅 Server Meeting: {name}",
+            description=description,
+            color=0x5865F2
+        )
+        
+        embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
+        embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
+        embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
+        
+        # Format start time
+        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+        time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
+        embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
+        
+        embed.add_field(
+            name="How to Join",
+            value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
+            inline=False
+        )
+        
+        # Create view with join button
+        view = MeetingView(self.bot, meeting_id)
+        self.bot.meeting_manager.active_views[meeting_id] = view
+        
+        # Send announcement with mention
+        mention = "@here" if mention_type == "here" else "@everyone"
+        await interaction.response.send_message(f"{mention} **Server Meeting Announcement**", embed=embed, view=view)
     
     @app_commands.command(name="join-meeting", description="Join a scheduled meeting")
     @app_commands.describe(meeting_id="ID of the meeting to join")

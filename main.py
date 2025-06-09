@@ -74,14 +74,19 @@ class SlackBot(commands.Bot):
             
             # Load all cogs
             cogs = [
-                'cogs.setup',
-                'cogs.ticket',
-                'cogs.workflow',
-                'cogs.reminder',
-                'cogs.meeting',
-                'cogs.integration',
                 'cogs.admin',
-                'cogs.help'
+                'cogs.conversations', 
+                'cogs.help',
+                'cogs.integrations_github',
+                'cogs.logging',
+                'cogs.meetings',
+                'cogs.notifications',
+                'cogs.privacy',
+                'cogs.reminders',
+                'cogs.roles',
+                'cogs.setup',
+                'cogs.tickets',
+                'cogs.workflows'
             ]
 
             loaded_cogs = []
@@ -285,7 +290,7 @@ class SlackBot(commands.Bot):
             # List synced commands
             command_list = "\n".join([f"- /{cmd.name}" for cmd in synced])
             if command_list and len(command_list) < 1900:
-                await ctx.send(f"```\nSynced commands:\n{command_list}\n```")
+                await ctx.send(f"\`\`\`\nSynced commands:\n{command_list}\n\`\`\`")
             elif not command_list:
                 await ctx.send("No commands were synced.")
             
@@ -307,7 +312,7 @@ class SlackBot(commands.Bot):
             # List synced commands
             command_list = "\n".join([f"- /{cmd.name}" for cmd in synced])
             if command_list and len(command_list) < 1900:
-                await ctx.send(f"```\nSynced commands:\n{command_list}\n```")
+                await ctx.send(f"\`\`\`\nSynced commands:\n{command_list}\n\`\`\`")
             
         except Exception as e:
             await ctx.send(f'❌ Failed to sync commands globally: {e}')
@@ -350,7 +355,7 @@ class SlackBot(commands.Bot):
         
         for cog_name, cmds in cog_commands.items():
             commands_text = "\n".join([f"- /{cmd.name}" for cmd in cmds])
-            await ctx.send(f"**{cog_name} Commands**:\n```\n{commands_text}\n```")
+            await ctx.send(f"**{cog_name} Commands**:\n\`\`\`\n{commands_text}\n\`\`\`")
         
         await ctx.send(f"Total commands: {len(all_commands)}")
     

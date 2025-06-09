@@ -234,6 +234,13 @@ class WorkflowManager:
                 workflows = await cursor.fetchall()
             
             for workflow in workflows:
+                trigger_data_raw = workflow['trigger_data'] if self.bot.db.is_postgresql else workflow[5]
+                
+                if isinstance(trigger_data_raw, str):
+                    trigger_conditions = json.loads(trigger_data_raw)
+                else:
+                    trigger_conditions = trigger_data_raw or {}
+                
                 trigger_data = {
                     'user_id': str(member.id),
                     'user_name': member.display_name,
@@ -249,7 +256,8 @@ class WorkflowManager:
                     'trigger_type': workflow[4],
                     'trigger_data': workflow[5],
                     'actions': workflow[6],
-                    'status': workflow[7]
+                    'status': workflow[7],
+                    'log_channel_id': trigger_conditions.get('log_channel_id')
                 }
                 
                 await self.execute_workflow_actions(workflow_dict, trigger_data)

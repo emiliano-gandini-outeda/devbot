@@ -104,41 +104,6 @@ class Admin(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to list admin roles: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="ticket-setup", description="Setup ticket system (Admin only)")
-    @app_commands.describe(
-        category="Category where ticket channels will be created",
-        transcript_channel="Channel where ticket transcripts will be sent"
-    )
-    async def ticket_setup(self, interaction: discord.Interaction, category: discord.CategoryChannel, transcript_channel: discord.TextChannel):
-        if not self.bot.admin_manager.is_admin(interaction.user):
-            embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup the ticket system")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        try:
-            config = {
-                'category_id': str(category.id),
-                'transcript_channel_id': str(transcript_channel.id),
-                'setup_by': str(interaction.user.id),
-                'setup_at': str(discord.utils.utcnow())
-            }
-            
-            await self.bot.ticket_manager.save_ticket_config(str(interaction.guild.id), config)
-            
-            embed = EmbedBuilder.success(
-                "Ticket System Setup",
-                f"Ticket system has been configured successfully!\n\n"
-                f"**Ticket Category:** {category.mention}\n"
-                f"**Transcript Channel:** {transcript_channel.mention}\n\n"
-                f"Users can now create tickets using `/create-ticket`"
-            )
-            
-            await interaction.response.send_message(embed=embed)
-            
-        except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to setup ticket system: {str(e)}")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
     # Renamed from bot_status to status_check to avoid Discord.py naming conflict
     @app_commands.command(name="status-check", description="Check bot status and loaded features (Admin only)")
     async def status_check(self, interaction: discord.Interaction):
@@ -370,10 +335,4 @@ class Admin(commands.Cog):
 async def setup(bot):
     cog = Admin(bot)
     await bot.add_cog(cog)
-    
-    # Ensure commands are added to the tree
-    for command in cog.__cog_app_commands__:
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
-    
     print(f"🛡️ Successfully loaded Admin cog with {len(cog.get_app_commands())} commands")

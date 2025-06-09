@@ -80,6 +80,7 @@ class Reminders(commands.Cog):
                 message = reminder['message']
                 remind_at = reminder['remind_at']
                 reminder_type = reminder['type']
+                send_dm = reminder.get('send_dm', True)
             else:
                 user_id = reminder[1]
                 guild_id = reminder[2]
@@ -87,6 +88,7 @@ class Reminders(commands.Cog):
                 message = reminder[4]
                 remind_at = reminder[5]
                 reminder_type = reminder[6]
+                send_dm = reminder[9] if len(reminder) > 9 else True
             
             user = self.bot.get_user(int(user_id))
             if not user:
@@ -100,15 +102,23 @@ class Reminders(commands.Cog):
             embed.set_footer(text=f"Reminder set for {remind_at} • Railway 🚄")
             
             if reminder_type == ReminderType.PERSONAL.value:
-                # Send DM
-                try:
-                    await user.send(embed=embed)
-                except discord.Forbidden:
-                    # If DM fails, try to send in guild channel
+                # Send DM if enabled
+                if send_dm:
+                    try:
+                        await user.send(embed=embed)
+                    except discord.Forbidden:
+                        # If DM fails, try to send in guild channel
+                        if guild_id:
+                            guild = self.bot.get_guild(int(guild_id))
+                            if guild:
+                                channel = guild.system_channel or guild.text_channels[0]
+                                await channel.send(f"{user.mention}", embed=embed)
+                else:
+                    # Send in channel only
                     if guild_id:
                         guild = self.bot.get_guild(int(guild_id))
                         if guild:
-                            channel = guild.system_channel or guild.text_channels[0]
+                            channel = guild.get_channel(int(channel_id)) if channel_id else guild.system_channel or guild.text_channels[0]
                             await channel.send(f"{user.mention}", embed=embed)
             else:
                 # Send in channel
@@ -127,9 +137,10 @@ class Reminders(commands.Cog):
     @app_commands.command(name="remind", description="Set a personal reminder")
     @app_commands.describe(
         time="When to remind (e.g., '1h', '30m', '2d')",
-        message="Reminder message"
+        message="Reminder message",
+        send_dm="Also send reminder via DM (default: True)"
     )
-    async def remind(self, interaction: discord.Interaction, time: str, message: str):
+    async def remind(self, interaction: discord.Interaction, time: str, message: str, send_dm: bool = True):
         duration = TimeParser.parse_duration(time)
         if not duration:
             embed = EmbedBuilder.error(
@@ -154,17 +165,17 @@ class Reminders(commands.Cog):
         try:
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
-                    """INSERT INTO reminders (user_id, guild_id, channel_id, message, remind_at, type, created_at)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                    """INSERT INTO reminders (user_id, guild_id, channel_id, message, remind_at, type, created_at, send_dm)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
                     str(interaction.user.id), str(interaction.guild.id), str(interaction.channel.id),
-                    message, remind_at, ReminderType.PERSONAL.value, datetime.utcnow()
+                    message, remind_at, ReminderType.PERSONAL.value, datetime.utcnow(), send_dm
                 )
             else:
                 await self.bot.db.connection.execute(
-                    """INSERT INTO reminders (user_id, guild_id, channel_id, message, remind_at, type, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO reminders (user_id, guild_id, channel_id, message, remind_at, type, created_at, send_dm)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                     (str(interaction.user.id), str(interaction.guild.id), str(interaction.channel.id),
-                     message, remind_at, ReminderType.PERSONAL.value, datetime.utcnow())
+                     message, remind_at, ReminderType.PERSONAL.value, datetime.utcnow(), send_dm)
                 )
                 await self.bot.db.connection.commit()
             

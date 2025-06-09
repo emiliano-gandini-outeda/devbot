@@ -1,357 +1,314 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
 import json
-from utils.helpers import EmbedBuilder
-from config.constants import WorkflowStatus
-import traceback
+from datetime import datetime
+from typing import Optional, Dict, Any, List
 
-class Workflows(commands.Cog):
-    """Automation workflows similar to Slack workflows"""
-    
+class WorkflowManager:
     def __init__(self, bot):
         self.bot = bot
     
-    @app_commands.command(name="create-workflow", description="Create a new automation workflow")
-    @app_commands.describe(
-        name="Workflow name",
-        trigger="Trigger type (message, member_join, thread_create, channel_create)",
-        trigger_channel="Channel to monitor for triggers (leave empty for all channels)",
-        log_channel="Channel to log workflow executions (optional)"
-    )
-    async def create_workflow(self, interaction: discord.Interaction, name: str, trigger: str, trigger_channel: discord.TextChannel = None, log_channel: discord.TextChannel = None):
-        await interaction.response.defer()
-        
-        valid_triggers = ["message", "member_join", "thread_create", "channel_create"]
-        if trigger not in valid_triggers:
-            embed = EmbedBuilder.error(
-                "Invalid Trigger",
-                f"Trigger must be one of: {', '.join(valid_triggers)}"
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-        
+    async def execute_workflow_actions(self, workflow: Dict[str, Any], trigger_data: Dict[str, Any]):
+        """Execute all actions in a workflow"""
         try:
-            # Prepare trigger data
-            trigger_data = {}
-            if trigger_channel:
-                trigger_data['channel_id'] = str(trigger_channel.id)
-            if log_channel:
-                trigger_data['log_channel_id'] = str(log_channel.id)
+            actions = workflow.get('actions', [])
+            if isinstance(actions, str):
+                actions = json.loads(actions)
             
-            # Store workflow in database
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    """INSERT INTO workflows (name, guild_id, creator_id, trigger_type, trigger_data, actions, status)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                    name, str(interaction.guild.id), str(interaction.user.id), trigger, 
-                    json.dumps(trigger_data), json.dumps([]), WorkflowStatus.ACTIVE.value
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT INTO workflows (name, guild_id, creator_id, trigger_type, trigger_data, actions, status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (name, str(interaction.guild.id), str(interaction.user.id), trigger, 
-                     json.dumps(trigger_data), json.dumps([]), WorkflowStatus.ACTIVE.value)
-                )
-                await self.bot.db.connection.commit()
+            guild = self.bot.get_guild(int(workflow['guild_id']))
+            if not guild:
+                return
             
-            embed = EmbedBuilder.success(
-                "Workflow Created",
-                f"**{name}** workflow created successfully!\n"
-                f"**Trigger:** {trigger}\n"
-                f"**Trigger Channel:** {trigger_channel.mention if trigger_channel else 'All channels'}\n"
-                f"**Log Channel:** {log_channel.mention if log_channel else 'None'}\n"
-                f"**Status:** Active\n\n"
-                f"Use `/add-workflow-action` to add actions to this workflow."
-            )
-            await interaction.followup.send(embed=embed)
+            # Log workflow execution if log channel is configured
+            log_channel_id = workflow.get('log_channel_id')
+            if log_channel_id:
+                await self.log_workflow_execution(guild, workflow, trigger_data, log_channel_id)
             
+            for action in actions:
+                await self.execute_single_action(guild, action, trigger_data)
+                
         except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to create workflow: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            print(f"Error executing workflow: {e}")
     
-    @app_commands.command(name="list-workflows", description="List all workflows in this server")
-    async def list_workflows(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        
+    async def execute_single_action(self, guild: discord.Guild, action: Dict[str, Any], trigger_data: Dict[str, Any]):
+        """Execute a single workflow action"""
         try:
-            if self.bot.db.is_postgresql:
-                workflows = await self.bot.db.connection.fetch(
-                    "SELECT * FROM workflows WHERE guild_id = $1 ORDER BY created_at DESC",
-                    str(interaction.guild.id)
-                )
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM workflows WHERE guild_id = ? ORDER BY created_at DESC",
-                    (str(interaction.guild.id),)
-                )
-                workflows = await cursor.fetchall()
+            action_type = action.get('type')
+            action_data = action.get('data', {})
             
-            if not workflows:
-                embed = EmbedBuilder.info("No Workflows", "No workflows found in this server")
-                await interaction.followup.send(embed=embed)
+            if action_type == 'send_message':
+                await self.action_send_message(guild, action_data, trigger_data)
+            elif action_type == 'add_role':
+                await self.action_add_role(guild, action_data, trigger_data)
+            elif action_type == 'create_channel':
+                await self.action_create_channel(guild, action_data, trigger_data)
+            elif action_type == 'send_dm':
+                await self.action_send_dm(guild, action_data, trigger_data)
+                
+        except Exception as e:
+            print(f"Error executing action {action.get('type')}: {e}")
+    
+    async def action_send_message(self, guild: discord.Guild, action_data: Dict[str, Any], trigger_data: Dict[str, Any]):
+        """Send message action"""
+        channel_id = action_data.get('channel_id')
+        message = action_data.get('message', '')
+        
+        # Replace placeholders
+        message = message.replace('{user}', trigger_data.get('user_mention', ''))
+        message = message.replace('{channel}', trigger_data.get('channel_mention', ''))
+        
+        if channel_id == 'same':
+            channel = guild.get_channel(int(trigger_data.get('channel_id', 0)))
+        else:
+            channel = guild.get_channel(int(channel_id))
+        
+        if channel:
+            await channel.send(message)
+    
+    async def action_add_role(self, guild: discord.Guild, action_data: Dict[str, Any], trigger_data: Dict[str, Any]):
+        """Add role action"""
+        role_id = action_data.get('role_id')
+        user_id = trigger_data.get('user_id')
+        
+        if role_id and user_id:
+            role = guild.get_role(int(role_id))
+            member = guild.get_member(int(user_id))
+            
+            if role and member:
+                await member.add_roles(role)
+    
+    async def action_create_channel(self, guild: discord.Guild, action_data: Dict[str, Any], trigger_data: Dict[str, Any]):
+        """Create channel action"""
+        channel_name = action_data.get('name', 'new-channel')
+        channel_type = action_data.get('type', 'text')
+        category_id = action_data.get('category_id')
+        
+        # Replace placeholders
+        channel_name = channel_name.replace('{user}', trigger_data.get('user_name', ''))
+        
+        category = None
+        if category_id:
+            category = guild.get_channel(int(category_id))
+        
+        if channel_type == 'text':
+            await guild.create_text_channel(name=channel_name, category=category)
+        elif channel_type == 'voice':
+            await guild.create_voice_channel(name=channel_name, category=category)
+    
+    async def action_send_dm(self, guild: discord.Guild, action_data: Dict[str, Any], trigger_data: Dict[str, Any]):
+        """Send DM action"""
+        user_id = trigger_data.get('user_id')
+        message = action_data.get('message', '')
+        
+        if user_id:
+            user = guild.get_member(int(user_id))
+            if user:
+                try:
+                    await user.send(message)
+                except discord.Forbidden:
+                    pass  # User has DMs disabled
+    
+    async def log_workflow_execution(self, guild: discord.Guild, workflow: Dict[str, Any], trigger_data: Dict[str, Any], log_channel_id: str):
+        """Log workflow execution"""
+        try:
+            log_channel = guild.get_channel(int(log_channel_id))
+            if not log_channel:
                 return
             
             embed = discord.Embed(
-                title="⚙️ Server Workflows",
-                color=0x5865F2
+                title="⚙️ Workflow Executed",
+                color=0x5865F2,
+                timestamp=datetime.utcnow()
             )
             
-            for workflow in workflows[:10]:  # Show first 10 workflows
-                if self.bot.db.is_postgresql:
-                    creator_id = workflow['creator_id']
-                    name = workflow['name']
-                    trigger_type = workflow['trigger_type']
-                    status = workflow['status']
-                    trigger_data = workflow['trigger_data']
-                else:
-                    creator_id = workflow[3]
-                    name = workflow[1]
-                    trigger_type = workflow[4]
-                    status = workflow[7]
-                    trigger_data = json.loads(workflow[5]) if workflow[5] else {}
-                
-                creator = interaction.guild.get_member(int(creator_id))
-                creator_name = creator.display_name if creator else "Unknown"
-                
-                status_emoji = "✅" if status == "active" else "⏸️"
-                
-                # Get trigger channel info
-                trigger_info = trigger_type
-                if isinstance(trigger_data, dict) and 'channel_id' in trigger_data:
-                    channel = interaction.guild.get_channel(int(trigger_data['channel_id']))
-                    if channel:
-                        trigger_info += f" in {channel.mention}"
-                
-                embed.add_field(
-                    name=f"{status_emoji} {name}",
-                    value=f"**Trigger:** {trigger_info}\n"
-                          f"**Creator:** {creator_name}\n"
-                          f"**Status:** {status.title()}",
-                    inline=True
-                )
+            embed.add_field(name="Workflow", value=workflow.get('name', 'Unknown'), inline=True)
+            embed.add_field(name="Trigger", value=workflow.get('trigger_type', 'Unknown'), inline=True)
             
-            await interaction.followup.send(embed=embed)
+            if 'user_mention' in trigger_data:
+                embed.add_field(name="Triggered by", value=trigger_data['user_mention'], inline=True)
+            
+            if 'message_link' in trigger_data:
+                embed.add_field(name="Message", value=f"[Jump to message]({trigger_data['message_link']})", inline=False)
+            
+            embed.set_footer(text="devBot")
+            await log_channel.send(embed=embed)
             
         except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to fetch workflows: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            print(f"Error logging workflow execution: {e}")
     
-    @app_commands.command(name="toggle-workflow", description="Enable or disable a workflow")
-    @app_commands.describe(workflow_name="Name of the workflow to toggle")
-    async def toggle_workflow(self, interaction: discord.Interaction, workflow_name: str):
-        await interaction.response.defer()
-        
-        try:
-            # Get workflow
-            if self.bot.db.is_postgresql:
-                workflow = await self.bot.db.connection.fetchrow(
-                    "SELECT * FROM workflows WHERE guild_id = $1 AND name = $2",
-                    str(interaction.guild.id), workflow_name
-                )
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM workflows WHERE guild_id = ? AND name = ?",
-                    (str(interaction.guild.id), workflow_name)
-                )
-                workflow = await cursor.fetchone()
-            
-            if not workflow:
-                embed = EmbedBuilder.error("Not Found", f"Workflow '{workflow_name}' not found")
-                await interaction.followup.send(embed=embed, ephemeral=True)
-                return
-            
-            # Toggle status
-            current_status = workflow['status'] if self.bot.db.is_postgresql else workflow[7]
-            new_status = "inactive" if current_status == "active" else "active"
-            
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "UPDATE workflows SET status = $1 WHERE id = $2",
-                    new_status, workflow['id']
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    "UPDATE workflows SET status = ? WHERE id = ?",
-                    (new_status, workflow[0])
-                )
-                await self.bot.db.connection.commit()
-            
-            embed = EmbedBuilder.success(
-                "Workflow Updated",
-                f"Workflow **{workflow_name}** is now **{new_status}**"
-            )
-            await interaction.followup.send(embed=embed)
-            
-        except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to toggle workflow: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="add-workflow-action", description="Add an action to a workflow (Admin only)")
-    @app_commands.describe(
-        workflow_name="Name of the workflow",
-        action_type="Type of action (send_message, add_role, create_channel, send_dm)",
-        channel="Channel for the action (use 'same' for trigger channel or mention specific channel)",
-        message="Message to send (for send_message and send_dm actions)",
-        role="Role to add (for add_role action)",
-        channel_name="Name for new channel (for create_channel action)"
-    )
-    async def add_workflow_action(self, interaction: discord.Interaction, workflow_name: str, action_type: str, channel: str = "same", message: str = None, role: discord.Role = None, channel_name: str = None):
-        if not self.bot.admin_manager.is_admin(interaction.user):
-            embed = EmbedBuilder.error("Permission Denied", "Only administrators can modify workflows")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        await interaction.response.defer()
-        
-        valid_actions = ["send_message", "add_role", "create_channel", "send_dm"]
-        if action_type not in valid_actions:
-            embed = EmbedBuilder.error(
-                "Invalid Action Type",
-                f"Action type must be one of: {', '.join(valid_actions)}"
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+    async def check_message_triggers(self, message: discord.Message):
+        """Check if message triggers any workflows"""
+        if not message.guild or message.author.bot:
             return
         
         try:
-            # Get workflow
+            # Get workflows for this guild
             if self.bot.db.is_postgresql:
-                workflow = await self.bot.db.connection.fetchrow(
-                    "SELECT * FROM workflows WHERE guild_id = $1 AND name = $2",
-                    str(interaction.guild.id), workflow_name
+                workflows = await self.bot.db.connection.fetch(
+                    "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type LIKE 'message%'",
+                    str(message.guild.id)
                 )
             else:
                 cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM workflows WHERE guild_id = ? AND name = ?",
-                    (str(interaction.guild.id), workflow_name)
+                    "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type LIKE 'message%'",
+                    (str(message.guild.id),)
                 )
-                workflow = await cursor.fetchone()
+                workflows = await cursor.fetchall()
             
-            if not workflow:
-                embed = EmbedBuilder.error("Not Found", f"Workflow '{workflow_name}' not found")
-                await interaction.followup.send(embed=embed, ephemeral=True)
-                return
-            
-            # Prepare action data
-            action_data = {}
-            
-            # Parse channel
-            if channel == "same":
-                action_data['channel_id'] = "same"
-            else:
-                # Try to extract channel ID from mention
-                if channel.startswith('<#') and channel.endswith('>'):
-                    channel_id = channel[2:-1]
-                    target_channel = interaction.guild.get_channel(int(channel_id))
-                    if target_channel:
-                        action_data['channel_id'] = channel_id
-                    else:
-                        embed = EmbedBuilder.error("Invalid Channel", "The specified channel was not found")
-                        await interaction.followup.send(embed=embed, ephemeral=True)
-                        return
+            for workflow in workflows:
+                # Check if workflow conditions are met
+                trigger_data_raw = workflow['trigger_data'] if self.bot.db.is_postgresql else workflow[5]
+                trigger_type = workflow['trigger_type'] if self.bot.db.is_postgresql else workflow[4]
+                
+                if isinstance(trigger_data_raw, str):
+                    trigger_conditions = json.loads(trigger_data_raw)
                 else:
-                    embed = EmbedBuilder.error("Invalid Channel", "Please mention a channel (e.g., #general) or use 'same'")
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-                    return
-            
-            # Add action-specific data
-            if action_type == "send_message":
-                if not message:
-                    embed = EmbedBuilder.error("Missing Parameter", "Message is required for send_message action")
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-                    return
-                action_data['message'] = message
-            
-            elif action_type == "add_role":
-                if not role:
-                    embed = EmbedBuilder.error("Missing Parameter", "Role is required for add_role action")
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-                    return
-                action_data['role_id'] = str(role.id)
-            
-            elif action_type == "create_channel":
-                if not channel_name:
-                    embed = EmbedBuilder.error("Missing Parameter", "Channel name is required for create_channel action")
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-                    return
-                action_data['name'] = channel_name
-                action_data['type'] = 'text'  # Default to text channel
-            
-            elif action_type == "send_dm":
-                if not message:
-                    embed = EmbedBuilder.error("Missing Parameter", "Message is required for send_dm action")
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-                    return
-                action_data['message'] = message
-            
-            # Get current actions
-            current_actions = workflow['actions'] if self.bot.db.is_postgresql else workflow[6]
-            if isinstance(current_actions, str):
-                current_actions = json.loads(current_actions)
-            elif current_actions is None:
-                current_actions = []
-            
-            # Add new action
-            new_action = {
-                "type": action_type,
-                "data": action_data,
-                "added_by": str(interaction.user.id),
-                "added_at": str(discord.utils.utcnow())
-            }
-            current_actions.append(new_action)
-            
-            # Update workflow
+                    trigger_conditions = trigger_data_raw
+                
+                # Check if it's a message trigger with specific text
+                if trigger_type.startswith('message:'):
+                    trigger_text = trigger_type.split(':', 1)[1].lower()
+                    if trigger_text not in message.content.lower():
+                        continue
+                
+                # Check channel condition
+                if 'channel_id' in trigger_conditions:
+                    if str(message.channel.id) != trigger_conditions['channel_id']:
+                        continue
+                
+                # Check message count condition
+                if 'message_count' in trigger_conditions:
+                    # Count recent messages from this user
+                    count = 0
+                    async for msg in message.channel.history(limit=100):
+                        if msg.author == message.author:
+                            count += 1
+                        if count >= trigger_conditions['message_count']:
+                            break
+                    
+                    if count < trigger_conditions['message_count']:
+                        continue
+                
+                # Execute workflow
+                trigger_data = {
+                    'user_id': str(message.author.id),
+                    'user_name': message.author.display_name,
+                    'user_mention': message.author.mention,
+                    'channel_id': str(message.channel.id),
+                    'channel_mention': message.channel.mention,
+                    'message_link': message.jump_url,
+                    'guild_id': str(message.guild.id)
+                }
+                
+                workflow_dict = dict(workflow) if self.bot.db.is_postgresql else {
+                    'id': workflow[0],
+                    'name': workflow[1],
+                    'guild_id': workflow[2],
+                    'creator_id': workflow[3],
+                    'trigger_type': workflow[4],
+                    'trigger_data': workflow[5],
+                    'actions': workflow[6],
+                    'status': workflow[7],
+                    'log_channel_id': trigger_conditions.get('log_channel_id')
+                }
+                
+                await self.execute_workflow_actions(workflow_dict, trigger_data)
+                
+        except Exception as e:
+            print(f"Error checking message triggers: {e}")
+    
+    async def check_member_join_triggers(self, member: discord.Member):
+        """Check if member join triggers any workflows"""
+        try:
+            # Get workflows for this guild
             if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "UPDATE workflows SET actions = $1 WHERE id = $2",
-                    json.dumps(current_actions), workflow['id']
+                workflows = await self.bot.db.connection.fetch(
+                    "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type = 'member_join'",
+                    str(member.guild.id)
                 )
             else:
-                await self.bot.db.connection.execute(
-                    "UPDATE workflows SET actions = ? WHERE id = ?",
-                    (json.dumps(current_actions), workflow[0])
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type = 'member_join'",
+                    (str(member.guild.id),)
                 )
-                await self.bot.db.connection.commit()
+                workflows = await cursor.fetchall()
             
-            # Format action description - Fixed f-string backslash issue
-            action_desc = f"**Type:** {action_type}\n"
-            if action_type == "send_message":
-                channel_text = 'Same as trigger' if channel == 'same' else f'<#{action_data["channel_id"]}>'
-                action_desc += f"**Channel:** {channel_text}\n"
-                message_preview = message[:100] + ('...' if len(message) > 100 else '')
-                action_desc += f"**Message:** {message_preview}"
-            elif action_type == "add_role":
-                action_desc += f"**Role:** {role.mention}"
-            elif action_type == "create_channel":
-                action_desc += f"**Channel Name:** {channel_name}"
-            elif action_type == "send_dm":
-                message_preview = message[:100] + ('...' if len(message) > 100 else '')
-                action_desc += f"**Message:** {message_preview}"
-            
-            embed = EmbedBuilder.success(
-                "Action Added",
-                f"Added action to workflow **{workflow_name}**\n\n{action_desc}"
-            )
-            await interaction.followup.send(embed=embed)
-            
+            for workflow in workflows:
+                trigger_data_raw = workflow['trigger_data'] if self.bot.db.is_postgresql else workflow[5]
+                
+                if isinstance(trigger_data_raw, str):
+                    trigger_conditions = json.loads(trigger_data_raw)
+                else:
+                    trigger_conditions = trigger_data_raw or {}
+                
+                trigger_data = {
+                    'user_id': str(member.id),
+                    'user_name': member.display_name,
+                    'user_mention': member.mention,
+                    'guild_id': str(member.guild.id)
+                }
+                
+                workflow_dict = dict(workflow) if self.bot.db.is_postgresql else {
+                    'id': workflow[0],
+                    'name': workflow[1],
+                    'guild_id': workflow[2],
+                    'creator_id': workflow[3],
+                    'trigger_type': workflow[4],
+                    'trigger_data': workflow[5],
+                    'actions': workflow[6],
+                    'status': workflow[7],
+                    'log_channel_id': trigger_conditions.get('log_channel_id')
+                }
+                
+                await self.execute_workflow_actions(workflow_dict, trigger_data)
+                
         except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to add workflow action: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-async def setup(bot):
-    try:
-        cog = Workflows(bot)
-        await bot.add_cog(cog)
-        
-        # Ensure commands are added to the tree
-        for command in cog.__cog_app_commands__:
-            if command not in bot.tree.get_commands():
-                bot.tree.add_command(command)
-        
-        # List all commands from this cog for debugging
-        commands = [c.name for c in cog.get_app_commands()]
-        print(f"🔄 Successfully loaded {len(commands)} workflow commands: {', '.join(commands)}")
-    except Exception as e:
-        print(f"❌ Failed to load Workflows cog: {e}")
-        traceback.print_exc()
+            print(f"Error checking member join triggers: {e}")
+    
+    async def check_thread_create_triggers(self, thread: discord.Thread):
+        """Check if thread creation triggers any workflows"""
+        try:
+            # Get workflows for this guild
+            if self.bot.db.is_postgresql:
+                workflows = await self.bot.db.connection.fetch(
+                    "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type = 'thread_create'",
+                    str(thread.guild.id)
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type = 'thread_create'",
+                    (str(thread.guild.id),)
+                )
+                workflows = await cursor.fetchall()
+            
+            for workflow in workflows:
+                trigger_data = {
+                    'thread_id': str(thread.id),
+                    'thread_name': thread.name,
+                    'thread_mention': thread.mention,
+                    'channel_id': str(thread.parent_id),
+                    'guild_id': str(thread.guild.id)
+                }
+                
+                if thread.owner:
+                    trigger_data.update({
+                        'user_id': str(thread.owner.id),
+                        'user_name': thread.owner.display_name,
+                        'user_mention': thread.owner.mention
+                    })
+                
+                workflow_dict = dict(workflow) if self.bot.db.is_postgresql else {
+                    'id': workflow[0],
+                    'name': workflow[1],
+                    'guild_id': workflow[2],
+                    'creator_id': workflow[3],
+                    'trigger_type': workflow[4],
+                    'trigger_data': workflow[5],
+                    'actions': workflow[6],
+                    'status': workflow[7]
+                }
+                
+                await self.execute_workflow_actions(workflow_dict, trigger_data)
+                
+        except Exception as e:
+            print(f"Error checking thread create triggers: {e}")
