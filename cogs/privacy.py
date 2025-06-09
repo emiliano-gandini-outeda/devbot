@@ -50,7 +50,7 @@ class Privacy(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
     
-    @app_commands.command(name="export-data", description="Export your personal data")
+    @app_commands.command(name="privacy-export-data", description="Export your personal data")
     async def export_data(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         
@@ -95,7 +95,7 @@ class Privacy(commands.Cog):
             embed = EmbedBuilder.error("Export Failed", f"Failed to export data: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="delete-data", description="Request deletion of your personal data")
+    @app_commands.command(name="privacy-delete-data", description="Request deletion of your personal data")
     async def delete_data(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="⚠️ Delete Personal Data",
@@ -113,7 +113,7 @@ class Privacy(commands.Cog):
         view = ConfirmDeleteView(self.bot, interaction.user.id)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
     
-    @app_commands.command(name="get-data", description="View summary of your stored data")
+    @app_commands.command(name="privacy-get-data", description="View summary of your stored data")
     async def get_data(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         
@@ -150,8 +150,8 @@ class Privacy(commands.Cog):
             
             embed.add_field(
                 name="Data Management",
-                value="• Use `/export-data` to export your data\n"
-                      "• Use `/delete-data` to delete your data\n"
+                value="• Use `/privacy-export-data` to export your data\n"
+                      "• Use `/privacy-delete-data` to delete your data\n"
                       "• Use `/privacy-policy` to view our privacy policy",
                 inline=False
             )

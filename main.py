@@ -146,6 +146,9 @@ class DiscordBot(commands.Bot):
         logger.info(f"📊 Connected to {len(self.guilds)} guilds")
         logger.info(f"👥 Serving {sum(guild.member_count for guild in self.guilds)} users")
         
+        # Wait a moment for all cogs to be fully loaded
+        await asyncio.sleep(2)
+        
         # Clear global commands first
         logger.info("🧹 Clearing global commands...")
         try:
@@ -154,6 +157,12 @@ class DiscordBot(commands.Bot):
             logger.info("✅ Global commands cleared")
         except Exception as e:
             logger.error(f"❌ Failed to clear global commands: {e}")
+        
+        # Log available commands before syncing
+        all_commands = self.tree.get_commands()
+        logger.info(f"📋 Found {len(all_commands)} commands to sync")
+        for cmd in all_commands:
+            logger.info(f"  • {cmd.name}: {cmd.description}")
         
         # Sync commands to all guilds
         logger.info("🔄 Syncing commands to all guilds...")
@@ -165,13 +174,18 @@ class DiscordBot(commands.Bot):
                 # Clear guild commands first
                 self.tree.clear_commands(guild=guild)
                 
-                # Copy commands to guild
+                # Copy all global commands to this guild
                 self.tree.copy_global_to(guild=guild)
                 
                 # Sync to guild
                 synced = await self.tree.sync(guild=guild)
                 synced_guilds += 1
                 logger.info(f"✅ Synced {len(synced)} commands to {guild.name}")
+                
+                # Log synced commands
+                for cmd in synced:
+                    logger.info(f"  • {cmd.name}")
+                    
             except Exception as e:
                 failed_guilds += 1
                 logger.error(f"❌ Failed to sync commands to {guild.name}: {e}")

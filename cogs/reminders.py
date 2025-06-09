@@ -25,6 +25,10 @@ class Reminders(commands.Cog):
         try:
             current_time = datetime.utcnow()
             
+            # Check if database is available
+            if not self.bot.db or not self.bot.db.connection:
+                return
+            
             due_reminders = await self.bot.db.connection.fetch(
                 "SELECT * FROM reminders WHERE remind_at <= $1",
                 current_time
@@ -50,7 +54,8 @@ class Reminders(commands.Cog):
                     logger.error(f"Error processing reminder {reminder['id']}: {e}")
             
         except Exception as e:
-            logger.error(f"Error in check_reminders: {e}")
+            if "operation is in progress" not in str(e).lower():
+                logger.error(f"Error in check_reminders: {e}")
     
     async def send_reminder(self, reminder):
         """Send a reminder to the appropriate channel/user"""
