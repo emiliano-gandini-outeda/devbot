@@ -372,5 +372,20 @@ class Admin(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot):
-    await bot.add_cog(Admin(bot))
-    print(f"🛡️ Successfully loaded Admin cog with {len(Admin(bot).get_app_commands())} commands")
+    cog = Admin(bot)
+    await bot.add_cog(cog)
+    
+    # Manually add each command to the tree to ensure registration
+    commands_to_add = [
+        cog.add_admin_role,
+        cog.remove_admin_role,
+        cog.list_admin_roles,
+        cog.admin_panel,
+        cog.get_data
+    ]
+    
+    for command in commands_to_add:
+        if command not in bot.tree.get_commands():
+            bot.tree.add_command(command)
+    
+    print(f"🛡️ Successfully loaded Admin cog with {len(commands_to_add)} commands")

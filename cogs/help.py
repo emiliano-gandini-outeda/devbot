@@ -147,7 +147,7 @@ class HelpDropdown(discord.ui.Select):
         )
         
         user_commands = [
-            "`/create-ticket <title> <description> [priority]` - Create a new support ticket",
+            "`/ticket-create <title> <description> [priority]` - Create a new support ticket",
             "`/ticket-join` - Request to join current ticket",
             "`/ticket-private` - Make ticket private (assigned users only)",
             "`/ticket-public` - Make ticket public (everyone can read)",
@@ -162,7 +162,7 @@ class HelpDropdown(discord.ui.Select):
         
         if self.is_admin:
             admin_commands = [
-                "`/ticket-setup <category> <transcript_channel>` - Setup ticket system",
+                "`/ticket-system-setup <category> <transcript_channel>` - Setup ticket system",
                 "`/assign-ticket <ticket_id> <assignee>` - Assign ticket to user"
             ]
             
@@ -393,8 +393,8 @@ class HelpDropdown(discord.ui.Select):
             "`/add-admin-role <role>` - Add role to admin list",
             "`/remove-admin-role <role>` - Remove role from admin list",
             "`/list-admin-roles` - List all admin roles",
-            "`/ticket-setup <category> <transcript_channel>` - Setup tickets",
-            "`/setup-logs <log_channel>` - Setup server logging",
+            "`/ticket-system-setup <category> <transcript_channel>` - Setup tickets",
+            "`/server-logs-setup <log_channel>` - Setup server logging",
             "`/assign-ticket <ticket_id> <assignee>` - Assign ticket",
             "`/archive-thread` - Archive current thread",
             "`/assign-role <user> <role>` - Assign role to user",
@@ -465,7 +465,7 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             embed.add_field(
                 name="Admin Commands",
-                value="`/setup-logs <log_channel>` - Configure logging channel",
+                value="`/server-logs-setup <log_channel>` - Configure logging channel",
                 inline=False
             )
         
@@ -500,7 +500,7 @@ class Help(commands.Cog):
     
     @app_commands.command(name="help", description="Show available commands in an interactive menu")
     async def help_command(self, interaction: discord.Interaction):
-        is_admin = self.bot.admin_manager.is_admin(interaction.user)
+        is_admin = self.bot.admin_manager.is_admin(interaction.user) if self.bot.admin_manager else False
         
         embed = discord.Embed(
             title="🤖 Bot Help Menu",
@@ -520,15 +520,15 @@ class Help(commands.Cog):
         
         embed.add_field(
             name="🔧 Setup Commands",
-            value="• `/ticket-setup` - Configure support tickets\n"
-                  "• `/setup-logs` - Configure server logging\n"
+            value="• `/ticket-system-setup` - Configure support tickets\n"
+                  "• `/server-logs-setup` - Configure server logging\n"
                   "• `/add-admin-role` - Add admin roles",
             inline=True
         )
         
         embed.add_field(
             name="🚀 Popular Commands",
-            value="• `/create-ticket` - Get support\n"
+            value="• `/ticket-create` - Get support\n"
                   "• `/remind` - Set reminders\n"
                   "• `/summarize` - AI summaries",
             inline=True
@@ -542,4 +542,9 @@ class Help(commands.Cog):
 async def setup(bot):
     cog = Help(bot)
     await bot.add_cog(cog)
-    print(f"❓ Successfully loaded Help cog with {len(cog.get_app_commands())} commands")
+    
+    # Manually add command to the tree to ensure registration
+    if cog.help_command not in bot.tree.get_commands():
+        bot.tree.add_command(cog.help_command)
+    
+    print(f"❓ Successfully loaded Help cog with 1 command")

@@ -387,9 +387,6 @@ class Reminders(commands.Cog):
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             
-            # Create reminder list view with delete buttons
-            view = ReminderListView(self.bot, reminders, self.bot.db.is_postgresql, interaction.user.id)
-            
             embed = discord.Embed(
                 title="⏰ Your Reminders",
                 color=0xFEE75C
@@ -418,8 +415,8 @@ class Reminders(commands.Cog):
                     inline=False
                 )
             
-            embed.set_footer(text="Powered by Railway 🚄 • Use buttons below to delete reminders")
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            embed.set_footer(text="Powered by Railway 🚄")
+            await interaction.followup.send(embed=embed, ephemeral=True)
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to fetch reminders: {str(e)}")
@@ -486,83 +483,21 @@ class Reminders(commands.Cog):
         
         return " ".join(parts) if parts else "< 1m"
 
-class ReminderListView(discord.ui.View):
-    def __init__(self, bot, reminders, is_postgresql, user_id):
-        super().__init__(timeout=60)
-        self.bot = bot
-        self.reminders = reminders
-        self.is_postgresql = is_postgresql
-        self.user_id = user_id
-        
-        # Add buttons for each reminder (up to 5 to avoid cluttering the UI)
-        for i, reminder in enumerate(reminders[:5], 1):
-            reminder_id = reminder['id'] if is_postgresql else reminder[0]
-            button = DeleteReminderButton(i, reminder_id)
-            self.add_item(button)
-    
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        return str(interaction.user.id) == self.user_id
-
-class DeleteReminderButton(discord.ui.Button):
-    def __init__(self, number, reminder_id):
-        super().__init__(
-            style=discord.ButtonStyle.danger,
-            label=f"Delete #{number}",
-            custom_id=f"delete_reminder_{reminder_id}"
-        )
-        self.reminder_id = reminder_id
-    
-    async def callback(self, interaction: discord.Interaction):
-        try:
-            bot = interaction.client
-            if bot.db.is_postgresql:
-                # First get the reminder to confirm it exists
-                reminder = await bot.db.connection.fetchrow(
-                    "SELECT * FROM reminders WHERE id = $1 AND user_id = $2",
-                    self.reminder_id, str(interaction.user.id)
-                )
-                
-                if reminder:
-                    await bot.db.connection.execute(
-                        "DELETE FROM reminders WHERE id = $1", self.reminder_id
-                    )
-            else:
-                cursor = await bot.db.connection.execute(
-                    "SELECT * FROM reminders WHERE id = ? AND user_id = ?",
-                    (self.reminder_id, str(interaction.user.id))
-                )
-                reminder = await cursor.fetchone()
-                
-                if reminder:
-                    await bot.db.connection.execute(
-                        "DELETE FROM reminders WHERE id = ?", (self.reminder_id,)
-                    )
-                    await bot.db.connection.commit()
-            
-            if reminder:
-                embed = EmbedBuilder.success(
-                    "Reminder Deleted",
-                    f"Reminder #{self.custom_id.split('_')[-1]} has been deleted."
-                )
-            else:
-                embed = EmbedBuilder.error(
-                    "Not Found", 
-                    "Reminder not found or already deleted."
-                )
-            
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            
-        except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to delete reminder: {str(e)}")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
 async def setup(bot):
     cog = Reminders(bot)
     await bot.add_cog(cog)
     
-    # Ensure commands are added to the tree
-    for command in cog.__cog_app_commands__:
+    # Manually add each command to the tree to ensure registration
+    commands_to_add = [
+        cog.remind,
+        cog.remind_channel,
+        cog.edit_reminder,
+        cog.list_reminders,
+        cog.delete_reminder
+    ]
+    
+    for command in commands_to_add:
         if command not in bot.tree.get_commands():
             bot.tree.add_command(command)
     
-    print(f"⏰ Successfully loaded Reminders cog with {len(cog.get_app_commands())} commands")
+    print(f"⏰ Successfully loaded Reminders cog with {len(commands_to_add)} commands")
