@@ -1,8 +1,9 @@
 import os
 import asyncio
 import logging
+import inspect
+from discord import app_commands, Intents
 from discord.ext import commands
-from discord import Intents
 from dotenv import load_dotenv
 from config.settings import Settings
 from utils.db import DatabaseManager
@@ -35,7 +36,7 @@ class SlackBot(commands.Bot):
         self.ticket_manager = None
         self.logging_manager = None
         self.workflow_manager = None
-        self.synced = False  # Track if commands have been synced
+        self.synced = False
     
     async def setup_hook(self):
         """Setup database and load cogs"""
@@ -104,17 +105,72 @@ class SlackBot(commands.Bot):
             all_commands = self.tree.get_commands()
             logger.info(f"Total registered slash commands after cog loading: {len(all_commands)}")
             
-            for cmd in all_commands:
-                logger.debug(f"Registered command: /{cmd.name}")
+            if len(all_commands) == 0:
+                logger.warning("⚠️ NO COMMANDS REGISTERED! This is why sync returns 0 commands.")
+                logger.warning("Running emergency command registration check...")
+                await self.emergency_command_registration()
+            else:
+                for cmd in all_commands:
+                    logger.debug(f"Registered command: /{cmd.name}")
                 
             logger.info("Setup hook completed successfully")
                 
         except Exception as e:
             logger.error(f"Error in setup_hook: {e}", exc_info=True)
     
+    async def emergency_command_registration(self):
+        """Emergency function to check and fix command registration issues"""
+        try:
+            logger.info("🚨 EMERGENCY: Attempting to fix command registration...")
+            
+            # Check if any cogs are loaded
+            if not self.cogs:
+                logger.error("No cogs loaded! Cannot fix command registration.")
+                return
+                
+            # Try to manually register commands from cogs
+            commands_added = 0
+            
+            for cog_name, cog in self.cogs.items():
+                logger.info(f"Checking cog {cog_name} for commands...")
+                
+                # Look for app commands in the cog
+                for attr_name, attr_value in inspect.getmembers(cog):
+                    # Check if it's an app command
+                    if isinstance(attr_value, app_commands.Command):
+                        logger.info(f"Found command {attr_value.name} in {cog_name}")
+                        
+                        # Try to add it to the tree if not already there
+                        existing_commands = [cmd.name for cmd in self.tree.get_commands()]
+                        if attr_value.name not in existing_commands:
+                            try:
+                                # Add command to tree
+                                self.tree.add_command(attr_value)
+                                commands_added += 1
+                                logger.info(f"✅ Added command {attr_value.name} to tree")
+                            except Exception as e:
+                                logger.error(f"Failed to add command {attr_value.name}: {e}")
+            
+            logger.info(f"Emergency registration complete: Added {commands_added} commands to tree")
+            
+            # Check if we fixed it
+            all_commands = self.tree.get_commands()
+            logger.info(f"Commands in tree after emergency fix: {len(all_commands)}")
+            
+            if len(all_commands) == 0:
+                logger.error("⚠️ Still no commands in tree after emergency fix!")
+                logger.error("Please check your cog implementation - commands may not be properly decorated")
+            
+        except Exception as e:
+            logger.error(f"Error in emergency command registration: {e}", exc_info=True)
+    
     async def on_ready(self):
         logger.info(f'{self.user} has connected to Discord!')
         logger.info(f'Bot is in {len(self.guilds)} guilds')
+        
+        # Check command registration again
+        all_commands = self.tree.get_commands()
+        logger.info(f"Commands in tree at on_ready: {len(all_commands)}")
         
         # Only sync once when bot is ready
         if not self.synced:
@@ -131,7 +187,11 @@ class SlackBot(commands.Bot):
             logger.info(f"Starting sync of {len(all_commands)} commands to {len(self.guilds)} guilds...")
             
             if len(all_commands) == 0:
-                logger.warning("⚠️ No commands found to sync! Check if cogs loaded properly.")
+                logger.critical("🚨 CRITICAL: No commands found to sync! Check cog implementation.")
+                logger.info("Running command registration diagnostic...")
+                
+                # Try to diagnose the issue
+                await self.diagnose_command_registration()
                 return
             
             # Log command names for debugging
@@ -182,6 +242,39 @@ class SlackBot(commands.Bot):
             
         except Exception as e:
             logger.error(f"❌ Critical error during command sync: {e}", exc_info=True)
+    
+    async def diagnose_command_registration(self):
+        """Diagnose issues with command registration"""
+        try:
+            logger.info("🔍 Diagnosing command registration issues...")
+            
+            # Check if cogs are loaded
+            logger.info(f"Loaded cogs: {len(self.cogs)}")
+            if len(self.cogs) == 0:
+                logger.error("No cogs loaded! This explains why no commands are registered.")
+                return
+                
+            # Check each cog for app commands
+            for cog_name, cog in self.cogs.items():
+                logger.info(f"Examining cog: {cog_name}")
+                
+                # Check for app_commands attributes
+                has_app_commands = False
+                for attr_name, attr_value in inspect.getmembers(cog):
+                    if isinstance(attr_value, app_commands.Command):
+                        has_app_commands = True
+                        logger.info(f"  Found app command: {attr_value.name}")
+                
+                if not has_app_commands:
+                    logger.warning(f"  No app commands found in cog {cog_name}")
+            
+            logger.info("Diagnosis complete. Possible issues:")
+            logger.info("1. Commands may not be properly decorated with @app_commands.command()")
+            logger.info("2. Commands may not be properly added to the command tree")
+            logger.info("3. Check that your cog __init__ method calls self.bot.tree.add_command()")
+            
+        except Exception as e:
+            logger.error(f"Error during diagnosis: {e}")
 
     # Enhanced sync command for debugging
     @commands.command(name='sync')
@@ -197,7 +290,21 @@ class SlackBot(commands.Bot):
             
             if len(all_commands) == 0:
                 await ctx.send("⚠️ No commands found! Check if cogs are loaded properly.")
-                return
+                await ctx.send("Running command registration check...")
+                
+                # Try to diagnose the issue
+                await self.diagnose_command_registration()
+                
+                # Try emergency registration
+                await self.emergency_command_registration()
+                
+                # Check if we fixed it
+                all_commands = self.tree.get_commands()
+                await ctx.send(f"After emergency fix: {len(all_commands)} commands in tree")
+                
+                if len(all_commands) == 0:
+                    await ctx.send("❌ Still no commands registered. Check cog implementation.")
+                    return
             
             # Sync to current guild
             synced = await self.tree.sync(guild=ctx.guild)
@@ -206,13 +313,13 @@ class SlackBot(commands.Bot):
                 await ctx.send(f'✅ Successfully synced {len(synced)} commands to {ctx.guild.name}!')
                 
                 # List synced commands
-                command_list = "\n".join([f"- /{cmd.name}: {cmd.description}" for cmd in synced])
+                command_list = "\n".join([f"- /{cmd.name}" for cmd in synced])
                 if len(command_list) < 1800:  # Leave room for formatting
-                    await ctx.send(f"```\nSynced commands:\n{command_list}\n```")
+                    await ctx.send(f"\`\`\`\nSynced commands:\n{command_list}\n\`\`\`")
                 else:
                     # Split into multiple messages if too long
                     command_names = [cmd.name for cmd in synced]
-                    await ctx.send(f"```\nSynced commands: {', '.join(command_names)}\n```")
+                    await ctx.send(f"\`\`\`\nSynced commands: {', '.join(command_names)}\n\`\`\`")
             else:
                 await ctx.send("⚠️ Synced 0 commands - this indicates a problem with command registration")
             
@@ -232,8 +339,16 @@ class SlackBot(commands.Bot):
             await ctx.send(f"📋 Found {len(all_commands)} registered commands")
             
             if len(all_commands) == 0:
-                await ctx.send("⚠️ No commands to sync! Check cog loading.")
-                return
+                await ctx.send("⚠️ No commands to sync! Running emergency fix...")
+                await self.emergency_command_registration()
+                
+                # Check if we fixed it
+                all_commands = self.tree.get_commands()
+                await ctx.send(f"After emergency fix: {len(all_commands)} commands in tree")
+                
+                if len(all_commands) == 0:
+                    await ctx.send("❌ Still no commands registered. Check cog implementation.")
+                    return
             
             total_synced = 0
             successful = 0
@@ -270,6 +385,10 @@ class SlackBot(commands.Bot):
                 # Check loaded cogs
                 loaded_cogs = list(self.cogs.keys())
                 await ctx.send(f"Loaded cogs ({len(loaded_cogs)}): {', '.join(loaded_cogs)}")
+                
+                # Run diagnostic
+                await ctx.send("Running command registration diagnostic...")
+                await self.diagnose_command_registration()
                 return
             
             # Group commands by cog
@@ -280,19 +399,19 @@ class SlackBot(commands.Bot):
                     command_info[cog_name] = []
                 command_info[cog_name].append(cmd.name)
             
-            response = "```\nRegistered Commands by Cog:\n"
+            response = "\`\`\`\nRegistered Commands by Cog:\n"
             for cog, commands in command_info.items():
                 response += f"\n{cog}:\n"
                 for cmd in commands:
                     response += f"  - /{cmd}\n"
-            response += "```"
+            response += "\`\`\`"
             
             if len(response) < 2000:
                 await ctx.send(response)
             else:
                 # Send command names only if too long
                 command_names = [cmd.name for cmd in all_commands]
-                await ctx.send(f"```\nAll commands: {', '.join(command_names)}\n```")
+                await ctx.send(f"\`\`\`\nAll commands: {', '.join(command_names)}\n\`\`\`")
                 
         except Exception as e:
             await ctx.send(f'❌ Error checking commands: {e}')
