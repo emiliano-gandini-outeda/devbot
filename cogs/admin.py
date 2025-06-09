@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder
 from datetime import datetime
+import json
 
 class Admin(commands.Cog):
     """Admin management commands"""
@@ -104,72 +105,173 @@ class Admin(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to list admin roles: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="status-check", description="Check bot status and loaded features (Admin only)")
-    async def status_check(self, interaction: discord.Interaction):
+    @app_commands.command(name="admin-panel", description="View bot status and server configuration (Admin only)")
+    async def admin_panel(self, interaction: discord.Interaction):
         if not self.bot.admin_manager.is_admin(interaction.user):
-            embed = EmbedBuilder.error("Permission Denied", "Only administrators can check bot status")
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can access the admin panel")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        embed = discord.Embed(
-            title="🤖 Bot Status",
-            color=0x5865F2
-        )
+        await interaction.response.defer(ephemeral=True)
         
-        # Loaded cogs
-        loaded_cogs = list(self.bot.cogs.keys())
-        embed.add_field(
-            name=f"📦 Loaded Cogs ({len(loaded_cogs)})",
-            value="\n".join([f"✅ {cog}" for cog in loaded_cogs]) if loaded_cogs else "None",
-            inline=False
-        )
-        
-        # Slash commands
-        commands = self.bot.tree.get_commands()
-        embed.add_field(
-            name=f"⚡ Slash Commands ({len(commands)})",
-            value=f"Total registered: {len(commands)}\nUse `/help` to see all commands",
-            inline=True
-        )
-        
-        # Database status
-        db_status = "✅ Connected" if self.bot.db and self.bot.db.connection else "❌ Disconnected"
-        embed.add_field(
-            name="🗄️ Database",
-            value=db_status,
-            inline=True
-        )
-        
-        # Managers status
-        managers = {
-            "Admin Manager": "✅" if self.bot.admin_manager else "❌",
-            "Ticket Manager": "✅" if self.bot.ticket_manager else "❌",
-            "Logging Manager": "✅" if self.bot.logging_manager else "❌",
-            "Workflow Manager": "✅" if self.bot.workflow_manager else "❌"
-        }
-        
-        embed.add_field(
-            name="🔧 Managers",
-            value="\n".join([f"{status} {name}" for name, status in managers.items()]),
-            inline=False
-        )
-        
-        # Guild configs
-        guild_id = str(interaction.guild.id)
+        try:
+            embed = discord.Embed(
+                title="🛡️ Admin Panel",
+                description=f"Server: **{interaction.guild.name}**",
+                color=0x5865F2
+            )
+            
+            # Bot Status
+            uptime = datetime.utcnow() - self.bot.user.created_at
+            embed.add_field(
+                name="🤖 Bot Status",
+                value=f"**Status:** 🟢 Online\n"
+                      f"**Guilds:** {len(self.bot.guilds)}\n"
+                      f"**Users:** {sum(g.member_count for g in self.bot.guilds)}\n"
+                      f"**Commands:** {len(self.bot.tree.get_commands())}",
+                inline=True
+            )
+            
+            # Database Status
+            if self.bot.db and self.bot.db.connection:
+                db_type = "PostgreSQL" if self.bot.db.is_postgresql else "SQLite"
+                db_status = f"🟢 Connected ({db_type})"
+                
+                # Test connection
+                try:
+                    await self.bot.db.test_connection()
+                    db_status += "\n✅ Connection Test: Passed"
+                except:
+                    db_status += "\n❌ Connection Test: Failed"
+            else:
+                db_status = "🔴 Disconnected"
+            
+            embed.add_field(
+                name="🗄️ Database",
+                value=db_status,
+                inline=True
+            )
+            
+            # Managers Status
+            managers = {
+                "Admin Manager": "🟢" if self.bot.admin_manager else "🔴",
+                "Ticket Manager": "🟢" if self.bot.ticket_manager else "🔴",
+                "Logging Manager": "🟢" if self.bot.logging_manager else "🔴",
+                "Workflow Manager": "🟢" if self.bot.workflow_manager else "🔴"
+            }
+            
+            embed.add_field(
+                name="🔧 System Managers",
+                value="\n".join([f"{status} {name}" for name, status in managers.items()]),
+                inline=False
+            )
+            
+            # Server Configuration Status
+            guild_id = str(interaction.guild.id)
+            configs = await self.get_server_configs(guild_id)
+            
+            config_status = []
+            for service, status in configs.items():
+                emoji = "🟢" if status['configured'] else "🔴"
+                config_status.append(f"{emoji} **{service}**")
+                if status['configured'] and status.get('details'):
+                    config_status.append(f"   └ {status['details']}")
+            
+            embed.add_field(
+                name="⚙️ Server Services",
+                value="\n".join(config_status) if config_status else "No services configured",
+                inline=False
+            )
+            
+            # Quick Actions
+            embed.add_field(
+                name="🚀 Quick Setup",
+                value="Use these commands to configure services:\n"
+                      "• `/ticket-system-setup` - Ticket system\n"
+                      "• `/setup-meetings` - Meeting announcements\n"
+                      "• `/server-logs-setup` - Server logging\n"
+                      "• `/setup-tracking` - GitHub tracking\n"
+                      "• `/setup-reminders` - Reminder system",
+                inline=False
+            )
+            
+            embed.set_footer(text=f"Powered by Railway 🚄 • Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to load admin panel: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    async def get_server_configs(self, guild_id: str):
+        """Get configuration status for all server services"""
         configs = {
-            "Ticket System": "✅" if self.bot.ticket_manager.get_ticket_config(guild_id) else "❌",
-            "Logging System": "✅" if self.bot.logging_manager.get_log_config(guild_id) else "❌",
-            "Admin Roles": "✅" if self.bot.admin_manager.get_admin_roles(guild_id) else "❌"
+            "Ticket System": {"configured": False, "details": None},
+            "Meeting System": {"configured": False, "details": None},
+            "Logging System": {"configured": False, "details": None},
+            "GitHub Tracking": {"configured": False, "details": None},
+            "Reminder System": {"configured": False, "details": None},
+            "Thread Logging": {"configured": False, "details": None}
         }
         
-        embed.add_field(
-            name="⚙️ Server Configuration",
-            value="\n".join([f"{status} {name}" for name, status in configs.items()]),
-            inline=False
-        )
+        try:
+            # Check ticket system
+            if self.bot.ticket_manager:
+                ticket_config = self.bot.ticket_manager.get_ticket_config(guild_id)
+                if ticket_config:
+                    configs["Ticket System"]["configured"] = True
+                    category = self.bot.get_channel(int(ticket_config.get('category_id', 0)))
+                    if category:
+                        configs["Ticket System"]["details"] = f"Category: #{category.name}"
+            
+            # Check other configs from database
+            if self.bot.db:
+                config_types = [
+                    ('meeting_config', 'Meeting System', 'announcement_channel_id'),
+                    ('github_tracking_config', 'GitHub Tracking', 'tracking_channel_id'),
+                    ('reminder_config', 'Reminder System', 'reminder_channel_id'),
+                    ('thread_config', 'Thread Logging', 'thread_log_channel_id')
+                ]
+                
+                for config_type, service_name, channel_key in config_types:
+                    try:
+                        if self.bot.db.is_postgresql:
+                            result = await self.bot.db.connection.fetchrow(
+                                "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                                guild_id, config_type
+                            )
+                        else:
+                            cursor = await self.bot.db.connection.execute(
+                                "SELECT data_content FROM user_data WHERE user_id = ? AND data_type = ?",
+                                (guild_id, config_type)
+                            )
+                            result = await cursor.fetchone()
+                        
+                        if result:
+                            data = json.loads(result['data_content'] if self.bot.db.is_postgresql else result[0])
+                            configs[service_name]["configured"] = True
+                            
+                            if channel_key in data:
+                                channel = self.bot.get_channel(int(data[channel_key]))
+                                if channel:
+                                    configs[service_name]["details"] = f"Channel: #{channel.name}"
+                    except Exception:
+                        continue
+                
+                # Check logging system
+                if self.bot.logging_manager:
+                    log_config = self.bot.logging_manager.get_log_config(guild_id)
+                    if log_config:
+                        configs["Logging System"]["configured"] = True
+                        channel = self.bot.get_channel(int(log_config.get('log_channel_id', 0)))
+                        if channel:
+                            configs["Logging System"]["details"] = f"Channel: #{channel.name}"
+            
+        except Exception as e:
+            print(f"Error getting server configs: {e}")
         
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
+        return configs
+    
     @app_commands.command(name="get-data", description="Get all data for a user (Admin only)")
     @app_commands.describe(user="User to get data for")
     async def get_data(self, interaction: discord.Interaction, user: discord.Member):
@@ -196,39 +298,43 @@ class Admin(commands.Cog):
             }
             
             # Get tickets created by user
-            if self.bot.db.is_postgresql:
-                tickets = await self.bot.db.connection.fetch(
-                    "SELECT * FROM tickets WHERE user_id = $1 AND guild_id = $2", 
-                    user_id, str(interaction.guild.id)
-                )
-                
-                data["tickets"] = []
-                for ticket in tickets:
-                    data["tickets"].append({
-                        "ticket_id": ticket['ticket_id'],
-                        "title": ticket['title'],
-                        "description": ticket['description'],
-                        "status": ticket['status'],
-                        "priority": ticket['priority'],
-                        "created_at": str(ticket['created_at'])
-                    })
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM tickets WHERE user_id = ? AND guild_id = ?", 
-                    (user_id, str(interaction.guild.id))
-                )
-                tickets = await cursor.fetchall()
-                
-                data["tickets"] = []
-                for ticket in tickets:
-                    data["tickets"].append({
-                        "ticket_id": ticket[1],
-                        "title": ticket[5],
-                        "description": ticket[6],
-                        "status": ticket[7],
-                        "priority": ticket[8],
-                        "created_at": ticket[10]
-                    })
+            if self.bot.db:
+                try:
+                    if self.bot.db.is_postgresql:
+                        tickets = await self.bot.db.connection.fetch(
+                            "SELECT * FROM tickets WHERE user_id = $1 AND guild_id = $2", 
+                            user_id, str(interaction.guild.id)
+                        )
+                        
+                        data["tickets"] = []
+                        for ticket in tickets:
+                            data["tickets"].append({
+                                "ticket_id": ticket['ticket_id'],
+                                "title": ticket['title'],
+                                "description": ticket['description'],
+                                "status": ticket['status'],
+                                "priority": ticket['priority'],
+                                "created_at": str(ticket['created_at'])
+                            })
+                    else:
+                        cursor = await self.bot.db.connection.execute(
+                            "SELECT * FROM tickets WHERE user_id = ? AND guild_id = ?", 
+                            (user_id, str(interaction.guild.id))
+                        )
+                        tickets = await cursor.fetchall()
+                        
+                        data["tickets"] = []
+                        for ticket in tickets:
+                            data["tickets"].append({
+                                "ticket_id": ticket[1],
+                                "title": ticket[5],
+                                "description": ticket[6],
+                                "status": ticket[7],
+                                "priority": ticket[8],
+                                "created_at": ticket[10]
+                            })
+                except Exception:
+                    data["tickets"] = []
             
             # Create and send file with data
             import io
@@ -250,26 +356,6 @@ class Admin(commands.Cog):
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to retrieve user data: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @commands.command(name='list_commands')
-    @commands.is_owner()
-    async def list_commands_cmd(self, ctx):
-        """List all commands and their registration status"""
-        all_commands = self.bot.tree.get_commands()
-        
-        # Group by cog
-        cog_commands = {}
-        for cmd in all_commands:
-            cog_name = getattr(cmd, "_cog_name", "Unknown")
-            if cog_name not in cog_commands:
-                cog_commands[cog_name] = []
-            cog_commands[cog_name].append(cmd)
-        
-        for cog_name, cmds in cog_commands.items():
-            commands_text = "\n".join([f"- /{cmd.name}" for cmd in cmds])
-            await ctx.send(f"**{cog_name} Commands**:\n```\n{commands_text}\n```")
-        
-        await ctx.send(f"Total commands: {len(all_commands)}")
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))

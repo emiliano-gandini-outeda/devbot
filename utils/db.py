@@ -304,6 +304,25 @@ class DatabaseManager:
                     logger.error(f"❌ Failed to create {batch_name} table {i}: {e}")
                     raise
     
+        # Add send_dm column if it doesn't exist
+        migration_sql = """
+        DO $$ 
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name = 'reminders' AND column_name = 'send_dm'
+            ) THEN
+                ALTER TABLE reminders ADD COLUMN send_dm BOOLEAN DEFAULT TRUE;
+            END IF;
+        END $$
+        """
+        try:
+            async with asyncio.timeout(5):
+                await self.connection.execute(migration_sql)
+                logger.info("✅ Added send_dm column to reminders table (if it didn't exist)")
+        except Exception as e:
+            logger.warning(f"Failed to add send_dm column to reminders table: {e}")
+
         # Create essential indexes only
         essential_indexes = [
             "CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)",

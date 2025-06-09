@@ -77,189 +77,39 @@ class DiscordBot(commands.Bot):
             except Exception as e:
                 await ctx.send(f"❌ Sync failed: {e}")
                 logger.error(f"Admin sync failed: {e}")
-        
-        @self.command(name='admin_force_register')
-        @commands.is_owner()
-        async def admin_force_register(ctx):
-            """Force register all commands from all cogs (Owner only)"""
-            try:
-                # Clear existing commands
-                self.tree.clear_commands()
-                
-                # Re-add commands from all cogs
-                for cog_name, cog in self.cogs.items():
-                    for command in cog.get_app_commands():
-                        if command not in self.tree.get_commands():
-                            self.tree.add_command(command)
-                
-                # Sync commands
-                synced = await self.tree.sync()
-                await ctx.send(f"✅ Force registered and synced {len(synced)} commands from {len(self.cogs)} cogs")
-                logger.info(f"Force register: {len(synced)} commands from {len(self.cogs)} cogs")
-            except Exception as e:
-                await ctx.send(f"❌ Force register failed: {e}")
-                logger.error(f"Force register failed: {e}")
-        
-        @self.command(name='admin_debug')
-        @commands.is_owner()
-        async def admin_debug(ctx):
-            """Debug bot status (Owner only)"""
-            try:
-                embed = discord.Embed(title="🔧 Bot Debug Info", color=0x5865F2)
-                
-                # Basic info
-                embed.add_field(name="Guilds", value=len(self.guilds), inline=True)
-                embed.add_field(name="Users", value=sum(g.member_count for g in self.guilds), inline=True)
-                embed.add_field(name="Cogs", value=len(self.cogs), inline=True)
-                
-                # Commands
-                slash_commands = len(self.tree.get_commands())
-                embed.add_field(name="Slash Commands", value=slash_commands, inline=True)
-                
-                # Database
-                db_status = "✅ Connected" if self.db and self.db.connection else "❌ Disconnected"
-                embed.add_field(name="Database", value=db_status, inline=True)
-                
-                # Managers
-                managers_status = []
-                managers_status.append(f"Admin: {'✅' if self.admin_manager else '❌'}")
-                managers_status.append(f"Ticket: {'✅' if self.ticket_manager else '❌'}")
-                managers_status.append(f"Logging: {'✅' if self.logging_manager else '❌'}")
-                managers_status.append(f"Workflow: {'✅' if self.workflow_manager else '❌'}")
-                managers_status.append(f"Meeting: {'✅' if self.meeting_manager else '❌'}")
-                
-                embed.add_field(name="Managers", value="\n".join(managers_status), inline=False)
-                
-                # Cog list
-                cog_list = "\n".join([f"• {name}" for name in self.cogs.keys()])
-                if len(cog_list) > 1024:
-                    cog_list = cog_list[:1021] + "..."
-                embed.add_field(name="Loaded Cogs", value=cog_list or "None", inline=False)
-                
-                await ctx.send(embed=embed)
-                
-            except Exception as e:
-                await ctx.send(f"❌ Debug failed: {e}")
-                logger.error(f"Debug command failed: {e}")
-        
-        @self.command(name='list_all_commands')
-        @commands.is_owner()
-        async def list_all_commands(ctx):
-            """List all registered commands (Owner only)"""
-            try:
-                all_commands = self.tree.get_commands()
-                command_names = [cmd.name for cmd in all_commands]
-                command_names.sort()
-                
-                # Split into chunks to avoid message length limits
-                chunks = []
-                current_chunk = []
-                current_length = 0
-                
-                for cmd_name in command_names:
-                    if current_length + len(cmd_name) + 2 > 1900:  # Leave room for formatting
-                        chunks.append(current_chunk)
-                        current_chunk = [cmd_name]
-                        current_length = len(cmd_name)
-                    else:
-                        current_chunk.append(cmd_name)
-                        current_length += len(cmd_name) + 2
-                
-                if current_chunk:
-                    chunks.append(current_chunk)
-                
-                await ctx.send(f"📋 Found {len(command_names)} registered commands:")
-                
-                for i, chunk in enumerate(chunks):
-                    chunk_text = ", ".join(chunk)
-                    await ctx.send(f"```\n{chunk_text}\n```")
-                
-            except Exception as e:
-                await ctx.send(f"❌ Failed to list commands: {e}")
-                logger.error(f"List commands failed: {e}")
-        
-        @self.command(name='admin_db_test')
-        @commands.is_owner()
-        async def admin_db_test(ctx):
-            """Test database connection (Owner only)"""
-            try:
-                if not self.db:
-                    await ctx.send("❌ Database manager not initialized")
-                    return
-                
-                # Test connection
-                success = await self.db.test_connection()
-                
-                if success:
-                    # Test table verification
-                    tables_ok = await self.db.verify_tables()
-                    
-                    embed = discord.Embed(title="🗄️ Database Test Results", color=0x57F287)
-                    embed.add_field(name="Connection", value="✅ Success", inline=True)
-                    embed.add_field(name="Tables", value="✅ Verified" if tables_ok else "❌ Issues", inline=True)
-                    embed.add_field(name="Type", value="PostgreSQL" if self.db.is_postgresql else "SQLite", inline=True)
-                    
-                    await ctx.send(embed=embed)
-                else:
-                    await ctx.send("❌ Database connection test failed")
-                    
-            except Exception as e:
-                await ctx.send(f"❌ Database test failed: {e}")
-                logger.error(f"Database test failed: {e}")
-        
-        @self.command(name='admin_clear_global')
-        @commands.is_owner()
-        async def admin_clear_global(ctx):
-            """Clear all global slash commands (Owner only)"""
-            try:
-                self.tree.clear_commands()
-                synced = await self.tree.sync()
-                await ctx.send(f"✅ Cleared all global commands. {len(synced)} commands remaining.")
-                logger.info("Admin cleared all global commands")
-            except Exception as e:
-                await ctx.send(f"❌ Clear failed: {e}")
-                logger.error(f"Clear global commands failed: {e}")
-        
+    
         @self.command(name='emergency_sync')
         @commands.is_owner()
         async def emergency_sync(ctx):
             """Emergency command sync with detailed output (Owner only)"""
             try:
                 await ctx.send("🔄 Starting emergency sync...")
-                
+            
                 # Get current commands
                 current_commands = self.tree.get_commands()
                 await ctx.send(f"📊 Current commands in tree: {len(current_commands)}")
-                
+            
                 # List cogs and their commands
                 cog_info = []
                 total_cog_commands = 0
-                
+            
                 for cog_name, cog in self.cogs.items():
                     cog_commands = cog.get_app_commands()
                     total_cog_commands += len(cog_commands)
                     cog_info.append(f"• {cog_name}: {len(cog_commands)} commands")
-                
+            
                 if cog_info:
                     cog_text = "\n".join(cog_info)
                     if len(cog_text) > 1900:
                         cog_text = cog_text[:1900] + "..."
                     await ctx.send(f"📦 Cog commands:\n\`\`\`\n{cog_text}\n\`\`\`")
-                
+            
                 await ctx.send(f"🔢 Total commands from cogs: {total_cog_commands}")
-                
+            
                 # Sync
                 synced = await self.tree.sync()
                 await ctx.send(f"✅ Emergency sync complete: {len(synced)} commands synced")
-                
-                # List synced commands
-                if synced:
-                    synced_names = [cmd.name for cmd in synced]
-                    synced_text = ", ".join(synced_names)
-                    if len(synced_text) > 1900:
-                        synced_text = synced_text[:1900] + "..."
-                    await ctx.send(f"📋 Synced commands:\n\`\`\`\n{synced_text}\n\`\`\`")
-                
+            
             except Exception as e:
                 await ctx.send(f"❌ Emergency sync failed: {e}")
                 logger.error(f"Emergency sync failed: {e}")
