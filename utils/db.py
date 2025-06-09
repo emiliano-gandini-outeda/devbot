@@ -13,6 +13,7 @@ class DatabaseManager:
         self.database_url = Settings.DATABASE_URL
         self.connection = None
         self._connection_lock = asyncio.Lock()
+        self.is_postgresql = True  # Add this attribute
         
         logger.info(f"Database URL: {self.database_url[:50]}...")
     
@@ -233,6 +234,18 @@ class DatabaseManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, guild_id, repo_name)
             )
+            """,
+
+            # Log configs table
+            """
+            CREATE TABLE log_configs (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT UNIQUE NOT NULL,
+                log_channel_id TEXT NOT NULL,
+                log_types JSONB DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
             """
         ]
     
@@ -260,7 +273,8 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_meetings_guild_id ON meetings(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_keywords_guild_user ON keywords(guild_id, user_id)",
             "CREATE INDEX IF NOT EXISTS idx_github_repos_guild ON github_tracked_repos(guild_id)",
-            "CREATE INDEX IF NOT EXISTS idx_user_data_lookup ON user_data(user_id, guild_id, data_type)"
+            "CREATE INDEX IF NOT EXISTS idx_user_data_lookup ON user_data(user_id, guild_id, data_type)",
+            "CREATE INDEX IF NOT EXISTS idx_log_configs_guild ON log_configs(guild_id)"
         ]
     
         logger.info("Creating essential indexes...")

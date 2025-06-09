@@ -161,7 +161,7 @@ class Privacy(commands.Cog):
             
             embed = discord.Embed(
                 title="📊 Your Data Summary",
-                description="Here's a summary of your data stored by Railway Bot",
+                description="Here's a summary of your data stored by devBot",
                 color=0x5865F2
             )
             

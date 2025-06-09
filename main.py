@@ -14,6 +14,7 @@ sys.path.insert(0, str(project_root))
 from config.settings import Settings
 from utils.db import DatabaseManager
 from utils.admin import AdminManager
+from utils.logging_manager import LoggingManager
 
 # Configure logging
 logging.basicConfig(
@@ -50,6 +51,7 @@ class DiscordBot(commands.Bot):
         # Initialize managers
         self.db = None
         self.admin_manager = None
+        self.logging_manager = None
         self.startup_complete = False
     
     async def setup_hook(self):
@@ -85,6 +87,18 @@ class DiscordBot(commands.Bot):
                     logger.warning("⚠️ Skipping admin manager initialization (no database)")
             except Exception as e:
                 logger.warning(f"⚠️ Admin manager initialization failed: {e}")
+
+            # Initialize logging manager
+            logger.info("📝 Initializing logging manager...")
+            try:
+                if self.db:
+                    self.logging_manager = LoggingManager(self)
+                    await self.logging_manager.load_log_configs()
+                    logger.info("✅ Logging manager initialized")
+                else:
+                    logger.warning("⚠️ Skipping logging manager initialization (no database)")
+            except Exception as e:
+                logger.warning(f"⚠️ Logging manager initialization failed: {e}")
 
             # Load cogs
             logger.info("🔧 Loading cogs...")
