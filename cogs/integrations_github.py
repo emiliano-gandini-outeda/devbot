@@ -654,33 +654,9 @@ async def setup(bot):
     github_cog = GitHubIntegrations(bot)
     await bot.add_cog(github_cog)
     
-    # Force register commands to the tree immediately
-    commands_to_register = [
-        github_cog.track_repo,
-        github_cog.untrack_repo,
-        github_cog.list_repos,
-        github_cog.subscribe_repo
-    ]
-    
-    # Clear any existing commands with the same names first
-    existing_commands = bot.tree.get_commands()
-    for existing_cmd in existing_commands[:]:  # Create a copy to iterate over
-        if existing_cmd.name in ['track-repo', 'untrack-repo', 'list-repos', 'subscribe-repo']:
-            bot.tree.remove_command(existing_cmd.name)
-    
-    # Add the new commands
-    for command in commands_to_register:
-        try:
+    # Ensure commands are added to the tree
+    for command in github_cog.__cog_app_commands__:
+        if command not in bot.tree.get_commands():
             bot.tree.add_command(command)
-            logger.info(f"✅ Registered GitHub command: {command.name}")
-        except Exception as e:
-            logger.error(f"❌ Failed to register command {command.name}: {e}")
     
     logger.info(f"🐙 Successfully loaded GitHub Integrations cog with {len(github_cog.get_app_commands())} commands")
-    
-    # Try to sync commands immediately (but don't fail if it doesn't work)
-    try:
-        synced = await bot.tree.sync()
-        logger.info(f"🔄 GitHub cog triggered command sync: {len(synced)} commands")
-    except Exception as e:
-        logger.warning(f"⚠️ GitHub cog command sync failed: {e}")

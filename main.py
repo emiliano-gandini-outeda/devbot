@@ -142,6 +142,42 @@ class DiscordBot(commands.Bot):
                 await ctx.send(f"❌ Debug failed: {e}")
                 logger.error(f"Debug command failed: {e}")
         
+        @self.command(name='list_all_commands')
+        @commands.is_owner()
+        async def list_all_commands(ctx):
+            """List all registered commands (Owner only)"""
+            try:
+                all_commands = self.tree.get_commands()
+                command_names = [cmd.name for cmd in all_commands]
+                command_names.sort()
+                
+                # Split into chunks to avoid message length limits
+                chunks = []
+                current_chunk = []
+                current_length = 0
+                
+                for cmd_name in command_names:
+                    if current_length + len(cmd_name) + 2 > 1900:  # Leave room for formatting
+                        chunks.append(current_chunk)
+                        current_chunk = [cmd_name]
+                        current_length = len(cmd_name)
+                    else:
+                        current_chunk.append(cmd_name)
+                        current_length += len(cmd_name) + 2
+                
+                if current_chunk:
+                    chunks.append(current_chunk)
+                
+                await ctx.send(f"📋 Found {len(command_names)} registered commands:")
+                
+                for i, chunk in enumerate(chunks):
+                    chunk_text = ", ".join(chunk)
+                    await ctx.send(f"```\n{chunk_text}\n```")
+                
+            except Exception as e:
+                await ctx.send(f"❌ Failed to list commands: {e}")
+                logger.error(f"List commands failed: {e}")
+        
         @self.command(name='admin_db_test')
         @commands.is_owner()
         async def admin_db_test(ctx):
@@ -409,7 +445,7 @@ class DiscordBot(commands.Bot):
             'cogs.admin',
             'cogs.help',
             'cogs.setup',
-            'cogs.tickets',
+            'cogs.tickets',  # Only load tickets.py, not ticket.py
             'cogs.reminders',
             'cogs.workflows',
             'cogs.roles',
