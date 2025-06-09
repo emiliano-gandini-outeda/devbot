@@ -1,674 +1,551 @@
-import os
-import asyncio
-import logging
-from discord.ext import commands
-from discord import Intents
-from dotenv import load_dotenv
-from config.settings import Settings
-from utils.db import DatabaseManager
 import discord
+from discord.ext import commands
 from discord import app_commands
+import json
+import asyncio
+from datetime import datetime, timedelta
+import random
+import string
+from utils.helpers import EmbedBuilder, TimeParser
+from typing import Dict, Any
 
-# Load environment variables
-load_dotenv()
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Reduce discord.py logging noise
-logging.getLogger('discord.gateway').setLevel(logging.WARNING)
-logging.getLogger('discord.client').setLevel(logging.WARNING)
-
-class SlackBot(commands.Bot):
-    def __init__(self):
-        intents = Intents.default()
-        intents.message_content = True
-        intents.members = True
-        intents.guilds = True
+class MeetingView(discord.ui.View):
+    def __init__(self, bot, meeting_id: str):
+        super().__init__(timeout=None)
+        self.bot = bot
+        self.meeting_id = meeting_id
+        self.participants = set()
+    
+    @discord.ui.button(label="Join Meeting", style=discord.ButtonStyle.primary, emoji="📅")
+    async def join_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Add user to participants
+        self.participants.add(interaction.user.id)
         
-        super().__init__(
-            command_prefix='!',
-            intents=intents,
-            help_command=None,
-            heartbeat_timeout=60.0,
-            guild_ready_timeout=5.0
+        # Get meeting data
+        meeting = await self.bot.meeting_manager.get_meeting(self.meeting_id)
+        if not meeting:
+            await interaction.response.send_message("This meeting no longer exists.", ephemeral=True)
+            return
+        
+        await interaction.response.send_message(f"You've joined the meeting: **{meeting['name']}**", ephemeral=True)
+
+class MeetingManager:
+    def __init__(self, bot):
+        self.bot = bot
+        self.meetings = {}  # meeting_id -> meeting_data
+        self.active_views = {}  # meeting_id -> MeetingView
+        self.scheduled_tasks = {}  # meeting_id -> task
+    
+    async def load_meetings(self):
+        """Load meetings from database"""
+        try:
+            if self.bot.db.is_postgresql:
+                rows = await self.bot.db.connection.fetch(
+                    "SELECT * FROM meetings WHERE status = 'scheduled'"
+                )
+                for row in rows:
+                    meeting_id = row['meeting_id']
+                    meeting = {
+                        'id': meeting_id,
+                        'name': row['title'],
+                        'description': row['description'],
+                        'start_time': row['scheduled_time'].isoformat(),
+                        'guild_id': row['guild_id'],
+                        'creator_id': row['creator_id'],
+                        'channel_id': None,  # Will be set when creating
+                        'voice_channel_id': None,  # Will be set when creating
+                        'status': row['status'],
+                        'created_at': row['created_at'].isoformat()
+                    }
+                    self.meetings[meeting_id] = meeting
+                    
+                    # Schedule meeting if it's in the future
+                    if row['scheduled_time'] > datetime.utcnow():
+                        self.schedule_meeting(meeting_id, meeting)
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM meetings WHERE status = 'scheduled'"
+                )
+                rows = await cursor.fetchall()
+                for row in rows:
+                    meeting_id = row[1]  # meeting_id column
+                    meeting = {
+                        'id': meeting_id,
+                        'name': row[4],  # title
+                        'description': row[5],  # description
+                        'start_time': row[6],  # scheduled_time
+                        'guild_id': row[2],  # guild_id
+                        'creator_id': row[3],  # creator_id
+                        'channel_id': None,
+                        'voice_channel_id': None,
+                        'status': row[9],  # status
+                        'created_at': row[11]  # created_at
+                    }
+                    self.meetings[meeting_id] = meeting
+                    
+                    # Schedule meeting if it's in the future
+                    start_time = datetime.fromisoformat(row[6]) if isinstance(row[6], str) else row[6]
+                    if start_time > datetime.utcnow():
+                        self.schedule_meeting(meeting_id, meeting)
+        except Exception as e:
+            print(f"Error loading meetings: {e}")
+    
+    async def save_meeting(self, meeting: Dict[str, Any]):
+        """Save meeting to database"""
+        try:
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    """INSERT INTO meetings (meeting_id, guild_id, creator_id, title, description, scheduled_time, status)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)
+                       ON CONFLICT (meeting_id) DO UPDATE SET
+                       title = $4, description = $5, scheduled_time = $6, status = $7, updated_at = CURRENT_TIMESTAMP""",
+                    meeting['id'], meeting['guild_id'], meeting['creator_id'],
+                    meeting['name'], meeting['description'], 
+                    datetime.fromisoformat(meeting['start_time']), meeting['status']
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    """INSERT OR REPLACE INTO meetings (meeting_id, guild_id, creator_id, title, description, scheduled_time, status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (meeting['id'], meeting['guild_id'], meeting['creator_id'],
+                     meeting['name'], meeting['description'], meeting['start_time'], meeting['status'])
+                )
+                await self.bot.db.connection.commit()
+        except Exception as e:
+            print(f"Error saving meeting: {e}")
+    
+    async def delete_meeting(self, meeting_id: str):
+        """Delete meeting from database"""
+        try:
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM meetings WHERE meeting_id = $1", meeting_id
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM meetings WHERE meeting_id = ?", (meeting_id,)
+                )
+                await self.bot.db.connection.commit()
+        except Exception as e:
+            print(f"Error deleting meeting: {e}")
+    
+    def generate_meeting_id(self) -> str:
+        """Generate a unique meeting ID"""
+        chars = string.ascii_uppercase + string.digits
+        while True:
+            # Generate a 6-character meeting ID
+            meeting_id = ''.join(random.choice(chars) for _ in range(6))
+            if meeting_id not in self.meetings:
+                return meeting_id
+    
+    def schedule_meeting(self, meeting_id: str, meeting: dict):
+        """Schedule a meeting to start at the specified time"""
+        try:
+            start_time = datetime.fromisoformat(meeting['start_time'])
+            now = datetime.utcnow()
+            
+            if start_time > now:
+                # Calculate seconds until meeting starts
+                seconds = (start_time - now).total_seconds()
+                
+                # Schedule the task
+                task = asyncio.create_task(self.start_meeting_at(meeting_id, seconds))
+                self.scheduled_tasks[meeting_id] = task
+        except Exception as e:
+            print(f"Error scheduling meeting {meeting_id}: {e}")
+    
+    async def start_meeting_at(self, meeting_id: str, seconds: float):
+        """Start a meeting after the specified delay"""
+        try:
+            # Wait until meeting time
+            await asyncio.sleep(seconds)
+            
+            # Get meeting data
+            meeting = self.meetings.get(meeting_id)
+            if not meeting:
+                return
+            
+            # Get guild and channel
+            guild = self.bot.get_guild(int(meeting['guild_id']))
+            if not guild:
+                return
+            
+            channel = guild.get_channel(int(meeting['channel_id']))
+            if not channel:
+                return
+            
+            # Get voice channel
+            voice_channel = guild.get_channel(int(meeting['voice_channel_id']))
+            
+            # Get participants
+            view = self.active_views.get(meeting_id)
+            participants = []
+            if view:
+                for user_id in view.participants:
+                    user = guild.get_member(user_id)
+                    if user:
+                        participants.append(user)
+            
+            # Create meeting start embed
+            embed = discord.Embed(
+                title=f"🔔 Meeting Starting: {meeting['name']}",
+                description=meeting['description'],
+                color=0x57F287
+            )
+            
+            embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
+            
+            if voice_channel:
+                embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
+            
+            if participants:
+                mentions = " ".join([user.mention for user in participants])
+                await channel.send(f"Meeting participants: {mentions}", embed=embed)
+            else:
+                await channel.send(embed=embed)
+            
+            # Mark meeting as started
+            meeting['status'] = 'started'
+            await self.save_meetings(meeting['guild_id'])
+            
+        except asyncio.CancelledError:
+            # Task was cancelled
+            pass
+        except Exception as e:
+            print(f"Error starting meeting {meeting_id}: {e}")
+    
+    async def get_meeting(self, meeting_id: str) -> dict:
+        """Get meeting data by ID"""
+        return self.meetings.get(meeting_id)
+    
+    async def create_meeting(self, guild_id: str, creator_id: str, name: str, description: str, 
+                           start_time: datetime, channel_id: str, voice_channel_id: str) -> str:
+        """Create a new meeting"""
+        meeting_id = self.generate_meeting_id()
+        
+        meeting = {
+            'id': meeting_id,
+            'name': name,
+            'description': description,
+            'start_time': start_time.isoformat(),
+            'guild_id': guild_id,
+            'creator_id': creator_id,
+            'channel_id': channel_id,
+            'voice_channel_id': voice_channel_id,
+            'status': 'scheduled',
+            'created_at': datetime.utcnow().isoformat()
+        }
+        
+        self.meetings[meeting_id] = meeting
+        await self.save_meetings(guild_id)
+        
+        # Schedule the meeting
+        self.schedule_meeting(meeting_id, meeting)
+        
+        return meeting_id
+    
+    async def cancel_meeting(self, meeting_id: str) -> bool:
+        """Cancel a scheduled meeting"""
+        meeting = self.meetings.get(meeting_id)
+        if not meeting:
+            return False
+        
+        # Cancel scheduled task if exists
+        task = self.scheduled_tasks.get(meeting_id)
+        if task:
+            task.cancel()
+            del self.scheduled_tasks[meeting_id]
+        
+        # Remove meeting
+        del self.meetings[meeting_id]
+        await self.save_meetings(meeting['guild_id'])
+        
+        return True
+
+class Meetings(commands.Cog):
+    """Meeting scheduling and management"""
+    
+    def __init__(self, bot):
+        self.bot = bot
+        self.bot.meeting_manager = MeetingManager(bot)
+    
+    @commands.Cog.listener()
+    async def on_ready(self):
+        await self.bot.meeting_manager.load_meetings()
+    
+    @app_commands.command(name="create-meeting", description="Schedule a new meeting")
+    @app_commands.describe(
+        name="Meeting name",
+        time="When to start the meeting (e.g., '1h', '30m', '2d')",
+        description="Meeting description",
+        voice_channel="Voice channel for the meeting"
+    )
+    async def create_meeting(self, interaction: discord.Interaction, name: str, time: str, 
+                           description: str, voice_channel: discord.VoiceChannel):
+        # Parse time
+        duration = TimeParser.parse_duration(time)
+        if not duration:
+            embed = EmbedBuilder.error(
+                "Invalid Time Format",
+                "Please use format like: `1h`, `30m`, `2d`, `1h30m`"
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        start_time = datetime.utcnow() + duration
+        
+        # Create meeting
+        meeting_id = await self.bot.meeting_manager.create_meeting(
+            str(interaction.guild.id),
+            str(interaction.user.id),
+            name,
+            description,
+            start_time,
+            str(interaction.channel.id),
+            str(voice_channel.id)
         )
         
-        self.db = None
-        self.admin_manager = None
-        self.ticket_manager = None
-        self.logging_manager = None
-        self.workflow_manager = None
-        self._ready_fired = False
-        self._synced = False
-        self._guild_synced = set()
-    
-    async def setup_hook(self):
-        """Setup database and load cogs"""
-        try:
-            # Validate required environment variables
-            Settings.validate_required_env_vars()
-            
-            # Initialize database with enhanced error handling
-            logger.info("🔄 Initializing database connection...")
-            self.db = DatabaseManager()
-            await self.db.init_database()
-            
-            # Verify all tables exist
-            tables_ok = await self.db.verify_tables()
-            if not tables_ok:
-                logger.warning("⚠️ Some database tables are missing, attempting to recreate...")
-                await self.db.create_tables()
-                tables_ok = await self.db.verify_tables()
-            
-            if tables_ok:
-                logger.info("✅ Database initialization completed successfully")
-                # Test the connection
-                connection_ok = await self.db.test_connection()
-                if connection_ok:
-                    logger.info("✅ Database connection test passed")
-                else:
-                    logger.error("❌ Database connection test failed")
-            else:
-                logger.error("❌ Database initialization failed - some commands may not work")
-            
-            # Initialize managers
-            from utils.admin import AdminManager
-            from utils.ticket_manager import TicketManager
-            from utils.logging_manager import LoggingManager
-            from utils.workflow_manager import WorkflowManager
-            
-            self.admin_manager = AdminManager(self)
-            self.ticket_manager = TicketManager(self)
-            self.logging_manager = LoggingManager(self)
-            self.workflow_manager = WorkflowManager(self)
-            
-            await self.admin_manager.load_admin_roles()
-            await self.ticket_manager.load_ticket_configs()
-            await self.logging_manager.load_log_configs()
-            
-            # Load all cogs FIRST
-            cogs = [
-                'cogs.admin',
-                'cogs.conversations', 
-                'cogs.help',
-                'cogs.integrations_github',
-                'cogs.logging',
-                'cogs.meetings',
-                'cogs.notifications',
-                'cogs.privacy',
-                'cogs.reminders',
-                'cogs.roles',
-                'cogs.setup',
-                'cogs.tickets',
-                'cogs.workflows'
-            ]
+        # Create meeting announcement embed
+        embed = discord.Embed(
+            title=f"📅 Meeting Scheduled: {name}",
+            description=description,
+            color=0x5865F2
+        )
+        
+        embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
+        embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
+        embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
+        
+        # Format start time
+        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+        time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
+        embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
+        
+        embed.add_field(
+            name="How to Join",
+            value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
+            inline=False
+        )
+        
+        # Create view with join button
+        view = MeetingView(self.bot, meeting_id)
+        self.bot.meeting_manager.active_views[meeting_id] = view
+        
+        await interaction.response.send_message(embed=embed, view=view)
 
-            loaded_cogs = []
-            for cog in cogs:
-                try:
-                    await self.load_extension(cog)
-                    loaded_cogs.append(cog)
-                    logger.info(f"✅ Loaded cog: {cog}")
-                except Exception as e:
-                    logger.error(f"❌ Failed to load cog {cog}: {e}", exc_info=True)
-
-            logger.info(f"Loaded {len(loaded_cogs)}/{len(cogs)} cogs successfully")
-            
-            # Add admin slash commands
-            await self.add_admin_slash_commands()
-            
-            logger.info("Setup hook completed successfully")
-                
-        except Exception as e:
-            logger.error(f"Error in setup_hook: {e}", exc_info=True)
-            raise
-    
-    async def clear_all_global_commands(self):
-        """Completely clear all global commands from Discord"""
-        try:
-            logger.info("🔄 Clearing all global commands...")
-            
-            # Method 1: Clear from tree and sync
-            self.tree.clear_commands(guild=None)
-            await self.tree.sync()
-            
-            # Method 2: Fetch and delete individual commands
-            try:
-                global_commands = await self.tree.fetch_commands()
-                if global_commands:
-                    logger.info(f"Found {len(global_commands)} global commands to delete")
-                    
-                    for cmd in global_commands:
-                        try:
-                            await self.http.delete_global_command(self.user.id, cmd.id)
-                            logger.info(f"Deleted global command: {cmd.name}")
-                        except Exception as e:
-                            logger.error(f"Failed to delete global command {cmd.name}: {e}")
-                    
-                    # Verify deletion
-                    remaining = await self.tree.fetch_commands()
-                    if remaining:
-                        logger.warning(f"⚠️ {len(remaining)} global commands still remain")
-                    else:
-                        logger.info("✅ All global commands successfully deleted")
-                else:
-                    logger.info("✅ No global commands found")
-                    
-            except Exception as e:
-                logger.error(f"Error fetching/deleting global commands: {e}")
-            
-        except Exception as e:
-            logger.error(f"Failed to clear global commands: {e}", exc_info=True)
-    
-    async def register_all_commands_to_guild(self, guild):
-        """Register ALL commands from cogs to a specific guild"""
-        try:
-            logger.info(f"🔄 Registering all commands to guild: {guild.name}")
-            
-            # Clear existing guild commands first
-            self.tree.clear_commands(guild=guild)
-            
-            total_registered = 0
-            
-            # Register commands from all loaded cogs
-            for cog_name, cog in self.cogs.items():
-                cog_commands = 0
-                
-                # Get all app commands from the cog
-                for attr_name in dir(cog):
-                    attr = getattr(cog, attr_name)
-                    if isinstance(attr, app_commands.Command):
-                        # Add command to tree for this specific guild
-                        self.tree.add_command(attr, guild=guild)
-                        cog_commands += 1
-                        total_registered += 1
-                        logger.info(f"  ✅ Registered /{attr.name} from {cog_name} to {guild.name}")
-                
-                if cog_commands > 0:
-                    logger.info(f"✅ Registered {cog_commands} commands from {cog_name} to {guild.name}")
-            
-            # Add admin commands to this guild
-            for cmd in self.admin_commands:
-                self.tree.add_command(cmd, guild=guild)
-                total_registered += 1
-                logger.info(f"  ✅ Registered /{cmd.name} (admin) to {guild.name}")
-            
-            logger.info(f"✅ Total commands registered to {guild.name}: {total_registered}")
-            
-            # Now sync to this guild
-            try:
-                synced = await self.tree.sync(guild=guild)
-                logger.info(f"🚀 Synced {len(synced)} commands to {guild.name}")
-                
-                if len(synced) > 0:
-                    # The synced commands are returned as a list of dictionaries
-                    try:
-                        synced_names = []
-                        for cmd in synced:
-                            if isinstance(cmd, dict) and 'name' in cmd:
-                                synced_names.append(cmd['name'])
-                            elif hasattr(cmd, 'name'):
-                                synced_names.append(cmd.name)
-                            else:
-                                synced_names.append(str(cmd))
-                        
-                        logger.info(f"✅ Successfully synced to {guild.name}: {', '.join(sorted(synced_names))}")
-                    except Exception as e:
-                        logger.error(f"Error processing synced commands: {e}")
-                        logger.info(f"Raw synced data: {synced}")
-                    
-                    # After syncing guild commands, clear global commands to prevent duplicates
-                    await self.clear_all_global_commands()
-                    
-                    return True
-                else:
-                    logger.error(f"❌ 0 commands synced to {guild.name}!")
-                    return False
-            except Exception as e:
-                logger.error(f"❌ Failed to sync commands to {guild.name}: {e}", exc_info=True)
-                return False
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to register commands to {guild.name}: {e}", exc_info=True)
-            return False
-    
-    async def add_admin_slash_commands(self):
-        """Add admin slash commands to the command tree"""
-        try:
-            # Define sync command
-            @app_commands.command(name="admin_sync", description="Sync slash commands to this guild (Owner only)")
-            async def sync_slash(interaction: discord.Interaction):
-                if not await self.is_owner(interaction.user):
-                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
-                    return
-                
-                await interaction.response.defer(ephemeral=True)
-                
-                try:
-                    # First clear all global commands
-                    await self.clear_all_global_commands()
-                    await interaction.followup.send("✅ Cleared all global commands")
-                    
-                    # Register and sync all commands to this guild
-                    success = await self.register_all_commands_to_guild(interaction.guild)
-                    
-                    if success:
-                        await interaction.followup.send(f'✅ Successfully registered and synced all commands to {interaction.guild.name}!')
-                        self._guild_synced.add(interaction.guild.id)
-                    else:
-                        await interaction.followup.send(f'❌ Failed to sync commands to {interaction.guild.name}')
-                        
-                except Exception as e:
-                    await interaction.followup.send(f'❌ Failed to sync commands: {e}')
-                    logger.error("Slash sync failed", exc_info=True)
-
-            # Define debug command to show what's in the tree
-            @app_commands.command(name="admin_debug", description="Debug command tree (Owner only)")
-            async def debug_slash(interaction: discord.Interaction):
-                if not await self.is_owner(interaction.user):
-                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
-                    return
-                
-                await interaction.response.defer(ephemeral=True)
-                
-                try:
-                    # Get commands for this specific guild
-                    guild_commands = self.tree.get_commands(guild=interaction.guild)
-                    global_commands = self.tree.get_commands(guild=None)
-                    
-                    # Also fetch from Discord API
-                    api_guild_commands = await self.tree.fetch_commands(guild=interaction.guild)
-                    api_global_commands = await self.tree.fetch_commands()
-                    
-                    embed = discord.Embed(title="🔍 Command Debug Info", color=0x5865F2)
-                    
-                    embed.add_field(
-                        name=f"Guild Commands (Tree): {len(guild_commands)}",
-                        value=", ".join([cmd.name for cmd in guild_commands]) if guild_commands else "None",
-                        inline=False
-                    )
-                    
-                    embed.add_field(
-                        name=f"Guild Commands (API): {len(api_guild_commands)}",
-                        value=", ".join([cmd.name for cmd in api_guild_commands]) if api_guild_commands else "None",
-                        inline=False
-                    )
-                    
-                    embed.add_field(
-                        name=f"Global Commands (Tree): {len(global_commands)}",
-                        value=", ".join([cmd.name for cmd in global_commands]) if global_commands else "None",
-                        inline=False
-                    )
-                    
-                    embed.add_field(
-                        name=f"Global Commands (API): {len(api_global_commands)}",
-                        value=", ".join([cmd.name for cmd in api_global_commands]) if api_global_commands else "None",
-                        inline=False
-                    )
-                    
-                    await interaction.followup.send(embed=embed)
-                    
-                except Exception as e:
-                    await interaction.followup.send(f"❌ Debug failed: {e}")
-
-            # Define force reload command
-            @app_commands.command(name="admin_reload", description="Force reload all cogs and commands (Owner only)")
-            async def reload_slash(interaction: discord.Interaction):
-                if not await self.is_owner(interaction.user):
-                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
-                    return
-                
-                await interaction.response.defer(ephemeral=True)
-                
-                try:
-                    # Clear all commands
-                    await self.clear_all_global_commands()
-                    self.tree.clear_commands(guild=interaction.guild)
-                    
-                    # Reload all cogs
-                    cogs_to_reload = [
-                        'cogs.admin',
-                        'cogs.conversations', 
-                        'cogs.help',
-                        'cogs.integrations_github',
-                        'cogs.logging',
-                        'cogs.meetings',
-                        'cogs.notifications',
-                        'cogs.privacy',
-                        'cogs.reminders',
-                        'cogs.roles',
-                        'cogs.setup',
-                        'cogs.tickets',
-                        'cogs.workflows'
-                    ]
-                    
-                    for cog_name in cogs_to_reload:
-                        try:
-                            if cog_name in self.extensions:
-                                await self.reload_extension(cog_name)
-                            else:
-                                await self.load_extension(cog_name)
-                            logger.info(f"Reloaded cog: {cog_name}")
-                        except Exception as e:
-                            logger.error(f"Failed to reload {cog_name}: {e}")
-                    
-                    # Re-add admin commands
-                    for cmd in [sync_slash, debug_slash, reload_slash]:
-                        self.tree.add_command(cmd)
-                    
-                    # Register and sync all commands to this guild
-                    success = await self.register_all_commands_to_guild(interaction.guild)
-                    
-                    if success:
-                        await interaction.followup.send(f"✅ Reloaded all cogs and synced commands to {interaction.guild.name}")
-                    else:
-                        await interaction.followup.send(f"❌ Reloaded cogs but failed to sync to {interaction.guild.name}")
-                    
-                except Exception as e:
-                    await interaction.followup.send(f"❌ Failed to reload: {e}")
-                    logger.error(f"Failed to reload: {e}", exc_info=True)
-
-            # Define database test command
-            @app_commands.command(name="admin_db_test", description="Test database connection (Owner only)")
-            async def db_test_slash(interaction: discord.Interaction):
-                if not await self.is_owner(interaction.user):
-                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
-                    return
-                
-                await interaction.response.defer(ephemeral=True)
-                
-                try:
-                    # Test database connection
-                    connection_ok = await self.db.test_connection()
-                    tables_ok = await self.db.verify_tables()
-                    
-                    embed = discord.Embed(
-                        title="🗄️ Database Status",
-                        color=0x00ff00 if connection_ok and tables_ok else 0xff0000
-                    )
-                    
-                    embed.add_field(
-                        name="Connection",
-                        value="✅ Connected" if connection_ok else "❌ Failed",
-                        inline=True
-                    )
-                    
-                    embed.add_field(
-                        name="Database Type",
-                        value="PostgreSQL (Railway)" if self.db.is_postgresql else "SQLite (Local)",
-                        inline=True
-                    )
-                    
-                    embed.add_field(
-                        name="Tables",
-                        value="✅ All tables exist" if tables_ok else "❌ Missing tables",
-                        inline=True
-                    )
-                    
-                    await interaction.followup.send(embed=embed)
-                    
-                except Exception as e:
-                    await interaction.followup.send(f"❌ Database test failed: {e}")
-
-            # Define clear global commands command
-            @app_commands.command(name="admin_clear_global", description="Clear all global commands (Owner only)")
-            async def clear_global_slash(interaction: discord.Interaction):
-                if not await self.is_owner(interaction.user):
-                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
-                    return
-                
-                await interaction.response.defer(ephemeral=True)
-                
-                try:
-                    await self.clear_all_global_commands()
-                    
-                    # Verify global commands were cleared
-                    remaining_commands = await self.tree.fetch_commands()
-                    
-                    if not remaining_commands:
-                        await interaction.followup.send("✅ Successfully cleared all global commands!")
-                    else:
-                        await interaction.followup.send(f"⚠️ {len(remaining_commands)} global commands still remain")
-                    
-                except Exception as e:
-                    await interaction.followup.send(f"❌ Failed to clear global commands: {e}")
-                    logger.error(f"Failed to clear global commands: {e}", exc_info=True)
-
-            # Define nuclear option command
-            @app_commands.command(name="admin_nuclear", description="Nuclear option: Delete ALL commands everywhere (Owner only)")
-            async def nuclear_slash(interaction: discord.Interaction):
-                if not await self.is_owner(interaction.user):
-                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
-                    return
-                
-                await interaction.response.defer(ephemeral=True)
-                
-                try:
-                    # Clear everything from the tree
-                    self.tree.clear_commands(guild=None)
-                    self.tree.clear_commands(guild=interaction.guild)
-                    
-                    # Sync to clear from Discord
-                    await self.tree.sync()
-                    await self.tree.sync(guild=interaction.guild)
-                    
-                    # Delete all global commands via API
-                    global_commands = await self.tree.fetch_commands()
-                    for cmd in global_commands:
-                        try:
-                            await self.http.delete_global_command(self.user.id, cmd.id)
-                            logger.info(f"Deleted global command: {cmd.name}")
-                        except Exception as e:
-                            logger.error(f"Failed to delete global command {cmd.name}: {e}")
-                    
-                    # Delete all guild commands via API
-                    guild_commands = await self.tree.fetch_commands(guild=interaction.guild)
-                    for cmd in guild_commands:
-                        try:
-                            await self.http.delete_guild_command(self.user.id, interaction.guild.id, cmd.id)
-                            logger.info(f"Deleted guild command: {cmd.name}")
-                        except Exception as e:
-                            logger.error(f"Failed to delete guild command {cmd.name}: {e}")
-                    
-                    await interaction.followup.send("💥 Nuclear option executed! All commands deleted from everywhere.")
-                    
-                except Exception as e:
-                    await interaction.followup.send(f"❌ Nuclear option failed: {e}")
-                    logger.error(f"Nuclear option failed: {e}", exc_info=True)
-
-            # Store references to admin commands
-            self.admin_commands = [sync_slash, debug_slash, reload_slash, db_test_slash, clear_global_slash, nuclear_slash]
-            
-            logger.info(f"✅ Created {len(self.admin_commands)} admin slash commands")
-            
-        except Exception as e:
-            logger.error(f"Failed to add admin slash commands: {e}", exc_info=True)
-    
-    async def on_ready(self):
-        """Called when bot is ready"""
-        if self._ready_fired:
-            logger.info(f'{self.user} reconnected to Discord!')
+    @app_commands.command(name="admin-meeting", description="Create a server-wide meeting announcement (Admin only)")
+    @app_commands.describe(
+        name="Meeting name",
+        time="When to start the meeting (e.g., '1h', '30m', '2d')",
+        description="Meeting description",
+        voice_channel="Voice channel for the meeting",
+        mention_type="Who to mention (here or everyone)"
+    )
+    async def admin_meeting(self, interaction: discord.Interaction, name: str, time: str, 
+                           description: str, voice_channel: discord.VoiceChannel, mention_type: str = "here"):
+        if not self.bot.admin_manager.is_admin(interaction.user):
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can create server-wide meetings")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        self._ready_fired = True
-        logger.info(f'{self.user} has connected to Discord!')
-        logger.info(f'Bot is in {len(self.guilds)} guilds')
-        logger.info(f'Command prefix: {self.command_prefix}')
-        logger.info(f'Prefix commands loaded: {len(self.commands)}')
+        if mention_type not in ["here", "everyone"]:
+            mention_type = "here"
         
-        # Only sync once when the bot first starts
-        if not self._synced:
-            # Wait a moment for all cogs to fully initialize
-            await asyncio.sleep(3)
-            
-            # Clear all global commands first
-            await self.clear_all_global_commands()
-            
-            # Register and sync commands to all guilds
-            await self.sync_all_guilds()
-            self._synced = True
-        
-        logger.info(f'Bot deployment successful! 🚄')
-
-    async def sync_all_guilds(self):
-        """Sync commands to all guilds"""
-        try:
-            logger.info("🔄 Starting guild sync process...")
-            
-            # Sync to each guild individually
-            for guild in self.guilds:
-                try:
-                    success = await self.register_all_commands_to_guild(guild)
-                    if success:
-                        self._guild_synced.add(guild.id)
-                        logger.info(f"✅ Successfully synced to {guild.name}")
-                    else:
-                        logger.error(f"❌ Failed to sync to {guild.name}")
-                        
-                except Exception as e:
-                    logger.error(f"❌ Error syncing to {guild.name}: {e}")
-            
-            logger.info(f"✅ Sync process complete. Synced to {len(self._guild_synced)}/{len(self.guilds)} guilds")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to sync to guilds: {e}", exc_info=True)
-
-    async def on_disconnect(self):
-        """Called when bot disconnects"""
-        logger.warning("Bot disconnected from Discord")
-
-    async def on_resumed(self):
-        """Called when bot resumes connection"""
-        logger.info("Bot resumed connection to Discord")
-
-    async def on_message(self, message):
-        """Handle message events for workflow triggers"""
-        if message.author.bot:
+        # Parse time
+        duration = TimeParser.parse_duration(time)
+        if not duration:
+            embed = EmbedBuilder.error(
+                "Invalid Time Format",
+                "Please use format like: `1h`, `30m`, `2d`, `1h30m`"
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Debug message processing
-        if message.content.startswith(self.command_prefix):
-            logger.info(f"Processing command: {message.content}")
+        start_time = datetime.utcnow() + duration
         
-        # Check for workflow triggers
-        if self.workflow_manager:
-            await self.workflow_manager.check_message_triggers(message)
+        # Create meeting
+        meeting_id = await self.bot.meeting_manager.create_meeting(
+            str(interaction.guild.id),
+            str(interaction.user.id),
+            name,
+            description,
+            start_time,
+            str(interaction.channel.id),
+            str(voice_channel.id)
+        )
         
-        # Process commands
-        await self.process_commands(message)
-
-    async def on_command_error(self, ctx, error):
-        """Handle command errors"""
-        if isinstance(error, commands.CommandNotFound):
-            logger.warning(f"Command not found: {ctx.message.content}")
-            return
-        elif isinstance(error, commands.NotOwner):
-            await ctx.send("❌ Only the bot owner can use this command.")
+        # Create meeting announcement embed
+        embed = discord.Embed(
+            title=f"📅 Server Meeting: {name}",
+            description=description,
+            color=0x5865F2
+        )
+        
+        embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
+        embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
+        embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
+        
+        # Format start time
+        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+        time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
+        embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
+        
+        embed.add_field(
+            name="How to Join",
+            value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
+            inline=False
+        )
+        
+        # Create view with join button
+        view = MeetingView(self.bot, meeting_id)
+        self.bot.meeting_manager.active_views[meeting_id] = view
+        
+        # Send announcement with proper mention - fix AllowedMentions
+        mention_text = "@here" if mention_type == "here" else "@everyone"
+        if mention_type == "everyone":
+            allowed_mentions = discord.AllowedMentions(everyone=True)
         else:
-            logger.error(f"Command error in {ctx.command}: {error}", exc_info=True)
-            await ctx.send(f"❌ An error occurred: {error}")
+            allowed_mentions = discord.AllowedMentions(everyone=False)
 
-    async def on_member_join(self, member):
-        """Handle member join events for workflow triggers"""
-        if self.workflow_manager:
-            await self.workflow_manager.check_member_join_triggers(member)
-
-    async def on_thread_create(self, thread):
-        """Handle thread creation events for workflow triggers"""
-        if self.workflow_manager:
-            await self.workflow_manager.check_thread_create_triggers(thread)
-
-    async def on_error(self, event, *args, **kwargs):
-        logger.error(f'An error occurred in {event}', exc_info=True)
-
-    async def on_guild_join(self, guild):
-        """Automatically sync commands when joining a new guild"""
-        logger.info(f"Bot joined new guild: {guild.name} ({guild.id})")
+        await interaction.response.send_message(
+            f"{mention_text} **Server Meeting Announcement**", 
+            embed=embed, 
+            view=view,
+            allowed_mentions=allowed_mentions
+        )
+    
+    @app_commands.command(name="join-meeting", description="Join a scheduled meeting")
+    @app_commands.describe(meeting_id="ID of the meeting to join")
+    async def join_meeting(self, interaction: discord.Interaction, meeting_id: str):
+        # Check if meeting exists
+        meeting = await self.bot.meeting_manager.get_meeting(meeting_id)
+        if not meeting:
+            embed = EmbedBuilder.error("Not Found", f"Meeting with ID {meeting_id} not found")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
         
-        try:
-            # Auto-sync to new guild
-            success = await self.register_all_commands_to_guild(guild)
-            if success:
-                logger.info(f"✅ Auto-synced commands to new guild: {guild.name}")
-                self._guild_synced.add(guild.id)
-            else:
-                logger.error(f"❌ Failed to auto-sync to new guild: {guild.name}")
-                
-        except Exception as e:
-            logger.error(f"Failed to auto-sync to new guild {guild.name}: {e}")
-
-    async def close(self):
-        """Clean shutdown"""
-        logger.info("Bot is shutting down...")
-        if self.db:
-            await self.db.close()
-        await super().close()
-
-async def main():
-    """Main function with improved error handling"""
-    bot = SlackBot()
-    
-    max_retries = 5
-    retry_delay = 5
-    
-    try:
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Starting bot (attempt {attempt + 1}/{max_retries})")
-                await bot.start(Settings.DISCORD_TOKEN)
-                break
-                
-            except discord.LoginFailure:
-                logger.error("Invalid Discord token provided")
-                break
-                
-            except discord.HTTPException as e:
-                if e.status == 429:
-                    logger.warning(f"Rate limited, waiting {retry_delay * 2} seconds...")
-                    await asyncio.sleep(retry_delay * 2)
-                else:
-                    logger.error(f"HTTP error: {e}")
-                    
-            except (discord.ConnectionClosed, discord.GatewayNotFound) as e:
-                logger.warning(f"Connection issue (attempt {attempt + 1}): {e}")
-                if attempt < max_retries - 1:
-                    logger.info(f"Retrying in {retry_delay} seconds...")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2
-                
-            except KeyboardInterrupt:
-                logger.info("Bot stopped by user")
-                break
-                
-            except Exception as e:
-                logger.error(f"Unexpected error (attempt {attempt + 1}): {e}", exc_info=True)
-                if attempt < max_retries - 1:
-                    logger.info(f"Retrying in {retry_delay} seconds...")
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2
+        # Add user to participants
+        view = self.bot.meeting_manager.active_views.get(meeting_id)
+        if view:
+            view.participants.add(interaction.user.id)
+        
+        # Get voice channel
+        guild = interaction.guild
+        voice_channel = guild.get_channel(int(meeting['voice_channel_id']))
+        
+        embed = discord.Embed(
+            title=f"✅ Joined Meeting: {meeting['name']}",
+            description=meeting['description'],
+            color=0x57F287
+        )
+        
+        embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
+        
+        if voice_channel:
+            embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
+        
+        # Format start time
+        start_time = datetime.fromisoformat(meeting['start_time'])
+        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+        
+        if start_time > datetime.utcnow():
+            time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
+            embed.add_field(name="Starts", value=f"{time_str}\n(in {time_until})", inline=False)
         else:
-            logger.error(f"Failed to start bot after {max_retries} attempts")
-            
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}", exc_info=True)
-    finally:
-        if not bot.is_closed():
-            await bot.close()
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8080))
-    logger.info(f"Starting Discord bot on Railway (port {port})")
+            embed.add_field(name="Started", value=time_str, inline=False)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("Application terminated by user")
-    except Exception as e:
-        logger.error(f"Application failed to start: {e}", exc_info=True)
+    @app_commands.command(name="cancel-meeting", description="Cancel a scheduled meeting")
+    @app_commands.describe(meeting_id="ID of the meeting to cancel")
+    async def cancel_meeting(self, interaction: discord.Interaction, meeting_id: str):
+        # Check if meeting exists
+        meeting = await self.bot.meeting_manager.get_meeting(meeting_id)
+        if not meeting:
+            embed = EmbedBuilder.error("Not Found", f"Meeting with ID {meeting_id} not found")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Check if user is the creator or admin
+        if meeting['creator_id'] != str(interaction.user.id) and not self.bot.admin_manager.is_admin(interaction.user):
+            embed = EmbedBuilder.error(
+                "Permission Denied", 
+                "Only the meeting creator or administrators can cancel meetings"
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Cancel the meeting
+        success = await self.bot.meeting_manager.cancel_meeting(meeting_id)
+        
+        if success:
+            embed = EmbedBuilder.success(
+                "Meeting Cancelled",
+                f"Meeting **{meeting['name']}** has been cancelled"
+            )
+            await interaction.response.send_message(embed=embed)
+        else:
+            embed = EmbedBuilder.error("Error", "Failed to cancel meeting")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="list-meetings", description="List all scheduled meetings")
+    async def list_meetings(self, interaction: discord.Interaction):
+        # Filter meetings for this guild
+        guild_id = str(interaction.guild.id)
+        guild_meetings = []
+        
+        for meeting_id, meeting in self.bot.meeting_manager.meetings.items():
+            if meeting['guild_id'] == guild_id and meeting['status'] == 'scheduled':
+                guild_meetings.append(meeting)
+        
+        if not guild_meetings:
+            embed = EmbedBuilder.info("No Meetings", "No meetings are currently scheduled")
+            await interaction.response.send_message(embed=embed)
+            return
+        
+        # Sort meetings by start time
+        guild_meetings.sort(key=lambda m: m['start_time'])
+        
+        embed = discord.Embed(
+            title="📅 Scheduled Meetings",
+            description=f"There are {len(guild_meetings)} upcoming meetings",
+            color=0x5865F2
+        )
+        
+        for meeting in guild_meetings[:10]:  # Show up to 10 meetings
+            start_time = datetime.fromisoformat(meeting['start_time'])
+            time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+            
+            if start_time > datetime.utcnow():
+                time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
+                time_field = f"{time_str}\n(in {time_until})"
+            else:
+                time_field = f"{time_str}\n(starting now)"
+            
+            creator = interaction.guild.get_member(int(meeting['creator_id']))
+            creator_name = creator.display_name if creator else "Unknown"
+            
+            voice_channel = interaction.guild.get_channel(int(meeting['voice_channel_id']))
+            voice_name = voice_channel.name if voice_channel else "Unknown Channel"
+            
+            embed.add_field(
+                name=f"{meeting['name']} (ID: {meeting['id']})",
+                value=f"**Time:** {time_field}\n**Voice:** {voice_name}\n**Organizer:** {creator_name}",
+                inline=False
+            )
+        
+        if len(guild_meetings) > 10:
+            embed.set_footer(text=f"Showing 10 of {len(guild_meetings)} meetings")
+        
+        await interaction.response.send_message(embed=embed)
+
+async def setup(bot):
+    cog = Meetings(bot)
+    await bot.add_cog(cog)
+    
+    # Ensure commands are added to the tree
+    for command in cog.__cog_app_commands__:
+        if command not in bot.tree.get_commands():
+            bot.tree.add_command(command)
+    
+    print(f"📅 Successfully loaded Meetings cog with {len(cog.get_app_commands())} commands")

@@ -8,6 +8,24 @@ class WorkflowManager:
     def __init__(self, bot):
         self.bot = bot
     
+    async def load_workflows(self):
+        """Load workflows from database on startup"""
+        try:
+            if self.bot.db.is_postgresql:
+                workflows = await self.bot.db.connection.fetch(
+                    "SELECT * FROM workflows WHERE status = 'active'"
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM workflows WHERE status = 'active'"
+                )
+                workflows = await cursor.fetchall()
+            
+            print(f"Loaded {len(workflows)} active workflows from database")
+            
+        except Exception as e:
+            print(f"Error loading workflows: {e}")
+    
     async def execute_workflow_actions(self, workflow: Dict[str, Any], trigger_data: Dict[str, Any]):
         """Execute all actions in a workflow"""
         try:

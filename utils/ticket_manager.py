@@ -206,20 +206,32 @@ class TicketManager:
         try:
             if self.bot.db.is_postgresql:
                 rows = await self.bot.db.connection.fetch(
-                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'ticket_config'"
+                    "SELECT * FROM ticket_configs"
                 )
                 for row in rows:
-                    guild_id = row['user_id']  # user_id field stores guild_id for configs
-                    config = row['data_content']
+                    guild_id = row['guild_id']
+                    config = {
+                        'category_id': row['category_id'],
+                        'support_role_id': row['support_role_id'],
+                        'log_channel_id': row['log_channel_id'],
+                        'auto_close_hours': row['auto_close_hours'],
+                        'max_tickets_per_user': row['max_tickets_per_user']
+                    }
                     self.ticket_configs[guild_id] = config
             else:
                 cursor = await self.bot.db.connection.execute(
-                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'ticket_config'"
+                    "SELECT * FROM ticket_configs"
                 )
                 rows = await cursor.fetchall()
                 for row in rows:
-                    guild_id = row[0]  # user_id field stores guild_id for configs
-                    config = json.loads(row[2])
+                    guild_id = row[1]  # guild_id column
+                    config = {
+                        'category_id': row[2],
+                        'support_role_id': row[3],
+                        'log_channel_id': row[4],
+                        'auto_close_hours': row[5],
+                        'max_tickets_per_user': row[6]
+                    }
                     self.ticket_configs[guild_id] = config
         except Exception as e:
             print(f"Error loading ticket configs: {e}")
@@ -231,16 +243,22 @@ class TicketManager:
             
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, data_type, data_content) 
-                       VALUES ($1, $2, $3) 
-                       ON CONFLICT (user_id, data_type) DO UPDATE SET data_content = $3""",
-                    guild_id, 'ticket_config', json.dumps(config)
+                    """INSERT INTO ticket_configs (guild_id, category_id, support_role_id, log_channel_id, auto_close_hours, max_tickets_per_user)
+                       VALUES ($1, $2, $3, $4, $5, $6)
+                       ON CONFLICT (guild_id) DO UPDATE SET
+                       category_id = $2, support_role_id = $3, log_channel_id = $4, 
+                       auto_close_hours = $5, max_tickets_per_user = $6, updated_at = CURRENT_TIMESTAMP""",
+                    guild_id, config.get('category_id'), config.get('support_role_id'),
+                    config.get('log_channel_id'), config.get('auto_close_hours', 72),
+                    config.get('max_tickets_per_user', 3)
                 )
             else:
                 await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, data_type, data_content) 
-                       VALUES (?, ?, ?)""",
-                    (guild_id, 'ticket_config', json.dumps(config))
+                    """INSERT OR REPLACE INTO ticket_configs (guild_id, category_id, support_role_id, log_channel_id, auto_close_hours, max_tickets_per_user)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (guild_id, config.get('category_id'), config.get('support_role_id'),
+                     config.get('log_channel_id'), config.get('auto_close_hours', 72),
+                     config.get('max_tickets_per_user', 3))
                 )
                 await self.bot.db.connection.commit()
         except Exception as e:
@@ -354,11 +372,11 @@ class TicketManager:
     async def send_transcript(self, guild: discord.Guild, transcript_content: str, ticket_id: str, user: discord.Member):
         """Send transcript to configured transcript channel"""
         config = self.get_ticket_config(str(guild.id))
-        if not config or 'transcript_channel_id' not in config:
+        if not config or 'log_channel_id' not in config:
             return False
         
         try:
-            transcript_channel = guild.get_channel(int(config['transcript_channel_id']))
+            transcript_channel = guild.get_channel(int(config['log_channel_id']))
             if not transcript_channel:
                 return False
             

@@ -12,6 +12,52 @@ class Notifications(commands.Cog):
         self.user_keywords = {}  # In-memory storage for keywords
         self.muted_threads = {}  # In-memory storage for muted threads
     
+    async def load_user_keywords(self):
+        """Load user keywords from database"""
+        try:
+            if self.bot.db.is_postgresql:
+                rows = await self.bot.db.connection.fetch(
+                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'keywords'"
+                )
+                for row in rows:
+                    user_id = row['user_id']
+                    keywords = row['data_content'].get('keywords', []) if isinstance(row['data_content'], dict) else json.loads(row['data_content']).get('keywords', [])
+                    self.user_keywords[user_id] = keywords
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'keywords'"
+                )
+                rows = await cursor.fetchall()
+                for row in rows:
+                    user_id = row[0]
+                    keywords = json.loads(row[1]).get('keywords', [])
+                    self.user_keywords[user_id] = keywords
+        except Exception as e:
+            print(f"Error loading user keywords: {e}")
+    
+    async def save_user_keywords(self, user_id: str):
+        """Save user keywords to database"""
+        try:
+            keywords = self.user_keywords.get(user_id, [])
+            data = {"keywords": keywords}
+            
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    """INSERT INTO user_data (user_id, data_type, data_content)
+                       VALUES ($1, $2, $3)
+                       ON CONFLICT (user_id, data_type) DO UPDATE SET data_content = $3""",
+                    user_id, 'keywords', json.dumps(data)
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    """INSERT OR REPLACE INTO user_data (user_id, data_type, data_content)
+                       VALUES (?, ?, ?)""",
+                    (user_id, 'keywords', json.dumps(data))
+                )
+                await self.bot.db.connection.commit()
+        except Exception as e:
+            print(f"Error saving user keywords: {e}")
+    
     @commands.Cog.listener()
     async def on_message(self, message):
         """Check for keyword alerts in messages"""
@@ -86,6 +132,7 @@ class Notifications(commands.Cog):
             return
         
         self.user_keywords[user_id].append(keyword)
+        await self.save_user_keywords(user_id)
         
         embed = EmbedBuilder.success(
             "Keyword Added",
@@ -116,6 +163,8 @@ class Notifications(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
+        await self.save_user_keywords(user_id)
+        
         embed = EmbedBuilder.success(
             "Keyword Removed",
             f"You'll no longer receive notifications for **{keyword}**"
@@ -144,6 +193,9 @@ class Notifications(commands.Cog):
 async def setup(bot):
     cog = Notifications(bot)
     await bot.add_cog(cog)
+    
+    # Load user keywords on startup
+    await cog.load_user_keywords()
     
     # Ensure commands are added to the tree
     for command in cog.__cog_app_commands__:

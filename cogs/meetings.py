@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import random
 import string
 from utils.helpers import EmbedBuilder, TimeParser
+from typing import Dict, Any
 
 class MeetingView(discord.ui.View):
     def __init__(self, bot, meeting_id: str):
@@ -40,64 +41,93 @@ class MeetingManager:
         try:
             if self.bot.db.is_postgresql:
                 rows = await self.bot.db.connection.fetch(
-                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'meetings'"
+                    "SELECT * FROM meetings WHERE status = 'scheduled'"
                 )
                 for row in rows:
-                    guild_id = row['user_id']  # user_id field stores guild_id for configs
-                    meetings_data = row['data_content']
+                    meeting_id = row['meeting_id']
+                    meeting = {
+                        'id': meeting_id,
+                        'name': row['title'],
+                        'description': row['description'],
+                        'start_time': row['scheduled_time'].isoformat(),
+                        'guild_id': row['guild_id'],
+                        'creator_id': row['creator_id'],
+                        'channel_id': None,  # Will be set when creating
+                        'voice_channel_id': None,  # Will be set when creating
+                        'status': row['status'],
+                        'created_at': row['created_at'].isoformat()
+                    }
+                    self.meetings[meeting_id] = meeting
                     
-                    # Process each meeting
-                    for meeting_id, meeting in meetings_data.items():
-                        self.meetings[meeting_id] = meeting
-                        
-                        # Schedule meeting if it's in the future
-                        if meeting['start_time'] > datetime.utcnow().isoformat():
-                            self.schedule_meeting(meeting_id, meeting)
+                    # Schedule meeting if it's in the future
+                    if row['scheduled_time'] > datetime.utcnow():
+                        self.schedule_meeting(meeting_id, meeting)
             else:
                 cursor = await self.bot.db.connection.execute(
-                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'meetings'"
+                    "SELECT * FROM meetings WHERE status = 'scheduled'"
                 )
                 rows = await cursor.fetchall()
                 for row in rows:
-                    guild_id = row[0]
-                    meetings_data = json.loads(row[1])
+                    meeting_id = row[1]  # meeting_id column
+                    meeting = {
+                        'id': meeting_id,
+                        'name': row[4],  # title
+                        'description': row[5],  # description
+                        'start_time': row[6],  # scheduled_time
+                        'guild_id': row[2],  # guild_id
+                        'creator_id': row[3],  # creator_id
+                        'channel_id': None,
+                        'voice_channel_id': None,
+                        'status': row[9],  # status
+                        'created_at': row[11]  # created_at
+                    }
+                    self.meetings[meeting_id] = meeting
                     
-                    # Process each meeting
-                    for meeting_id, meeting in meetings_data.items():
-                        self.meetings[meeting_id] = meeting
-                        
-                        # Schedule meeting if it's in the future
-                        start_time = datetime.fromisoformat(meeting['start_time'])
-                        if start_time > datetime.utcnow():
-                            self.schedule_meeting(meeting_id, meeting)
+                    # Schedule meeting if it's in the future
+                    start_time = datetime.fromisoformat(row[6]) if isinstance(row[6], str) else row[6]
+                    if start_time > datetime.utcnow():
+                        self.schedule_meeting(meeting_id, meeting)
         except Exception as e:
             print(f"Error loading meetings: {e}")
     
-    async def save_meetings(self, guild_id: str):
-        """Save meetings to database"""
+    async def save_meeting(self, meeting: Dict[str, Any]):
+        """Save meeting to database"""
         try:
-            # Filter meetings for this guild
-            guild_meetings = {}
-            for meeting_id, meeting in self.meetings.items():
-                if meeting['guild_id'] == guild_id:
-                    guild_meetings[meeting_id] = meeting
-            
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, data_type, data_content) 
-                       VALUES ($1, $2, $3) 
-                       ON CONFLICT (user_id, data_type) DO UPDATE SET data_content = $3""",
-                    guild_id, 'meetings', json.dumps(guild_meetings)
+                    """INSERT INTO meetings (meeting_id, guild_id, creator_id, title, description, scheduled_time, status)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)
+                       ON CONFLICT (meeting_id) DO UPDATE SET
+                       title = $4, description = $5, scheduled_time = $6, status = $7, updated_at = CURRENT_TIMESTAMP""",
+                    meeting['id'], meeting['guild_id'], meeting['creator_id'],
+                    meeting['name'], meeting['description'], 
+                    datetime.fromisoformat(meeting['start_time']), meeting['status']
                 )
             else:
                 await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, data_type, data_content) 
-                       VALUES (?, ?, ?)""",
-                    (guild_id, 'meetings', json.dumps(guild_meetings))
+                    """INSERT OR REPLACE INTO meetings (meeting_id, guild_id, creator_id, title, description, scheduled_time, status)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (meeting['id'], meeting['guild_id'], meeting['creator_id'],
+                     meeting['name'], meeting['description'], meeting['start_time'], meeting['status'])
                 )
                 await self.bot.db.connection.commit()
         except Exception as e:
-            print(f"Error saving meetings: {e}")
+            print(f"Error saving meeting: {e}")
+    
+    async def delete_meeting(self, meeting_id: str):
+        """Delete meeting from database"""
+        try:
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM meetings WHERE meeting_id = $1", meeting_id
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM meetings WHERE meeting_id = ?", (meeting_id,)
+                )
+                await self.bot.db.connection.commit()
+        except Exception as e:
+            print(f"Error deleting meeting: {e}")
     
     def generate_meeting_id(self) -> str:
         """Generate a unique meeting ID"""

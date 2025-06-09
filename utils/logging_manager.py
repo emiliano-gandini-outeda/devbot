@@ -14,20 +14,26 @@ class LoggingManager:
         try:
             if self.bot.db.is_postgresql:
                 rows = await self.bot.db.connection.fetch(
-                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'log_config'"
+                    "SELECT * FROM log_configs"
                 )
                 for row in rows:
-                    guild_id = row['user_id']
-                    config = row['data_content']
+                    guild_id = row['guild_id']
+                    config = {
+                        'log_channel_id': row['log_channel_id'],
+                        'log_types': row['log_types'] if isinstance(row['log_types'], list) else json.loads(row['log_types'] or '[]')
+                    }
                     self.log_configs[guild_id] = config
             else:
                 cursor = await self.bot.db.connection.execute(
-                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'log_config'"
+                    "SELECT * FROM log_configs"
                 )
                 rows = await cursor.fetchall()
                 for row in rows:
-                    guild_id = row[0]
-                    config = json.loads(row[2])
+                    guild_id = row[1]  # guild_id column
+                    config = {
+                        'log_channel_id': row[2],
+                        'log_types': json.loads(row[3] or '[]')
+                    }
                     self.log_configs[guild_id] = config
         except Exception as e:
             print(f"Error loading log configs: {e}")
@@ -39,16 +45,19 @@ class LoggingManager:
             
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, data_type, data_content) 
-                       VALUES ($1, $2, $3) 
-                       ON CONFLICT (user_id, data_type) DO UPDATE SET data_content = $3""",
-                    guild_id, 'log_config', json.dumps(config)
+                    """INSERT INTO log_configs (guild_id, log_channel_id, log_types)
+                       VALUES ($1, $2, $3)
+                       ON CONFLICT (guild_id) DO UPDATE SET
+                       log_channel_id = $2, log_types = $3, updated_at = CURRENT_TIMESTAMP""",
+                    guild_id, config.get('log_channel_id'), 
+                    json.dumps(config.get('log_types', []))
                 )
             else:
                 await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, data_type, data_content) 
+                    """INSERT OR REPLACE INTO log_configs (guild_id, log_channel_id, log_types)
                        VALUES (?, ?, ?)""",
-                    (guild_id, 'log_config', json.dumps(config))
+                    (guild_id, config.get('log_channel_id'), 
+                     json.dumps(config.get('log_types', [])))
                 )
                 await self.bot.db.connection.commit()
         except Exception as e:
@@ -87,7 +96,7 @@ class LoggingManager:
         
         if message.content:
             content = message.content[:1000] + "..." if len(message.content) > 1000 else message.content
-            embed.add_field(name="Content", value=f"```{content}```", inline=False)
+            embed.add_field(name="Content", value=f"\`\`\`{content}\`\`\`", inline=False)
         
         if message.attachments:
             attachments = "\n".join([f"• {att.filename}" for att in message.attachments])
@@ -111,11 +120,11 @@ class LoggingManager:
         
         if before.content:
             before_content = before.content[:500] + "..." if len(before.content) > 500 else before.content
-            embed.add_field(name="Before", value=f"```{before_content}```", inline=False)
+            embed.add_field(name="Before", value=f"\`\`\`{before_content}\`\`\`", inline=False)
         
         if after.content:
             after_content = after.content[:500] + "..." if len(after.content) > 500 else after.content
-            embed.add_field(name="After", value=f"```{after_content}```", inline=False)
+            embed.add_field(name="After", value=f"\`\`\`{after_content}\`\`\`", inline=False)
         
         await self.log_event(before.guild, embed)
     
@@ -238,6 +247,10 @@ class LoggingManager:
         """Log command usage"""
         if not interaction.guild:
             return
+        
+        # Check if command exists
+        if not interaction.command:
+            return  # Skip logging if command is None
         
         embed = discord.Embed(
             title="⚡ Command Used",
