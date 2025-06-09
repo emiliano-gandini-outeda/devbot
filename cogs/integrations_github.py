@@ -7,6 +7,7 @@ from datetime import datetime
 from utils.helpers import EmbedBuilder
 import asyncio
 from typing import List
+from discord.ui import Select, View
 
 class GitHubIntegrations(commands.Cog):
     """GitHub repository tracking and integration"""
@@ -241,83 +242,74 @@ class GitHubIntegrations(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="subscribe-repo", description="Subscribe to notifications for a tracked repository")
-    @app_commands.describe(repo="Repository name (format: owner/repo)")
-    async def subscribe_repo(self, interaction: discord.Interaction, repo: str):
+    async def subscribe_repo(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         
         try:
             guild_id = str(interaction.guild.id)
-            user_id = str(interaction.user.id)
-            
-            # Check if repo is tracked in this server
             tracked_repos = await self.get_tracked_repos(guild_id)
-            repo_tracked = any(tracked['repo_name'] == repo for tracked in tracked_repos)
             
-            if not repo_tracked:
+            if not tracked_repos:
                 embed = EmbedBuilder.error(
-                    "Repository Not Tracked",
-                    f"Repository {repo} is not being tracked in this server. Use `/track-repo` first."
+                    "No Repositories",
+                    "No repositories are being tracked in this server. Use `/track-repo` to start tracking repositories."
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             
-            # Add subscription
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, enabled) 
-                       VALUES ($1, $2, $3, TRUE) 
-                       ON CONFLICT (user_id, guild_id, repo_name) DO UPDATE SET enabled = TRUE""",
-                    user_id, guild_id, repo
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO github_subscriptions (user_id, guild_id, repo_name, enabled) 
-                       VALUES (?, ?, ?, 1)""",
-                    (user_id, guild_id, repo)
-                )
-                await self.bot.db.connection.commit()
+            # Get user's current subscriptions
+            user_subscriptions = await self.get_user_subscriptions(str(interaction.user.id), guild_id)
             
-            embed = EmbedBuilder.success(
-                "Subscribed!",
-                f"You will now be pinged for updates to **{repo}**"
+            # Create dropdown view
+            view = RepoSubscriptionView(self, interaction.user.id, guild_id, tracked_repos, user_subscriptions)
+            
+            embed = discord.Embed(
+                title="📊 Subscribe to Repository Updates",
+                description="Select repositories you want to be notified about from the dropdown below.",
+                color=0x5865F2
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+            embed.add_field(
+                name="📋 Available Repositories",
+                value=f"{len(tracked_repos)} repositories are being tracked in this server",
+                inline=False
+            )
+            
+            if user_subscriptions:
+                subscribed_list = "\n".join([f"• {repo}" for repo in user_subscriptions])
+                embed.add_field(
+                    name="✅ Currently Subscribed",
+                    value=subscribed_list,
+                    inline=False
+                )
+            
+            embed.set_footer(text="Select repositories from the dropdown to subscribe or unsubscribe")
+            
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
             
         except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to subscribe: {str(e)}")
+            embed = EmbedBuilder.error("Error", f"Failed to load subscription menu: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="unsubscribe-repo", description="Unsubscribe from notifications for a repository")
-    @app_commands.describe(repo="Repository name (format: owner/repo)")
-    async def unsubscribe_repo(self, interaction: discord.Interaction, repo: str):
-        await interaction.response.defer(ephemeral=True)
-        
+    async def get_user_subscriptions(self, user_id: str, guild_id: str) -> List[str]:
+        """Get list of repositories user is subscribed to"""
         try:
-            guild_id = str(interaction.guild.id)
-            user_id = str(interaction.user.id)
-            
-            # Remove subscription
             if self.bot.db.is_postgresql:
-                result = await self.bot.db.connection.execute(
-                    "DELETE FROM github_subscriptions WHERE user_id = $1 AND guild_id = $2 AND repo_name = $3",
-                    user_id, guild_id, repo
+                rows = await self.bot.db.connection.fetch(
+                    "SELECT repo_name FROM github_subscriptions WHERE user_id = $1 AND guild_id = $2 AND enabled = TRUE",
+                    user_id, guild_id
                 )
+                return [row['repo_name'] for row in rows]
             else:
-                await self.bot.db.connection.execute(
-                    "DELETE FROM github_subscriptions WHERE user_id = ? AND guild_id = ? AND repo_name = ?",
-                    (user_id, guild_id, repo)
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT repo_name FROM github_subscriptions WHERE user_id = ? AND guild_id = ? AND enabled = 1",
+                    (user_id, guild_id)
                 )
-                await self.bot.db.connection.commit()
-            
-            embed = EmbedBuilder.success(
-                "Unsubscribed!",
-                f"You will no longer be pinged for updates to **{repo}**"
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            
+                rows = await cursor.fetchall()
+                return [row[0] for row in rows]
         except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to unsubscribe: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            print(f"Error getting user subscriptions: {e}")
+            return []
     
     async def get_repo_data(self, repo: str) -> dict:
         """Get current repository data from GitHub API"""
@@ -503,6 +495,157 @@ class GitHubIntegrations(commands.Cog):
         except Exception as e:
             print(f"Error getting repo subscribers: {e}")
             return []
+
+class RepoSubscriptionView(View):
+    """View for repository subscription dropdown"""
+    
+    def __init__(self, cog, user_id: int, guild_id: str, tracked_repos: List[dict], user_subscriptions: List[str]):
+        super().__init__(timeout=300)  # 5 minute timeout
+        self.cog = cog
+        self.user_id = str(user_id)
+        self.guild_id = guild_id
+        self.tracked_repos = tracked_repos
+        self.user_subscriptions = user_subscriptions
+        
+        # Create select options
+        options = []
+        for repo_data in tracked_repos:
+            repo_name = repo_data['repo_name']
+            is_subscribed = repo_name in user_subscriptions
+            
+            # Get channel info
+            channel_id = repo_data['channel_id']
+            guild = cog.bot.get_guild(int(guild_id))
+            channel = guild.get_channel(int(channel_id)) if guild else None
+            channel_name = f"#{channel.name}" if channel else "Unknown Channel"
+            
+            options.append(discord.SelectOption(
+                label=repo_name,
+                description=f"Updates in {channel_name} • {'✅ Subscribed' if is_subscribed else '🔔 Click to subscribe'}",
+                value=repo_name,
+                emoji="✅" if is_subscribed else "🔔"
+            ))
+        
+        # Add the select dropdown
+        self.repo_select = RepoSelect(options, self.user_subscriptions)
+        self.add_item(self.repo_select)
+    
+    async def on_timeout(self):
+        """Called when the view times out"""
+        for item in self.children:
+            item.disabled = True
+
+class RepoSelect(Select):
+    """Select dropdown for repository subscriptions"""
+    
+    def __init__(self, options: List[discord.SelectOption], current_subscriptions: List[str]):
+        super().__init__(
+            placeholder="Select repositories to subscribe/unsubscribe...",
+            min_values=1,
+            max_values=min(len(options), 25),  # Discord limit is 25
+            options=options
+        )
+        self.current_subscriptions = current_subscriptions
+    
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            view = self.view
+            cog = view.cog
+            user_id = view.user_id
+            guild_id = view.guild_id
+            
+            selected_repos = self.values
+            changes_made = []
+            
+            for repo in selected_repos:
+                is_currently_subscribed = repo in self.current_subscriptions
+                
+                if is_currently_subscribed:
+                    # Unsubscribe
+                    if cog.bot.db.is_postgresql:
+                        await cog.bot.db.connection.execute(
+                            "DELETE FROM github_subscriptions WHERE user_id = $1 AND guild_id = $2 AND repo_name = $3",
+                            user_id, guild_id, repo
+                        )
+                    else:
+                        await cog.bot.db.connection.execute(
+                            "DELETE FROM github_subscriptions WHERE user_id = ? AND guild_id = ? AND repo_name = ?",
+                            (user_id, guild_id, repo)
+                        )
+                        await cog.bot.db.connection.commit()
+                    
+                    changes_made.append(f"🔕 Unsubscribed from **{repo}**")
+                    
+                else:
+                    # Subscribe
+                    if cog.bot.db.is_postgresql:
+                        await cog.bot.db.connection.execute(
+                            """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, enabled) 
+                               VALUES ($1, $2, $3, TRUE) 
+                               ON CONFLICT (user_id, guild_id, repo_name) DO UPDATE SET enabled = TRUE""",
+                            user_id, guild_id, repo
+                        )
+                    else:
+                        await cog.bot.db.connection.execute(
+                            """INSERT OR REPLACE INTO github_subscriptions (user_id, guild_id, repo_name, enabled) 
+                               VALUES (?, ?, ?, 1)""",
+                            (user_id, guild_id, repo)
+                        )
+                        await cog.bot.db.connection.commit()
+                    
+                    changes_made.append(f"🔔 Subscribed to **{repo}**")
+            
+            # Create response embed
+            if changes_made:
+                embed = discord.Embed(
+                    title="✅ Subscription Changes Applied",
+                    description="\n".join(changes_made),
+                    color=0x00FF00
+                )
+                embed.set_footer(text="You will now receive notifications based on your subscriptions")
+            else:
+                embed = EmbedBuilder.info(
+                    "No Changes",
+                    "No subscription changes were made."
+                )
+            
+            # Update the view with new subscription status
+            updated_subscriptions = await cog.get_user_subscriptions(user_id, guild_id)
+            
+            # Update select options
+            new_options = []
+            for option in self.options:
+                repo_name = option.value
+                is_subscribed = repo_name in updated_subscriptions
+                
+                # Find the original repo data for channel info
+                channel_name = "Unknown Channel"
+                for repo_data in view.tracked_repos:
+                    if repo_data['repo_name'] == repo_name:
+                        channel_id = repo_data['channel_id']
+                        guild = cog.bot.get_guild(int(guild_id))
+                        channel = guild.get_channel(int(channel_id)) if guild else None
+                        channel_name = f"#{channel.name}" if channel else "Unknown Channel"
+                        break
+                
+                new_options.append(discord.SelectOption(
+                    label=repo_name,
+                    description=f"Updates in {channel_name} • {'✅ Subscribed' if is_subscribed else '🔔 Click to subscribe'}",
+                    value=repo_name,
+                    emoji="✅" if is_subscribed else "🔔"
+                ))
+            
+            # Update the select options
+            self.options = new_options
+            self.current_subscriptions = updated_subscriptions
+            
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to update subscriptions: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot):
     github_cog = GitHubIntegrations(bot)
