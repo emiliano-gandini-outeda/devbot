@@ -184,11 +184,13 @@ class SlackBot(commands.Bot):
                     await asyncio.sleep(0.1)  # Rate limit protection
                 except Exception as e:
                     await ctx.send(f"❌ {guild.name}: {e}")
-        
-        await ctx.send(f"✅ Completed! Total: {synced_count} commands across {len(self.guilds)} guilds")
-        
-    except Exception as e:
-        await ctx.send(f'❌ Failed to sync commands: {e}')
+            
+            # This line was incorrectly indented, causing the syntax error
+            await ctx.send(f"✅ Completed! Total: {synced_count} commands across {len(self.guilds)} guilds")
+            
+        except Exception as e:
+            await ctx.send(f'❌ Failed to sync commands: {e}')
+            logger.error("Sync all command failed", exc_info=True)
     
     async def on_error(self, event, *args, **kwargs):
         logger.error(f'An error occurred in {event}', exc_info=True)
