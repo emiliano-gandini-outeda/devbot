@@ -74,18 +74,16 @@ class SlackBot(commands.Bot):
             
             # Load all cogs
             cogs = [
-                'cogs.conversations',
-                'cogs.integrations_google',
-                'cogs.integrations_notion',
-                'cogs.integrations_trello',
-                'cogs.integrations_github',
-                'cogs.workflows',
+                'cogs.setup',
                 'cogs.tickets',
-                'cogs.roles',
-                'cogs.privacy',
+                'cogs.workflows',
                 'cogs.reminders',
+                'cogs.conversations',
+                'cogs.integrations',
                 'cogs.notifications',
                 'cogs.intelligence',
+                'cogs.roles',
+                'cogs.privacy',
                 'cogs.admin',
                 'cogs.help',
                 'cogs.logging',
@@ -136,8 +134,13 @@ class SlackBot(commands.Bot):
                 cog_commands = cog.get_app_commands()
                 for command in cog_commands:
                     try:
-                        self.tree.add_command(command)
-                        logger.info(f"Added command /{command.name} from {cog_name}")
+                        # Check if command already exists to avoid duplicates
+                        existing_commands = [cmd.name for cmd in self.tree.get_commands()]
+                        if command.name not in existing_commands:
+                            self.tree.add_command(command)
+                            logger.info(f"Added command /{command.name} from {cog_name}")
+                        else:
+                            logger.info(f"Command /{command.name} already exists, skipping")
                     except Exception as e:
                         logger.warning(f"Could not add command /{command.name}: {e}")
         
@@ -240,6 +243,7 @@ class SlackBot(commands.Bot):
             
             # Collect all commands from cogs
             commands_to_add = []
+            existing_command_names = set()
             
             for cog_name, cog in self.cogs.items():
                 logger.info(f"Processing cog: {cog_name}")
@@ -250,14 +254,19 @@ class SlackBot(commands.Bot):
                     logger.info(f"Found {len(cog_commands)} app commands in {cog_name}")
                     
                     for command in cog_commands:
-                        commands_to_add.append(command)
-                        logger.info(f"Adding command /{command.name} from {cog_name}")
+                        if command.name not in existing_command_names:
+                            commands_to_add.append(command)
+                            existing_command_names.add(command.name)
+                            logger.info(f"Adding command /{command.name} from {cog_name}")
+                        else:
+                            logger.warning(f"Duplicate command /{command.name} found in {cog_name}, skipping")
                 
                 # Also check __cog_app_commands__ attribute
                 if hasattr(cog, '__cog_app_commands__'):
                     for command in cog.__cog_app_commands__:
-                        if command not in commands_to_add:
+                        if command.name not in existing_command_names:
                             commands_to_add.append(command)
+                            existing_command_names.add(command.name)
                             logger.info(f"Adding command /{command.name} from {cog_name} via __cog_app_commands__")
             
             # Add all commands to the tree
@@ -299,7 +308,7 @@ class SlackBot(commands.Bot):
             # List synced commands
             command_list = "\n".join([f"- /{cmd.name}" for cmd in synced])
             if command_list and len(command_list) < 1900:
-                await ctx.send(f"\`\`\`\nSynced commands:\n{command_list}\n\`\`\`")
+                await ctx.send(f"```\nSynced commands:\n{command_list}\n```")
             elif not command_list:
                 await ctx.send("No commands were synced.")
             
@@ -321,7 +330,7 @@ class SlackBot(commands.Bot):
             # List synced commands
             command_list = "\n".join([f"- /{cmd.name}" for cmd in synced])
             if command_list and len(command_list) < 1900:
-                await ctx.send(f"\`\`\`\nSynced commands:\n{command_list}\n\`\`\`")
+                await ctx.send(f"```\nSynced commands:\n{command_list}\n```")
             
         except Exception as e:
             await ctx.send(f'❌ Failed to sync commands globally: {e}')
@@ -364,7 +373,7 @@ class SlackBot(commands.Bot):
         
         for cog_name, cmds in cog_commands.items():
             commands_text = "\n".join([f"- /{cmd.name}" for cmd in cmds])
-            await ctx.send(f"**{cog_name} Commands**:\n\`\`\`\n{commands_text}\n\`\`\`")
+            await ctx.send(f"**{cog_name} Commands**:\n```\n{commands_text}\n```")
         
         await ctx.send(f"Total commands: {len(all_commands)}")
     

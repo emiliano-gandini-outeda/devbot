@@ -14,7 +14,7 @@ class EmbedBuilder:
             color=0x57F287
         )
         embed.timestamp = datetime.utcnow()
-        embed.set_footer(text="Discord Bot")
+        embed.set_footer(text="devBot")
         return embed
     
     @staticmethod
@@ -25,7 +25,7 @@ class EmbedBuilder:
             color=0xED4245
         )
         embed.timestamp = datetime.utcnow()
-        embed.set_footer(text="Discord Bot")
+        embed.set_footer(text="devBot")
         return embed
     
     @staticmethod
@@ -36,7 +36,7 @@ class EmbedBuilder:
             color=0x5865F2
         )
         embed.timestamp = datetime.utcnow()
-        embed.set_footer(text="Discord Bot")
+        embed.set_footer(text="devBot")
         return embed
     
     @staticmethod
@@ -47,9 +47,20 @@ class EmbedBuilder:
             color=0xFEE75C
         )
         embed.timestamp = datetime.utcnow()
-        embed.set_footer(text="Discord Bot")
+        embed.set_footer(text="devBot")
         return embed
     
+    @staticmethod
+    def railway_info(title: str, description: str = None) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"🚄 {title}",
+            description=description,
+            color=0x0B0D0E
+        )
+        embed.timestamp = datetime.utcnow()
+        embed.set_footer(text="devBot")
+        return embed
+
 class TimeParser:
     @staticmethod
     def parse_duration(duration_str: str) -> Optional[timedelta]:

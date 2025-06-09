@@ -16,6 +16,58 @@ class TicketJoinRequestView(discord.ui.View):
     
     @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅")
     async def accept_request(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Check if user can accept (must be assigned to ticket or admin)
+        ticket_id = self.ticket_channel.topic.split("|")[0].replace("Support ticket: ", "").strip()
+        
+        # Get ticket info
+        if self.bot.db.is_postgresql:
+            ticket = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+            )
+        else:
+            cursor = await self.bot.db.connection.execute(
+                "SELECT * FROM tickets WHERE ticket_id = ?", (ticket_id,)
+            )
+            ticket = await cursor.fetchone()
+        
+        if not ticket:
+            embed = discord.Embed(
+                title="❌ Error",
+                description="Ticket not found in database",
+                color=0xED4245
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Check permissions
+        user_id = ticket['user_id'] if self.bot.db.is_postgresql else ticket[3]
+        assignee_id = ticket['assignee_id'] if self.bot.db.is_postgresql else ticket[4]
+        
+        can_accept = (
+            self.bot.admin_manager.is_admin(interaction.user) or
+            str(interaction.user.id) == user_id or
+            str(interaction.user.id) == assignee_id
+        )
+        
+        # Prevent self-acceptance
+        if str(interaction.user.id) == str(self.requester.id):
+            embed = discord.Embed(
+                title="❌ Error",
+                description="You cannot accept your own join request",
+                color=0xED4245
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        if not can_accept:
+            embed = discord.Embed(
+                title="❌ Permission Denied",
+                description="Only ticket creator, assignee, or admins can accept join requests",
+                color=0xED4245
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
         try:
             # Add user to ticket channel permissions
             await self.ticket_channel.set_permissions(
@@ -23,21 +75,6 @@ class TicketJoinRequestView(discord.ui.View):
                 read_messages=True,
                 send_messages=True
             )
-            
-            # Update ticket in database to add assignee
-            ticket_id = self.ticket_channel.topic.split("|")[0].replace("Support ticket: ", "").strip()
-            
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "UPDATE tickets SET assignee_id = $1 WHERE channel_id = $2",
-                    str(self.requester.id), str(self.ticket_channel.id)
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    "UPDATE tickets SET assignee_id = ? WHERE channel_id = ?",
-                    (str(self.requester.id), str(self.ticket_channel.id))
-                )
-                await self.bot.db.connection.commit()
             
             embed = discord.Embed(
                 title="✅ Request Accepted",
@@ -62,6 +99,46 @@ class TicketJoinRequestView(discord.ui.View):
     
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, emoji="❌")
     async def reject_request(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Same permission check as accept
+        ticket_id = self.ticket_channel.topic.split("|")[0].replace("Support ticket: ", "").strip()
+        
+        if self.bot.db.is_postgresql:
+            ticket = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+            )
+        else:
+            cursor = await self.bot.db.connection.execute(
+                "SELECT * FROM tickets WHERE ticket_id = ?", (ticket_id,)
+            )
+            ticket = await cursor.fetchone()
+        
+        if not ticket:
+            embed = discord.Embed(
+                title="❌ Error",
+                description="Ticket not found in database",
+                color=0xED4245
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        user_id = ticket['user_id'] if self.bot.db.is_postgresql else ticket[3]
+        assignee_id = ticket['assignee_id'] if self.bot.db.is_postgresql else ticket[4]
+        
+        can_reject = (
+            self.bot.admin_manager.is_admin(interaction.user) or
+            str(interaction.user.id) == user_id or
+            str(interaction.user.id) == assignee_id
+        )
+        
+        if not can_reject:
+            embed = discord.Embed(
+                title="❌ Permission Denied",
+                description="Only ticket creator, assignee, or admins can reject join requests",
+                color=0xED4245
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
         modal = RejectReasonModal(self.bot, self.requester, interaction.user)
         await interaction.response.send_modal(modal)
         
@@ -299,6 +376,7 @@ class TicketManager:
             )
             embed.add_field(name="User", value=user.mention, inline=True)
             embed.add_field(name="Closed", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+            embed.set_footer(text="devBot")
             
             await transcript_channel.send(embed=embed, file=transcript_file)
             return True
