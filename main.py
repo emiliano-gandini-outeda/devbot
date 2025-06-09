@@ -168,10 +168,23 @@ class SlackBot(commands.Bot):
                 synced = await self.tree.sync(guild=guild)
                 logger.info(f"🚀 Synced {len(synced)} commands to {guild.name}")
                 
-                if synced:
-                    # The synced commands are dictionaries, not AppCommand objects
-                    synced_names = [cmd.get('name', 'unknown') for cmd in synced]
-                    logger.info(f"✅ Successfully synced to {guild.name}: {', '.join(sorted(synced_names))}")
+                if len(synced) > 0:
+                    # The synced commands are returned as a list of dictionaries
+                    try:
+                        synced_names = []
+                        for cmd in synced:
+                            if isinstance(cmd, dict) and 'name' in cmd:
+                                synced_names.append(cmd['name'])
+                            elif hasattr(cmd, 'name'):
+                                synced_names.append(cmd.name)
+                            else:
+                                synced_names.append(str(cmd))
+                        
+                        logger.info(f"✅ Successfully synced to {guild.name}: {', '.join(sorted(synced_names))}")
+                    except Exception as e:
+                        logger.error(f"Error processing synced commands: {e}")
+                        logger.info(f"Raw synced data: {synced}")
+                    
                     return True
                 else:
                     logger.error(f"❌ 0 commands synced to {guild.name}!")
@@ -197,11 +210,6 @@ class SlackBot(commands.Bot):
                 await interaction.response.defer(ephemeral=True)
                 
                 try:
-                    # First, clear global commands to remove duplicates
-                    self.tree.clear_commands(guild=None)
-                    await self.tree.sync()
-                    await interaction.followup.send("✅ Cleared global commands")
-                    
                     # Register and sync all commands to this guild
                     success = await self.register_all_commands_to_guild(interaction.guild)
                     
@@ -355,24 +363,79 @@ class SlackBot(commands.Bot):
                 await interaction.response.defer(ephemeral=True)
                 
                 try:
+                    # Get current global commands
+                    global_commands = await self.tree.fetch_commands()
+                    
+                    if not global_commands:
+                        await interaction.followup.send("✅ No global commands to clear!")
+                        return
+                    
                     # Clear global commands
                     self.tree.clear_commands(guild=None)
                     await self.tree.sync()
                     
                     # Check if global commands were cleared
-                    global_commands = self.tree.get_commands(guild=None)
+                    remaining_commands = await self.tree.fetch_commands()
                     
-                    if not global_commands:
-                        await interaction.followup.send("✅ Successfully cleared all global commands!")
+                    if not remaining_commands:
+                        await interaction.followup.send(f"✅ Successfully cleared {len(global_commands)} global commands!")
                     else:
-                        await interaction.followup.send(f"⚠️ Some global commands remain: {len(global_commands)}")
+                        await interaction.followup.send(f"⚠️ Some global commands remain: {len(remaining_commands)}")
                     
                 except Exception as e:
                     await interaction.followup.send(f"❌ Failed to clear global commands: {e}")
                     logger.error(f"Failed to clear global commands: {e}", exc_info=True)
 
+            # Define fix duplicates command
+            @app_commands.command(name="admin_fix_duplicates", description="Fix duplicate commands (Owner only)")
+            async def fix_duplicates_slash(interaction: discord.Interaction):
+                if not await self.is_owner(interaction.user):
+                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+                    return
+                
+                await interaction.response.defer(ephemeral=True)
+                
+                try:
+                    # Step 1: Get all global commands
+                    global_commands = await self.tree.fetch_commands()
+                    global_command_names = [cmd.name for cmd in global_commands]
+                    
+                    # Step 2: Get all guild commands
+                    guild_commands = await self.tree.fetch_commands(guild=interaction.guild)
+                    guild_command_names = [cmd.name for cmd in guild_commands]
+                    
+                    # Step 3: Find duplicates (commands that exist both globally and in guild)
+                    duplicates = set(global_command_names).intersection(set(guild_command_names))
+                    
+                    if not duplicates:
+                        await interaction.followup.send("✅ No duplicate commands found!")
+                        return
+                    
+                    # Step 4: Remove only the duplicate global commands
+                    await interaction.followup.send(f"🔄 Found {len(duplicates)} duplicate commands. Removing global duplicates...")
+                    
+                    # We need to use the Discord API directly to delete specific commands
+                    # This requires the application ID and bot token
+                    app_id = self.user.id
+                    
+                    # Find the command IDs for the duplicates
+                    for cmd in global_commands:
+                        if cmd.name in duplicates:
+                            # Delete this specific global command
+                            try:
+                                await self.http.delete_global_command(app_id, cmd.id)
+                                logger.info(f"Deleted global duplicate: {cmd.name}")
+                            except Exception as e:
+                                logger.error(f"Failed to delete global command {cmd.name}: {e}")
+                    
+                    await interaction.followup.send(f"✅ Removed {len(duplicates)} duplicate global commands!")
+                    
+                except Exception as e:
+                    await interaction.followup.send(f"❌ Failed to fix duplicates: {e}")
+                    logger.error(f"Failed to fix duplicates: {e}", exc_info=True)
+
             # Store references to admin commands
-            self.admin_commands = [sync_slash, debug_slash, reload_slash, db_test_slash, clear_global_slash]
+            self.admin_commands = [sync_slash, debug_slash, reload_slash, db_test_slash, clear_global_slash, fix_duplicates_slash]
             
             logger.info(f"✅ Created {len(self.admin_commands)} admin slash commands")
             
@@ -406,12 +469,6 @@ class SlackBot(commands.Bot):
         """Sync commands to all guilds"""
         try:
             logger.info("🔄 Starting guild sync process...")
-            
-            # Clear global commands first
-            logger.info("Clearing global commands...")
-            self.tree.clear_commands(guild=None)
-            await self.tree.sync()
-            logger.info("✅ Cleared global commands")
             
             # Sync to each guild individually
             for guild in self.guilds:
