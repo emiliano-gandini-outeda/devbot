@@ -23,11 +23,11 @@ class GitHubIntegrations(commands.Cog):
     @app_commands.command(name="track-repo", description="Track a GitHub repository for updates")
     @app_commands.describe(
         repo="Repository name (format: owner/repo)",
-        channel="Channel to send updates to"
+        subscribe="Subscribe to notifications for this repository (default: True)"
     )
-    async def track_repo(self, interaction: discord.Interaction, repo: str, channel: discord.TextChannel):
+    async def track_repo(self, interaction: discord.Interaction, repo: str, subscribe: bool = True):
         await interaction.response.defer()
-        
+
         try:
             # Validate repository format
             if "/" not in repo:
@@ -37,13 +37,48 @@ class GitHubIntegrations(commands.Cog):
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
-            
+
+            # Get the configured tracking channel
+            guild_id = str(interaction.guild.id)
+            config_row = await self.bot.db.connection.fetchrow(
+                "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                guild_id, 'github_tracking_config'
+            )
+
+            if not config_row:
+                embed = EmbedBuilder.error(
+                    "Not Configured",
+                    "GitHub tracking has not been set up. Please ask an administrator to run `/setup-tracking`"
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            config = json.loads(config_row['data_content'])
+            tracking_channel_id = config.get('tracking_channel_id')
+
+            if not tracking_channel_id:
+                embed = EmbedBuilder.error(
+                    "Configuration Error",
+                    "No tracking channel configured. Please ask an administrator to reconfigure."
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
+            channel = interaction.guild.get_channel(int(tracking_channel_id))
+            if not channel:
+                embed = EmbedBuilder.error(
+                    "Channel Not Found",
+                    "The configured tracking channel no longer exists."
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+
             # Check if already tracking
             existing = await self.bot.db.connection.fetchrow(
-                "SELECT * FROM github_tracked_repos WHERE guild_id = $1 AND repo_name = $2 AND channel_id = $3",
-                str(interaction.guild.id), repo, str(channel.id)
+                "SELECT * FROM github_tracked_repos WHERE guild_id = $1 AND repo_name = $2",
+                guild_id, repo
             )
-            
+
             if existing:
                 embed = EmbedBuilder.warning(
                     "Already Tracking",
@@ -51,34 +86,44 @@ class GitHubIntegrations(commands.Cog):
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
-            
+
             # Add to database
             await self.bot.db.connection.execute(
                 "INSERT INTO github_tracked_repos (guild_id, repo_name, channel_id, added_by) VALUES ($1, $2, $3, $4)",
-                str(interaction.guild.id), repo, str(channel.id), str(interaction.user.id)
+                guild_id, repo, tracking_channel_id, str(interaction.user.id)
             )
-            
+
+            # Add user subscription if requested
+            if subscribe:
+                await self.bot.db.connection.execute(
+                    """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, enabled) 
+                       VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, guild_id, repo_name) DO UPDATE SET enabled = $4""",
+                    str(interaction.user.id), guild_id, repo, True
+                )
+
             # Initialize cache for this repo
-            self.repo_cache[f"{interaction.guild.id}:{repo}:{channel.id}"] = {
+            self.repo_cache[f"{guild_id}:{repo}:{tracking_channel_id}"] = {
                 "stars": 0,
                 "last_commit": "",
                 "last_check": datetime.utcnow(),
                 "pull_requests": []
             }
-            
+
             embed = EmbedBuilder.success(
                 "Repository Tracked",
-                f"Now tracking {repo} in {channel.mention}\n\n"
+                f"Now tracking **{repo}** in {channel.mention}\n\n"
+                f"**Notifications:** {'✅ Enabled' if subscribe else '❌ Disabled'}\n\n"
                 f"You'll receive notifications for:\n"
                 f"• New commits\n"
                 f"• Star count changes\n"
-                f"• New pull requests"
+                f"• New pull requests\n\n"
+                f"Use `/list-repos` to manage your subscriptions."
             )
             await interaction.followup.send(embed=embed)
-            
+
             # Send initial status
             await self._send_repo_status(repo, channel)
-            
+
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to track repository: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -121,47 +166,56 @@ class GitHubIntegrations(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to untrack repository: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="list-repos", description="List tracked GitHub repositories")
+    @app_commands.command(name="list-repos", description="List tracked GitHub repositories with subscription options")
     async def list_repos(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        
+
         try:
             # Get tracked repos for this guild
             repos = await self.bot.db.connection.fetch(
                 "SELECT * FROM github_tracked_repos WHERE guild_id = $1",
                 str(interaction.guild.id)
             )
-            
+
             if not repos:
                 embed = EmbedBuilder.info("No Repositories", "No GitHub repositories are being tracked in this server")
                 await interaction.followup.send(embed=embed)
                 return
-            
+
+            # Create dropdown options
+            options = []
+            for repo in repos[:25]:  # Discord limits to 25 options
+                repo_name = repo['repo_name']
+                
+                # Check if user is subscribed
+                subscription = await self.bot.db.connection.fetchrow(
+                    "SELECT enabled FROM github_subscriptions WHERE user_id = $1 AND guild_id = $2 AND repo_name = $3",
+                    str(interaction.user.id), str(interaction.guild.id), repo_name
+                )
+                
+                is_subscribed = subscription and subscription['enabled'] if subscription else False
+                status = "🔔" if is_subscribed else "🔕"
+                
+                options.append(discord.SelectOption(
+                    label=f"{status} {repo_name}",
+                    description=f"Notifications: {'Enabled' if is_subscribed else 'Disabled'}",
+                    value=repo_name
+                ))
+
+            # Create view with dropdown
+            view = RepoManagementView(self.bot, options, interaction.user.id, str(interaction.guild.id))
+
             embed = discord.Embed(
                 title="🐙 Tracked GitHub Repositories",
-                description=f"This server is tracking {len(repos)} repositories",
+                description=f"This server is tracking {len(repos)} repositories\n\n"
+                           f"🔔 = Notifications enabled\n"
+                           f"🔕 = Notifications disabled\n\n"
+                           f"Select a repository below to view details and toggle notifications.",
                 color=0x333333  # GitHub dark
             )
-            
-            for repo in repos:
-                repo_name = repo['repo_name']
-                channel_id = repo['channel_id']
-                added_by = repo['added_by']
-                
-                channel = interaction.guild.get_channel(int(channel_id))
-                channel_mention = channel.mention if channel else "Unknown Channel"
-                
-                user = interaction.guild.get_member(int(added_by))
-                user_name = user.display_name if user else "Unknown User"
-                
-                embed.add_field(
-                    name=repo_name,
-                    value=f"**Channel:** {channel_mention}\n**Added by:** {user_name}",
-                    inline=True
-                )
-            
-            await interaction.followup.send(embed=embed)
-            
+
+            await interaction.followup.send(embed=embed, view=view)
+
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to list repositories: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
@@ -420,6 +474,135 @@ class RepoSubscriptionDropdown(discord.ui.Select):
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to update subscriptions: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
+
+class RepoManagementView(discord.ui.View):
+    def __init__(self, bot, options, user_id, guild_id):
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.user_id = user_id
+        self.guild_id = guild_id
+        
+        # Add dropdown
+        self.add_item(RepoManagementDropdown(bot, options, user_id, guild_id))
+
+class RepoManagementDropdown(discord.ui.Select):
+    def __init__(self, bot, options, user_id, guild_id):
+        super().__init__(
+            placeholder="Select a repository to manage...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+        self.bot = bot
+        self.user_id = user_id
+        self.guild_id = guild_id
+    
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != int(self.user_id):
+            await interaction.response.send_message("This menu is not for you!", ephemeral=True)
+            return
+        
+        selected_repo = self.values[0]
+        
+        try:
+            # Get repository details
+            repo_info = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM github_tracked_repos WHERE guild_id = $1 AND repo_name = $2",
+                self.guild_id, selected_repo
+            )
+            
+            if not repo_info:
+                await interaction.response.send_message("Repository not found!", ephemeral=True)
+                return
+            
+            # Check subscription status
+            subscription = await self.bot.db.connection.fetchrow(
+                "SELECT enabled FROM github_subscriptions WHERE user_id = $1 AND guild_id = $2 AND repo_name = $3",
+                str(self.user_id), self.guild_id, selected_repo
+            )
+            
+            is_subscribed = subscription and subscription['enabled'] if subscription else False
+            
+            # Get channel info
+            channel = interaction.guild.get_channel(int(repo_info['channel_id']))
+            channel_mention = channel.mention if channel else "Unknown Channel"
+            
+            # Get added by user info
+            added_by_user = interaction.guild.get_member(int(repo_info['added_by']))
+            added_by_name = added_by_user.display_name if added_by_user else "Unknown User"
+            
+            embed = discord.Embed(
+                title=f"🐙 {selected_repo}",
+                description=f"Repository tracking details",
+                color=0x333333,  # GitHub dark
+                url=f"https://github.com/{selected_repo}"
+            )
+            
+            embed.add_field(name="Channel", value=channel_mention, inline=True)
+            embed.add_field(name="Added by", value=added_by_name, inline=True)
+            embed.add_field(name="Your Notifications", value="🔔 Enabled" if is_subscribed else "🔕 Disabled", inline=True)
+            
+            embed.add_field(
+                name="Tracked Events",
+                value="• New commits\n• Star count changes\n• New pull requests",
+                inline=False
+            )
+            
+            # Create toggle button view
+            toggle_view = RepoToggleView(self.bot, selected_repo, self.user_id, self.guild_id, is_subscribed)
+            
+            await interaction.response.send_message(embed=embed, view=toggle_view, ephemeral=True)
+            
+        except Exception as e:
+            await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
+
+class RepoToggleView(discord.ui.View):
+    def __init__(self, bot, repo_name, user_id, guild_id, is_subscribed):
+        super().__init__(timeout=60)
+        self.bot = bot
+        self.repo_name = repo_name
+        self.user_id = user_id
+        self.guild_id = guild_id
+        self.is_subscribed = is_subscribed
+        
+        # Add toggle button
+        button_label = "🔕 Disable Notifications" if is_subscribed else "🔔 Enable Notifications"
+        button_style = discord.ButtonStyle.danger if is_subscribed else discord.ButtonStyle.success
+        
+        self.toggle_button = discord.ui.Button(
+            label=button_label,
+            style=button_style,
+            custom_id="toggle_notifications"
+        )
+        self.toggle_button.callback = self.toggle_notifications
+        self.add_item(self.toggle_button)
+    
+    async def toggle_notifications(self, interaction: discord.Interaction):
+        if interaction.user.id != int(self.user_id):
+            await interaction.response.send_message("This button is not for you!", ephemeral=True)
+            return
+        
+        try:
+            new_status = not self.is_subscribed
+            
+            # Update or create subscription
+            await self.bot.db.connection.execute(
+                """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, enabled) 
+                   VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, guild_id, repo_name) DO UPDATE SET enabled = $4""",
+                str(self.user_id), self.guild_id, self.repo_name, new_status
+            )
+            
+            status_text = "enabled" if new_status else "disabled"
+            embed = EmbedBuilder.success(
+                "Notification Settings Updated",
+                f"Notifications for **{self.repo_name}** have been {status_text}."
+            )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to update notifications: {str(e)}")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(GitHubIntegrations(bot))

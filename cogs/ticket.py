@@ -7,6 +7,7 @@ from utils.helpers import EmbedBuilder
 from config.constants import TicketStatus
 from utils.ticket_manager import TicketJoinRequestView
 import asyncio
+from typing import Optional
 
 class TicketView(discord.ui.View):
     def __init__(self, bot, ticket_id: str):

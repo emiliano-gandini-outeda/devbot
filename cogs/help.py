@@ -41,7 +41,7 @@ class HelpDropdown(discord.ui.Select):
             ),
             discord.SelectOption(
                 label="🔗 Integrations",
-                description="Google, GitHub, Notion, Trello connections",
+                description="Google, Notion, Trello connections",
                 emoji="🔗",
                 value="integrations"
             ),
@@ -127,6 +127,8 @@ class HelpDropdown(discord.ui.Select):
             "`/help` - Show this help menu",
             "`/user-permissions [user]` - Show user permissions",
             "`/role-info <role>` - Show role information",
+            "`/see-user [user]` - View user information",
+            "`/privacy-export-data` - Export your personal data",
             "`/privacy-policy` - View privacy policy",
             "`/terms-of-service` - View terms of service"
         ]
@@ -276,27 +278,13 @@ class HelpDropdown(discord.ui.Select):
         ]
         
         github_commands = [
-            "`/track-repo <repo> <notify>` - Track GitHub repository",
-            "`/list-repos` - List tracked repositories",
+            "`/track-repo <repo>` - Track GitHub repository",
+            "`/list-repos` - List tracked repositories with toggle options",
             "`/untrack-repo <repo>` - Stop tracking a repository"
-        ]
-        
-        notion_commands = [
-            "`/notion-connect` - Connect your Notion account",
-            "`/notion-databases` - List your Notion databases",
-            "`/create-note <title> <content>` - Create Notion note"
-        ]
-        
-        trello_commands = [
-            "`/trello-connect` - Connect your Trello account",
-            "`/trello-boards` - List your Trello boards",
-            "`/create-task <board_id> <list_name> <task_name>` - Create Trello task"
         ]
         
         embed.add_field(name="📅 Google Calendar", value="\n".join(google_commands), inline=False)
         embed.add_field(name="🐙 GitHub", value="\n".join(github_commands), inline=False)
-        embed.add_field(name="📚 Notion", value="\n".join(notion_commands), inline=False)
-        embed.add_field(name="📋 Trello", value="\n".join(trello_commands), inline=False)
         
         return embed
     
@@ -363,11 +351,11 @@ class HelpDropdown(discord.ui.Select):
         )
         
         commands = [
-            "`/privacy-export-data` - Export your personal data",
+            "`/privacy-export-data` - Request export of your personal data",
             "`/privacy-delete-data` - Request deletion of your personal data",
-            "`/privacy-get-data` - View summary of your stored data",
             "`/privacy-policy` - View the bot's privacy policy",
-            "`/terms-of-service` - View the bot's terms of service"
+            "`/terms-of-service` - View the bot's terms of service",
+            "`/privacy-get-data` - View summary of your stored data"
         ]
         
         embed.add_field(
@@ -375,17 +363,6 @@ class HelpDropdown(discord.ui.Select):
             value="\n".join(commands),
             inline=False
         )
-        
-        if self.is_admin:
-            admin_commands = [
-                "`/get-data <user>` - Get all data for a specific user"
-            ]
-            
-            embed.add_field(
-                name="Admin Commands",
-                value="\n".join(admin_commands),
-                inline=False
-            )
         
         return embed
     
@@ -401,27 +378,12 @@ class HelpDropdown(discord.ui.Select):
             "`/remove-admin-role <role>` - Remove role from admin list",
             "`/list-admin-roles` - List all admin roles",
             "`/admin-panel` - View bot status and configuration",
-            "`/get-data <user>` - Get all data for a specific user"
+            "`/get-data <user>` - Get user's data in JSON format"
         ]
         
         embed.add_field(
-            name="Admin Management",
+            name="Available Commands",
             value="\n".join(admin_commands),
-            inline=False
-        )
-        
-        setup_commands = [
-            "`/ticket-system-setup <category> <transcript_channel>` - Setup tickets",
-            "`/setup-logs <log_channel> [events]` - Setup server logging",
-            "`/setup-tracking <tracking_channel>` - Setup GitHub tracking",
-            "`/setup-meetings <announcement_channel> <voice_channel>` - Setup meetings",
-            "`/setup-reminders <reminder_channel>` - Setup reminder system",
-            "`/setup-threads <thread_log_channel>` - Setup thread logging"
-        ]
-        
-        embed.add_field(
-            name="Setup Commands",
-            value="\n".join(setup_commands),
             inline=False
         )
         
@@ -458,7 +420,7 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             embed.add_field(
                 name="Admin Commands",
-                value="`/setup-logs <log_channel> [events]` - Configure logging channel",
+                value="`/setup-logs <log_channel>` - Configure logging channel",
                 inline=False
             )
         
@@ -490,7 +452,7 @@ class Help(commands.Cog):
         is_admin = self.bot.admin_manager.is_admin(interaction.user) if self.bot.admin_manager else False
         
         embed = discord.Embed(
-            title="🤖 devBot Help Menu",
+            title="🤖 Bot Help Menu",
             description="Welcome to the devBot help system! Use the dropdown menu below to explore different command categories.\n\n"
                        f"**Your Access Level:** {'Administrator' if is_admin else 'User'}\n"
                        f"**Total Categories:** {12 if is_admin else 9}",
@@ -505,23 +467,7 @@ class Help(commands.Cog):
             inline=False
         )
         
-        embed.add_field(
-            name="🔧 Setup Commands",
-            value="• `/ticket-system-setup` - Configure support tickets\n"
-                  "• `/setup-logs` - Configure server logging\n"
-                  "• `/add-admin-role` - Add admin roles",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="🚀 Popular Commands",
-            value="• `/ticket create` - Get support\n"
-                  "• `/remind` - Set reminders\n"
-                  "• `/track-repo` - Track GitHub repos",
-            inline=True
-        )
-        
-        embed.set_footer(text="devBot - Powered by EGOS")
+        embed.set_footer(text="Select a category below to view detailed commands")
         
         view = HelpView(self.bot, is_admin)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
