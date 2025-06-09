@@ -228,112 +228,59 @@ class DiscordBot(commands.Bot):
         logger.info("🤖 Starting Discord bot setup...")
         
         try:
-            # Initialize database with timeout
+            # Initialize database
             logger.info("📊 Initializing database...")
-            try:
-                async with asyncio.timeout(30):  # 30 second timeout for database
-                    self.db = DatabaseManager()
-                    await self.db.init_database()
-                    logger.info("✅ Database initialized successfully")
-            except asyncio.TimeoutError:
-                logger.error("❌ Database initialization timed out after 30 seconds")
+            self.db = DatabaseManager()
+            await self.db.init_database()
+            
+            # Verify database tables
+            tables_ok = await self.db.verify_tables()
+            if not tables_ok:
+                logger.error("❌ Database tables verification failed")
                 return
-            except Exception as e:
-                logger.error(f"❌ Database initialization failed: {e}")
+            
+            # Test database connection
+            connection_ok = await self.db.test_connection()
+            if not connection_ok:
+                logger.error("❌ Database connection test failed")
                 return
-        
-            # Verify database tables with timeout
-            logger.info("🔍 Verifying database tables...")
-            try:
-                async with asyncio.timeout(15):  # 15 second timeout for table verification
-                    tables_ok = await self.db.verify_tables()
-                    if not tables_ok:
-                        logger.error("❌ Database tables verification failed")
-                        return
-                    logger.info("✅ Database tables verified successfully")
-            except asyncio.TimeoutError:
-                logger.error("❌ Database table verification timed out after 15 seconds")
-                return
-        
-            # Test database connection with timeout
-            logger.info("🧪 Testing database connection...")
-            try:
-                async with asyncio.timeout(10):  # 10 second timeout for connection test
-                    connection_ok = await self.db.test_connection()
-                    if not connection_ok:
-                        logger.error("❌ Database connection test failed")
-                        return
-                    logger.info("✅ Database connection test passed")
-            except asyncio.TimeoutError:
-                logger.error("❌ Database connection test timed out after 10 seconds")
-                return
-        
-            # Initialize managers with timeout
+            
+            # Initialize managers
             logger.info("🛡️ Initializing managers...")
-            try:
-                async with asyncio.timeout(20):  # 20 second timeout for managers
-                    # Admin manager
-                    logger.info("  • Initializing Admin Manager...")
-                    self.admin_manager = AdminManager(self)
-                    await self.admin_manager.load_admin_roles()
-                    logger.info("  ✅ Admin Manager initialized")
-                
-                    # Ticket manager
-                    logger.info("  • Initializing Ticket Manager...")
-                    self.ticket_manager = TicketManager(self)
-                    await self.ticket_manager.load_ticket_configs()
-                    logger.info("  ✅ Ticket Manager initialized")
-                
-                    # Logging manager
-                    logger.info("  • Initializing Logging Manager...")
-                    self.logging_manager = LoggingManager(self)
-                    await self.logging_manager.load_log_configs()
-                    logger.info("  ✅ Logging Manager initialized")
-                
-                    # Workflow manager
-                    logger.info("  • Initializing Workflow Manager...")
-                    self.workflow_manager = WorkflowManager(self)
-                    await self.workflow_manager.load_workflows()
-                    logger.info("  ✅ Workflow Manager initialized")
-                
-                    logger.info("✅ All managers initialized successfully")
-            except asyncio.TimeoutError:
-                logger.error("❌ Manager initialization timed out after 20 seconds")
-                return
-            except Exception as e:
-                logger.error(f"❌ Manager initialization failed: {e}")
-                logger.exception("Manager initialization traceback:")
-                return
-        
-            # Load cogs with timeout
+            
+            # Admin manager
+            self.admin_manager = AdminManager(self)
+            await self.admin_manager.load_admin_roles()
+            
+            # Ticket manager
+            self.ticket_manager = TicketManager(self)
+            await self.ticket_manager.load_ticket_configs()
+            
+            # Logging manager
+            self.logging_manager = LoggingManager(self)
+            await self.logging_manager.load_log_configs()
+            
+            # Workflow manager
+            self.workflow_manager = WorkflowManager(self)
+            await self.workflow_manager.load_workflows()
+            
+            logger.info("✅ All managers initialized successfully")
+            
+            # Load cogs
             logger.info("🔧 Loading cogs...")
-            try:
-                async with asyncio.timeout(30):  # 30 second timeout for cog loading
-                    await self.load_cogs()
-                    logger.info("✅ Cogs loaded successfully")
-            except asyncio.TimeoutError:
-                logger.error("❌ Cog loading timed out after 30 seconds")
-                return
-            except Exception as e:
-                logger.error(f"❌ Cog loading failed: {e}")
-                return
-        
-            # Sync commands with timeout (this often hangs)
+            await self.load_cogs()
+            
+            # Sync commands
             logger.info("🔄 Syncing slash commands...")
             try:
-                async with asyncio.timeout(20):  # 20 second timeout for command sync
-                    synced = await self.tree.sync()
-                    logger.info(f"✅ Synced {len(synced)} slash commands")
-            except asyncio.TimeoutError:
-                logger.warning("⚠️ Command sync timed out after 20 seconds - continuing without sync")
-                # Don't return here, let the bot continue without syncing
+                synced = await self.tree.sync()
+                logger.info(f"✅ Synced {len(synced)} slash commands")
             except Exception as e:
-                logger.warning(f"⚠️ Command sync failed: {e} - continuing without sync")
-                # Don't return here, let the bot continue without syncing
-        
+                logger.error(f"❌ Failed to sync commands: {e}")
+            
             self.startup_complete = True
             logger.info("✅ Bot setup completed successfully!")
-        
+            
         except Exception as e:
             logger.error(f"❌ Critical error during setup: {e}")
             logger.exception("Full traceback:")
@@ -366,18 +313,14 @@ class DiscordBot(commands.Bot):
         
         for cog in cogs:
             try:
-                logger.info(f"  • Loading {cog}...")
-                async with asyncio.timeout(5):  # 5 second timeout per cog
-                    await self.load_extension(cog)
-                    loaded_count += 1
-                    logger.info(f"  ✅ Loaded {cog}")
-            except asyncio.TimeoutError:
-                failed_count += 1
-                logger.error(f"  ❌ {cog} timed out after 5 seconds")
+                await self.load_extension(cog)
+                loaded_count += 1
+                logger.info(f"✅ Loaded {cog}")
             except Exception as e:
                 failed_count += 1
-                logger.error(f"  ❌ Failed to load {cog}: {e}")
-    
+                logger.error(f"❌ Failed to load {cog}: {e}")
+                logger.exception(f"Full traceback for {cog}:")
+        
         logger.info(f"📦 Loaded {loaded_count}/{len(cogs)} cogs successfully")
         if failed_count > 0:
             logger.warning(f"⚠️ {failed_count} cogs failed to load")
@@ -594,7 +537,7 @@ async def main():
     
     try:
         # Add a timeout to prevent hanging
-        async with asyncio.timeout(180):  # 3 minute timeout for startup
+        async with asyncio.timeout(120):  # 2 minute timeout for startup
             await bot.start(Settings.DISCORD_TOKEN)
     except asyncio.TimeoutError:
         logger.error("❌ Bot startup timed out after 2 minutes")
