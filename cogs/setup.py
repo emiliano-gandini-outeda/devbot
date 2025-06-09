@@ -64,17 +64,19 @@ class Setup(commands.Cog):
             }
             
             if self.bot.db.is_postgresql:
+                # Fixed: Use proper INSERT with explicit column names
                 await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, data_type, data_content) 
-                       VALUES ($1, $2, $3) 
-                       ON CONFLICT (user_id, data_type) DO UPDATE SET data_content = $3""",
+                    """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
+                       VALUES ($1, $1, $2, $3) 
+                       ON CONFLICT (user_id, data_type) 
+                       DO UPDATE SET data_content = $3, guild_id = $1""",
                     str(interaction.guild.id), 'github_tracking_config', json.dumps(config)
                 )
             else:
                 await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, data_type, data_content) 
-                       VALUES (?, ?, ?)""",
-                    (str(interaction.guild.id), 'github_tracking_config', json.dumps(config))
+                    """INSERT OR REPLACE INTO user_data (user_id, guild_id, data_type, data_content) 
+                       VALUES (?, ?, ?, ?)""",
+                    (str(interaction.guild.id), str(interaction.guild.id), 'github_tracking_config', json.dumps(config))
                 )
                 await self.bot.db.connection.commit()
             
@@ -83,7 +85,7 @@ class Setup(commands.Cog):
                 f"GitHub repository tracking has been configured!\n\n"
                 f"**Tracking Channel:** {tracking_channel.mention}\n\n"
                 f"All repository updates will be sent to this channel.\n"
-                f"Users can now track repositories using `/github track-repo`"
+                f"Users can now track repositories using `/track-repo`"
             )
             
             await interaction.response.send_message(embed=embed)
@@ -158,17 +160,19 @@ class Setup(commands.Cog):
             }
             
             if self.bot.db.is_postgresql:
+                # Fixed: Use proper INSERT with explicit column names
                 await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, data_type, data_content) 
-                       VALUES ($1, $2, $3) 
-                       ON CONFLICT (user_id, data_type) DO UPDATE SET data_content = $3""",
+                    """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
+                       VALUES ($1, $1, $2, $3) 
+                       ON CONFLICT (user_id, data_type) 
+                       DO UPDATE SET data_content = $3, guild_id = $1""",
                     str(interaction.guild.id), 'meeting_config', json.dumps(config)
                 )
             else:
                 await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, data_type, data_content) 
-                       VALUES (?, ?, ?)""",
-                    (str(interaction.guild.id), 'meeting_config', json.dumps(config))
+                    """INSERT OR REPLACE INTO user_data (user_id, guild_id, data_type, data_content) 
+                       VALUES (?, ?, ?, ?)""",
+                    (str(interaction.guild.id), str(interaction.guild.id), 'meeting_config', json.dumps(config))
                 )
                 await self.bot.db.connection.commit()
             
@@ -177,8 +181,8 @@ class Setup(commands.Cog):
                 f"Meeting system has been configured!\n\n"
                 f"**Announcement Channel:** {announcement_channel.mention}\n"
                 f"**Default Voice Channel:** {voice_channel.mention}\n\n"
-                f"Users can now create meetings using `/meeting create`\n"
-                f"Admins can create server-wide meetings using `/meeting admin-create`"
+                f"Users can now create meetings using `/create-meeting`\n"
+                f"Admins can create server-wide meetings using `/admin-meeting`"
             )
             
             await interaction.response.send_message(embed=embed)
@@ -205,17 +209,19 @@ class Setup(commands.Cog):
             }
             
             if self.bot.db.is_postgresql:
+                # Fixed: Use proper INSERT with explicit column names
                 await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, data_type, data_content) 
-                       VALUES ($1, $2, $3) 
-                       ON CONFLICT (user_id, data_type) DO UPDATE SET data_content = $3""",
+                    """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
+                       VALUES ($1, $1, $2, $3) 
+                       ON CONFLICT (user_id, data_type) 
+                       DO UPDATE SET data_content = $3, guild_id = $1""",
                     str(interaction.guild.id), 'reminder_config', json.dumps(config)
                 )
             else:
                 await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, data_type, data_content) 
-                       VALUES (?, ?, ?)""",
-                    (str(interaction.guild.id), 'reminder_config', json.dumps(config))
+                    """INSERT OR REPLACE INTO user_data (user_id, guild_id, data_type, data_content) 
+                       VALUES (?, ?, ?, ?)""",
+                    (str(interaction.guild.id), str(interaction.guild.id), 'reminder_config', json.dumps(config))
                 )
                 await self.bot.db.connection.commit()
             
@@ -224,7 +230,7 @@ class Setup(commands.Cog):
                 f"Reminder system has been configured!\n\n"
                 f"**Fallback Channel:** {reminder_channel.mention}\n\n"
                 f"When DMs fail, reminders will be sent to this channel.\n"
-                f"Users can now create reminders using `/reminder create`"
+                f"Users can now create reminders using `/remind`"
             )
             
             await interaction.response.send_message(embed=embed)
@@ -251,17 +257,19 @@ class Setup(commands.Cog):
             }
             
             if self.bot.db.is_postgresql:
+                # Fixed: Use proper INSERT with explicit column names
                 await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, data_type, data_content) 
-                       VALUES ($1, $2, $3) 
-                       ON CONFLICT (user_id, data_type) DO UPDATE SET data_content = $3""",
+                    """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
+                       VALUES ($1, $1, $2, $3) 
+                       ON CONFLICT (user_id, data_type) 
+                       DO UPDATE SET data_content = $3, guild_id = $1""",
                     str(interaction.guild.id), 'thread_config', json.dumps(config)
                 )
             else:
                 await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, data_type, data_content) 
-                       VALUES (?, ?, ?)""",
-                    (str(interaction.guild.id), 'thread_config', json.dumps(config))
+                    """INSERT OR REPLACE INTO user_data (user_id, guild_id, data_type, data_content) 
+                       VALUES (?, ?, ?, ?)""",
+                    (str(interaction.guild.id), str(interaction.guild.id), 'thread_config', json.dumps(config))
                 )
                 await self.bot.db.connection.commit()
             
@@ -270,7 +278,7 @@ class Setup(commands.Cog):
                 f"Thread logging has been configured!\n\n"
                 f"**Thread Log Channel:** {thread_log_channel.mention}\n\n"
                 f"When threads are archived, transcripts will be sent to this channel.\n"
-                f"Use `/thread archive` to archive threads with transcripts."
+                f"Use `/archive-thread` to archive threads with transcripts."
             )
             
             await interaction.response.send_message(embed=embed)

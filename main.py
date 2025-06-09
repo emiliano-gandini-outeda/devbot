@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 import aiosqlite
+import signal
 
 # Add the project root to the Python path
 project_root = Path(__file__).parent
@@ -29,6 +30,9 @@ logging.basicConfig(
 )
 
 logger = logging.getLogger(__name__)
+
+# Global flag to prevent shutdown
+SHUTDOWN_REQUESTED = False
 
 class DiscordBot(commands.Bot):
     def __init__(self):
@@ -259,6 +263,7 @@ class DiscordBot(commands.Bot):
                         CREATE TABLE IF NOT EXISTS user_data (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             user_id TEXT NOT NULL,
+                            guild_id TEXT,
                             data_type TEXT NOT NULL,
                             data_content TEXT DEFAULT '{}',
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -494,7 +499,7 @@ class DiscordBot(commands.Bot):
                 )
                 embed.add_field(
                     name="🚀 Getting Started",
-                    value="Use `/help` to see all available commands\nUse `/ticket-setup` to configure the ticket system",
+                    value="Use `/help` to see all available commands\nUse `/ticket-system-setup` to configure the ticket system",
                     inline=False
                 )
                 embed.add_field(
@@ -634,6 +639,13 @@ class DiscordBot(commands.Bot):
     
     async def close(self):
         """Clean shutdown"""
+        global SHUTDOWN_REQUESTED
+        
+        # Only close if shutdown was requested
+        if not SHUTDOWN_REQUESTED:
+            logger.warning("🛑 Shutdown attempted but SHUTDOWN_REQUESTED is False - ignoring")
+            return
+            
         logger.info("🔄 Shutting down bot...")
         
         # Close database connection
@@ -644,8 +656,25 @@ class DiscordBot(commands.Bot):
         await super().close()
         logger.info("✅ Bot shutdown complete")
 
+# Signal handlers
+def handle_sigterm(signum, frame):
+    global SHUTDOWN_REQUESTED
+    logger.info("🛑 Received SIGTERM signal")
+    SHUTDOWN_REQUESTED = True
+
+def handle_sigint(signum, frame):
+    global SHUTDOWN_REQUESTED
+    logger.info("🛑 Received SIGINT signal")
+    SHUTDOWN_REQUESTED = True
+
 async def main():
     """Main function to run the bot"""
+    global SHUTDOWN_REQUESTED
+    
+    # Register signal handlers
+    signal.signal(signal.SIGTERM, handle_sigterm)
+    signal.signal(signal.SIGINT, handle_sigint)
+    
     logger.info("🚀 Starting Discord Bot...")
     
     # Validate environment variables
@@ -656,27 +685,23 @@ async def main():
         logger.error(f"❌ Environment validation failed: {e}")
         return
     
-    # Create and run bot
+    # Create bot
     bot = DiscordBot()
     
+    # Start the bot without timeout
     try:
-        # Add a timeout to prevent hanging - increased timeout
-        async with asyncio.timeout(300):  # 5 minute timeout for startup
-            await bot.start(Settings.DISCORD_TOKEN)
-    except asyncio.TimeoutError:
-        logger.error("❌ Bot startup timed out after 5 minutes")
-        # Don't close the bot, let it continue running
-        logger.info("🔄 Continuing bot operation despite timeout...")
+        logger.info("🔄 Starting bot (no timeout)...")
+        await bot.start(Settings.DISCORD_TOKEN)
     except discord.LoginFailure:
         logger.error("❌ Invalid Discord token")
-        await bot.close()
+        SHUTDOWN_REQUESTED = True
     except Exception as e:
         logger.error(f"❌ Unexpected error: {e}")
         logger.exception("Full traceback:")
-        # Don't close the bot for unexpected errors, try to continue
-        logger.info("🔄 Attempting to continue despite error...")
     finally:
-        if not bot.is_closed():
+        # Only close if shutdown was requested
+        if SHUTDOWN_REQUESTED and not bot.is_closed():
+            logger.info("🔄 Performing final shutdown...")
             await bot.close()
 
 if __name__ == "__main__":
@@ -690,6 +715,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("🛑 Bot stopped by user")
+        SHUTDOWN_REQUESTED = True
     except Exception as e:
         logger.error(f"❌ Fatal error: {e}")
         logger.exception("Full traceback:")
