@@ -128,7 +128,6 @@ Continued use after changes constitutes acceptance of the updated policy.
 For privacy-related questions, concerns, or requests:
 - Contact us through our official Discord server
 - Submit issues through our GitHub repository
-- Use the Bot's built-in support commands
 
 15. COMPLIANCE
 
