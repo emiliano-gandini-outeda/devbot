@@ -295,7 +295,7 @@ class DatabaseManager:
                 try:
                     async with asyncio.timeout(5):  # 5 second timeout per table
                         await self.connection.execute(table_sql)
-                        table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0]
+                        table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0] if "CREATE TABLE" in table_sql else "constraint"
                         logger.info(f"✅ Created {batch_name} table {i}/{len(tables)}: {table_name}")
                 except asyncio.TimeoutError:
                     logger.error(f"❌ Table creation timed out: {batch_name} table {i}")

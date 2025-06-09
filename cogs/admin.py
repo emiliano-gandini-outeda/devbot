@@ -21,6 +21,11 @@ class Admin(commands.Cog):
             return
         
         try:
+            if not self.bot.admin_manager:
+                embed = EmbedBuilder.error("Error", "Admin manager not available")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+                
             success = await self.bot.admin_manager.add_admin_role(str(interaction.guild.id), str(role.id))
             
             if success:
@@ -48,6 +53,11 @@ class Admin(commands.Cog):
             return
         
         try:
+            if not self.bot.admin_manager:
+                embed = EmbedBuilder.error("Error", "Admin manager not available")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+                
             success = await self.bot.admin_manager.remove_admin_role(str(interaction.guild.id), str(role.id))
             
             if success:
@@ -67,6 +77,11 @@ class Admin(commands.Cog):
     @app_commands.command(name="list-admin-roles", description="List all admin roles")
     async def list_admin_roles(self, interaction: discord.Interaction):
         try:
+            if not self.bot.admin_manager:
+                embed = EmbedBuilder.error("Error", "Admin manager not available")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+                
             admin_role_ids = self.bot.admin_manager.get_admin_roles(str(interaction.guild.id))
             
             if not admin_role_ids:
@@ -107,7 +122,7 @@ class Admin(commands.Cog):
     
     @app_commands.command(name="admin-panel", description="View bot status and server configuration (Admin only)")
     async def admin_panel(self, interaction: discord.Interaction):
-        if not self.bot.admin_manager.is_admin(interaction.user):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can access the admin panel")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -122,7 +137,6 @@ class Admin(commands.Cog):
             )
             
             # Bot Status
-            uptime = datetime.utcnow() - self.bot.user.created_at
             embed.add_field(
                 name="🤖 Bot Status",
                 value=f"**Status:** 🟢 Online\n"
@@ -275,7 +289,7 @@ class Admin(commands.Cog):
     @app_commands.command(name="get-data", description="Get all data for a user (Admin only)")
     @app_commands.describe(user="User to get data for")
     async def get_data(self, interaction: discord.Interaction, user: discord.Member):
-        if not self.bot.admin_manager.is_admin(interaction.user):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can use this command")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -359,4 +373,4 @@ class Admin(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))
-    print(f"🛡️ Successfully loaded Admin cog")
+    print(f"🛡️ Successfully loaded Admin cog with {len(Admin(bot).get_app_commands())} commands")

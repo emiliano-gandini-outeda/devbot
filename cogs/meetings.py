@@ -165,13 +165,39 @@ class MeetingManager:
             if not meeting:
                 return
             
-            # Get guild and channel
+            # Get guild
             guild = self.bot.get_guild(int(meeting['guild_id']))
             if not guild:
                 return
             
-            channel = guild.get_channel(int(meeting['channel_id']))
-            if not channel:
+            # Get announcement channel from meeting config
+            announcement_channel = None
+            try:
+                if self.bot.db.is_postgresql:
+                    config_row = await self.bot.db.connection.fetchrow(
+                        "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                        str(guild.id), 'meeting_config'
+                    )
+                    if config_row:
+                        config = json.loads(config_row['data_content'])
+                        announcement_channel = guild.get_channel(int(config['announcement_channel_id']))
+                else:
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT data_content FROM user_data WHERE user_id = ? AND data_type = ?",
+                        (str(guild.id), 'meeting_config')
+                    )
+                    row = await cursor.fetchone()
+                    if row:
+                        config = json.loads(row[0])
+                        announcement_channel = guild.get_channel(int(config['announcement_channel_id']))
+            except Exception as e:
+                print(f"Error getting meeting config for starting notification: {e}")
+            
+            # Fallback to original channel if no announcement channel
+            if not announcement_channel and meeting['channel_id']:
+                announcement_channel = guild.get_channel(int(meeting['channel_id']))
+            
+            if not announcement_channel:
                 return
             
             # Get voice channel
@@ -188,7 +214,7 @@ class MeetingManager:
             
             # Create meeting start embed
             embed = discord.Embed(
-                title=f"🔔 Meeting Starting: {meeting['name']}",
+                title=f"🔔 Meeting Starting Now: {meeting['name']}",
                 description=meeting['description'],
                 color=0x57F287
             )
@@ -198,11 +224,22 @@ class MeetingManager:
             if voice_channel:
                 embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
             
+            embed.add_field(name="Started", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+            
             if participants:
-                mentions = " ".join([user.mention for user in participants])
-                await channel.send(f"Meeting participants: {mentions}", embed=embed)
+                participant_mentions = " ".join([user.mention for user in participants[:10]])  # Limit to 10 mentions
+                if len(participants) > 10:
+                    participant_mentions += f" and {len(participants) - 10} others"
+                
+                embed.add_field(
+                    name=f"Participants ({len(participants)})",
+                    value=participant_mentions,
+                    inline=False
+                )
+                
+                await announcement_channel.send(f"🔔 **Meeting participants:** {participant_mentions}", embed=embed)
             else:
-                await channel.send(embed=embed)
+                await announcement_channel.send(embed=embed)
             
             # Mark meeting as started
             meeting['status'] = 'started'
@@ -649,10 +686,4 @@ class Meetings(commands.Cog):
 async def setup(bot):
     cog = Meetings(bot)
     await bot.add_cog(cog)
-    
-    # Ensure commands are added to the tree
-    for command in cog.__cog_app_commands__:
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
-    
     print(f"📅 Successfully loaded Meetings cog with {len(cog.get_app_commands())} commands")
