@@ -314,17 +314,20 @@ class Workflows(commands.Cog):
                 )
                 await self.bot.db.connection.commit()
             
-            # Format action description
+            # Format action description - Fixed f-string backslash issue
             action_desc = f"**Type:** {action_type}\n"
             if action_type == "send_message":
-                action_desc += f"**Channel:** {'Same as trigger' if channel == 'same' else f'<#{action_data[\"channel_id\"]}>'}\n"
-                action_desc += f"**Message:** {message[:100]}{'...' if len(message) > 100 else ''}"
+                channel_text = 'Same as trigger' if channel == 'same' else f'<#{action_data["channel_id"]}>'
+                action_desc += f"**Channel:** {channel_text}\n"
+                message_preview = message[:100] + ('...' if len(message) > 100 else '')
+                action_desc += f"**Message:** {message_preview}"
             elif action_type == "add_role":
                 action_desc += f"**Role:** {role.mention}"
             elif action_type == "create_channel":
                 action_desc += f"**Channel Name:** {channel_name}"
             elif action_type == "send_dm":
-                action_desc += f"**Message:** {message[:100]}{'...' if len(message) > 100 else ''}"
+                message_preview = message[:100] + ('...' if len(message) > 100 else '')
+                action_desc += f"**Message:** {message_preview}"
             
             embed = EmbedBuilder.success(
                 "Action Added",

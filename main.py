@@ -89,36 +89,9 @@ class SlackBot(commands.Bot):
                     logger.error(f"❌ Failed to load cog {cog}: {e}", exc_info=True)
 
             logger.info(f"Loaded {len(loaded_cogs)}/{len(cogs)} cogs successfully")
-
-            # Force sync slash commands to each guild (faster than global)
-            try:
-                logger.info("Syncing slash commands to guilds...")
-                synced_count = 0
-                
-                # Get all guilds the bot is currently in
-                await self.wait_until_ready()  # Make sure we have guild data
-                
-                for guild in self.guilds:
-                    try:
-                        synced = await self.tree.sync(guild=guild)
-                        synced_count += len(synced)
-                        logger.info(f"✅ Synced {len(synced)} commands to guild: {guild.name} ({guild.id})")
-                        
-                        # Small delay to avoid hitting rate limits
-                        await asyncio.sleep(0.1)
-                        
-                    except Exception as e:
-                        logger.error(f"❌ Failed to sync commands to guild {guild.name}: {e}")
-                
-                logger.info(f"✅ Total commands synced across all guilds: {synced_count}")
-                
-                # List all commands for debugging (from the tree, not synced)
-                all_commands = self.tree.get_commands()
-                for cmd in all_commands:
-                    logger.info(f"  - /{cmd.name}: {cmd.description}")
-                    
-            except Exception as e:
-                logger.error(f"❌ Failed to sync commands: {e}", exc_info=True)
+            
+            # Don't sync commands in setup_hook - do it in on_ready to avoid blocking
+            logger.info("Setup hook completed successfully")
                 
         except Exception as e:
             logger.error(f"Error in setup_hook: {e}", exc_info=True)
@@ -130,10 +103,7 @@ class SlackBot(commands.Bot):
         # List all loaded commands for debugging
         all_commands = self.tree.get_commands()
         logger.info(f"Total registered slash commands: {len(all_commands)}")
-        logger.info("Loaded slash commands:")
-        for command in all_commands:
-            logger.info(f"  - /{command.name}: {command.description}")
-            
+        
         # Check for specific commands that should be available
         command_names = [cmd.name for cmd in all_commands]
         logger.info(f"Command check - create-workflow: {'create-workflow' in command_names}")
@@ -141,7 +111,33 @@ class SlackBot(commands.Bot):
         logger.info(f"Command check - edit-reminder: {'edit-reminder' in command_names}")
         logger.info(f"Command check - remind: {'remind' in command_names}")
         
+        # Sync commands to guilds asynchronously (non-blocking)
+        asyncio.create_task(self.sync_commands_to_guilds())
+        
         logger.info(f'Bot deployment successful! 🚀')
+
+    async def sync_commands_to_guilds(self):
+        """Sync commands to all guilds asynchronously"""
+        try:
+            logger.info("Starting command sync to guilds...")
+            synced_count = 0
+            
+            for guild in self.guilds:
+                try:
+                    synced = await self.tree.sync(guild=guild)
+                    synced_count += len(synced)
+                    logger.info(f"✅ Synced {len(synced)} commands to guild: {guild.name} ({guild.id})")
+                    
+                    # Small delay to avoid hitting rate limits
+                    await asyncio.sleep(0.2)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to sync commands to guild {guild.name}: {e}")
+            
+            logger.info(f"✅ Command sync completed! Total: {synced_count} commands across {len(self.guilds)} guilds")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to sync commands: {e}", exc_info=True)
 
     # Add a sync command for debugging
     @commands.command(name='sync')
@@ -158,7 +154,7 @@ class SlackBot(commands.Bot):
             # List synced commands
             command_list = "\n".join([f"- /{cmd.name}" for cmd in synced])
             if len(command_list) < 1900:
-                await ctx.send(f"\`\`\`\nSynced commands:\n{command_list}\n\`\`\`")
+                await ctx.send(f"```\nSynced commands:\n{command_list}\n```")
         
             # Check total registered commands
             all_commands = self.tree.get_commands()
@@ -185,7 +181,6 @@ class SlackBot(commands.Bot):
                 except Exception as e:
                     await ctx.send(f"❌ {guild.name}: {e}")
             
-            # This line was incorrectly indented, causing the syntax error
             await ctx.send(f"✅ Completed! Total: {synced_count} commands across {len(self.guilds)} guilds")
             
         except Exception as e:

@@ -139,8 +139,9 @@ class Admin(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to setup ticket system: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="bot-status", description="Check bot status and loaded features (Admin only)")
-    async def bot_status(self, interaction: discord.Interaction):
+    # Renamed from bot_status to status_check to avoid Discord.py naming conflict
+    @app_commands.command(name="status-check", description="Check bot status and loaded features (Admin only)")
+    async def status_check(self, interaction: discord.Interaction):
         if not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can check bot status")
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -345,6 +346,26 @@ class Admin(commands.Cog):
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to retrieve user data: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @commands.command(name='list_commands')
+    @commands.is_owner()
+    async def list_commands_cmd(self, ctx):
+        """List all commands and their registration status"""
+        all_commands = self.bot.tree.get_commands()
+        
+        # Group by cog
+        cog_commands = {}
+        for cmd in all_commands:
+            cog_name = getattr(cmd, "_cog_name", "Unknown")
+            if cog_name not in cog_commands:
+                cog_commands[cog_name] = []
+            cog_commands[cog_name].append(cmd)
+        
+        for cog_name, cmds in cog_commands.items():
+            commands_text = "\n".join([f"- /{cmd.name}" for cmd in cmds])
+            await ctx.send(f"**{cog_name} Commands**:\n```\n{commands_text}\n```")
+        
+        await ctx.send(f"Total commands: {len(all_commands)}")
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))
