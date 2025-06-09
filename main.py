@@ -5,6 +5,7 @@ import logging
 import os
 import sys
 from pathlib import Path
+import aiosqlite
 
 # Add the project root to the Python path
 project_root = Path(__file__).parent
@@ -231,13 +232,22 @@ class DiscordBot(commands.Bot):
             # Initialize database with timeout
             logger.info("📊 Initializing database...")
             try:
-                async with asyncio.timeout(30):  # 30 second timeout for database
+                async with asyncio.timeout(60):  # Increased to 60 seconds for database
                     self.db = DatabaseManager()
                     await self.db.init_database()
                     logger.info("✅ Database initialized successfully")
             except asyncio.TimeoutError:
-                logger.error("❌ Database initialization timed out after 30 seconds")
-                return
+                logger.error("❌ Database initialization timed out after 60 seconds")
+                logger.info("🔄 Attempting to continue with basic functionality...")
+                # Try to create a minimal database connection
+                try:
+                    self.db = DatabaseManager()
+                    self.db.connection = await aiosqlite.connect("bot.db")
+                    self.db.is_postgresql = False
+                    logger.info("✅ Fallback SQLite database connected")
+                except Exception as e:
+                    logger.error(f"❌ Fallback database failed: {e}")
+                    return
             except Exception as e:
                 logger.error(f"❌ Database initialization failed: {e}")
                 return
@@ -245,15 +255,16 @@ class DiscordBot(commands.Bot):
             # Verify database tables with timeout
             logger.info("🔍 Verifying database tables...")
             try:
-                async with asyncio.timeout(15):  # 15 second timeout for table verification
+                async with asyncio.timeout(20):  # Increased timeout for table verification
                     tables_ok = await self.db.verify_tables()
                     if not tables_ok:
-                        logger.error("❌ Database tables verification failed")
-                        return
-                    logger.info("✅ Database tables verified successfully")
+                        logger.warning("⚠️ Some database tables missing - continuing with available tables")
+                    else:
+                        logger.info("✅ Database tables verified successfully")
             except asyncio.TimeoutError:
-                logger.error("❌ Database table verification timed out after 15 seconds")
-                return
+                logger.warning("⚠️ Database table verification timed out - continuing anyway")
+            except Exception as e:
+                logger.warning(f"⚠️ Database table verification failed: {e} - continuing anyway")
         
             # Test database connection with timeout
             logger.info("🧪 Testing database connection...")

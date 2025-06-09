@@ -25,15 +25,17 @@ class DatabaseManager:
             if self.is_postgresql:
                 # Railway PostgreSQL connection
                 try:
-                    # Use the direct URL for Railway
+                    # Use the direct URL for Railway with connection timeout
                     connection_url = "postgresql://postgres:QQCQuMDiLYyUhMLffEyUxizpDyYMxNxf@postgres.railway.internal:5432/railway"
-                    self.connection = await asyncpg.connect(connection_url)
+                    async with asyncio.timeout(10):  # 10 second connection timeout
+                        self.connection = await asyncpg.connect(connection_url)
                     logger.info("✅ Connected to Railway PostgreSQL database")
-                    
+                
                     # Test the connection
-                    result = await self.connection.fetchval("SELECT version()")
-                    logger.info(f"PostgreSQL version: {result}")
-                    
+                    async with asyncio.timeout(5):
+                        result = await self.connection.fetchval("SELECT version()")
+                        logger.info(f"PostgreSQL version: {result}")
+                
                 except Exception as e:
                     logger.error(f"❌ Failed to connect to PostgreSQL: {e}")
                     logger.info("Falling back to SQLite...")
@@ -44,8 +46,8 @@ class DatabaseManager:
                 # Local SQLite fallback
                 self.connection = await aiosqlite.connect("bot.db")
                 logger.info("✅ Connected to local SQLite database")
-            
-            await self.create_tables()
+        
+        await self.create_tables()
     
     async def create_tables(self):
         """Create all necessary database tables"""
@@ -59,9 +61,11 @@ class DatabaseManager:
             logger.error(f"❌ Failed to create database tables: {e}")
             raise
     
+    
     async def _create_postgresql_tables(self):
         """Create tables for PostgreSQL (Railway)"""
-        tables = [
+        # Create tables in smaller batches to avoid timeouts
+        essential_tables = [
             # Users table
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -76,7 +80,20 @@ class DatabaseManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
-            
+        
+            # Admin roles table
+            """
+            CREATE TABLE IF NOT EXISTS admin_roles (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                role_id TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, role_id)
+            )
+            """
+        ]
+    
+        core_tables = [
             # Tickets table
             """
             CREATE TABLE IF NOT EXISTS tickets (
@@ -94,7 +111,7 @@ class DatabaseManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
-            
+        
             # Reminders table
             """
             CREATE TABLE IF NOT EXISTS reminders (
@@ -110,7 +127,24 @@ class DatabaseManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
-            
+        
+            # Ticket configs table
+            """
+            CREATE TABLE IF NOT EXISTS ticket_configs (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT UNIQUE NOT NULL,
+                category_id TEXT,
+                support_role_id TEXT,
+                log_channel_id TEXT,
+                auto_close_hours INTEGER DEFAULT 72,
+                max_tickets_per_user INTEGER DEFAULT 3,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        ]
+    
+        feature_tables = [
             # Workflows table
             """
             CREATE TABLE IF NOT EXISTS workflows (
@@ -126,7 +160,7 @@ class DatabaseManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
-            
+        
             # User data table
             """
             CREATE TABLE IF NOT EXISTS user_data (
@@ -140,33 +174,7 @@ class DatabaseManager:
                 UNIQUE(user_id, data_type)
             )
             """,
-            
-            # Admin roles table
-            """
-            CREATE TABLE IF NOT EXISTS admin_roles (
-                id SERIAL PRIMARY KEY,
-                guild_id TEXT NOT NULL,
-                role_id TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(guild_id, role_id)
-            )
-            """,
-            
-            # Ticket configs table
-            """
-            CREATE TABLE IF NOT EXISTS ticket_configs (
-                id SERIAL PRIMARY KEY,
-                guild_id TEXT UNIQUE NOT NULL,
-                category_id TEXT,
-                support_role_id TEXT,
-                log_channel_id TEXT,
-                auto_close_hours INTEGER DEFAULT 72,
-                max_tickets_per_user INTEGER DEFAULT 3,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """,
-            
+        
             # Log configs table
             """
             CREATE TABLE IF NOT EXISTS log_configs (
@@ -178,7 +186,7 @@ class DatabaseManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
-            
+        
             # Meetings table
             """
             CREATE TABLE IF NOT EXISTS meetings (
@@ -197,7 +205,7 @@ class DatabaseManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
-            
+        
             # Notifications table
             """
             CREATE TABLE IF NOT EXISTS notifications (
@@ -210,8 +218,10 @@ class DatabaseManager:
                 is_read BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            """,
-            
+            """
+        ]
+    
+        github_tables = [
             # GitHub tracked repositories table
             """
             CREATE TABLE IF NOT EXISTS github_tracked_repos (
@@ -238,37 +248,46 @@ class DatabaseManager:
             )
             """
         ]
-        
-        for i, table_sql in enumerate(tables, 1):
-            try:
-                await self.execute_with_retry(table_sql)
-                table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0]
-                logger.info(f"✅ Created PostgreSQL table {i}/{len(tables)}: {table_name}")
-            except Exception as e:
-                logger.error(f"❌ Failed to create table {i}: {e}")
-                raise
-        
-        # Create indexes for better performance
-        indexes = [
-            "CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)",
-            "CREATE INDEX IF NOT EXISTS idx_tickets_guild_id ON tickets(guild_id)",
-            "CREATE INDEX IF NOT EXISTS idx_tickets_user_id ON tickets(user_id)",
-            "CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders(user_id)",
-            "CREATE INDEX IF NOT EXISTS idx_reminders_remind_at ON reminders(remind_at)",
-            "CREATE INDEX IF NOT EXISTS idx_workflows_guild_id ON workflows(guild_id)",
-            "CREATE INDEX IF NOT EXISTS idx_admin_roles_guild_id ON admin_roles(guild_id)",
-            "CREATE INDEX IF NOT EXISTS idx_meetings_guild_id ON meetings(guild_id)",
-            "CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id)",
-            "CREATE INDEX IF NOT EXISTS idx_github_tracked_repos_guild_id ON github_tracked_repos(guild_id)",
-            "CREATE INDEX IF NOT EXISTS idx_github_subscriptions_user_id ON github_subscriptions(user_id)"
+    
+        # Create tables in batches
+        table_batches = [
+            ("Essential", essential_tables),
+            ("Core", core_tables), 
+            ("Feature", feature_tables),
+            ("GitHub", github_tables)
         ]
-        
-        for index_sql in indexes:
+    
+        for batch_name, tables in table_batches:
+            logger.info(f"Creating {batch_name} tables...")
+            for i, table_sql in enumerate(tables, 1):
+                try:
+                    async with asyncio.timeout(5):  # 5 second timeout per table
+                        await self.connection.execute(table_sql)
+                        table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0]
+                        logger.info(f"✅ Created {batch_name} table {i}/{len(tables)}: {table_name}")
+                except asyncio.TimeoutError:
+                    logger.error(f"❌ Table creation timed out: {batch_name} table {i}")
+                    raise
+                except Exception as e:
+                    logger.error(f"❌ Failed to create {batch_name} table {i}: {e}")
+                    raise
+    
+        # Create essential indexes only
+        essential_indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)",
+            "CREATE INDEX IF NOT EXISTS idx_admin_roles_guild_id ON admin_roles(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tickets_guild_id ON tickets(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders(remind_at)"
+        ]
+    
+        logger.info("Creating essential indexes...")
+        for index_sql in essential_indexes:
             try:
-                await self.execute_with_retry(index_sql)
+                async with asyncio.timeout(3):  # 3 second timeout per index
+                    await self.connection.execute(index_sql)
             except Exception as e:
                 logger.warning(f"Failed to create index: {e}")
-        
+    
         logger.info("✅ PostgreSQL tables and indexes created successfully")
     
     async def _create_sqlite_tables(self):
