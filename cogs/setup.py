@@ -92,7 +92,7 @@ class Setup(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to setup GitHub tracking: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="setup-logs", description="Setup logging channel (Admin only)")
+    @app_commands.command(name="server-logs-setup", description="Setup logging channel (Admin only)")
     @app_commands.describe(log_channel="Channel where logs will be sent")
     async def setup_logs(self, interaction: discord.Interaction, log_channel: discord.TextChannel):
         if not self.bot.admin_manager.is_admin(interaction.user):

@@ -83,3 +83,20 @@ class TimeParser:
             parts.append(f"{seconds}s")
         
         return " ".join(parts) if parts else "0s"
+
+async def safe_send(channel, content=None, embed=None, view=None):
+    """Safely send a message to a channel with error handling"""
+    try:
+        if embed:
+            return await channel.send(content=content, embed=embed, view=view)
+        else:
+            return await channel.send(content=content, view=view)
+    except discord.Forbidden:
+        print(f"Missing permissions to send message in {channel}")
+        return None
+    except discord.HTTPException as e:
+        print(f"HTTP error sending message: {e}")
+        return None
+    except Exception as e:
+        print(f"Unexpected error sending message: {e}")
+        return None
