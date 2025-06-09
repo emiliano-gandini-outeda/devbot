@@ -31,10 +31,9 @@ class SlackBot(commands.Bot):
         intents.guilds = True
         
         super().__init__(
-            command_prefix=Settings.PREFIX,
+            command_prefix='!',
             intents=intents,
             help_command=None,
-            # Add connection resilience settings
             heartbeat_timeout=60.0,
             guild_ready_timeout=5.0
         )
@@ -45,7 +44,8 @@ class SlackBot(commands.Bot):
         self.logging_manager = None
         self.workflow_manager = None
         self._ready_fired = False
-        self._synced = False  # Track if we've already synced
+        self._synced = False
+        self._guild_synced = set()
     
     async def setup_hook(self):
         """Setup database and load cogs"""
@@ -100,11 +100,252 @@ class SlackBot(commands.Bot):
                     logger.error(f"❌ Failed to load cog {cog}: {e}", exc_info=True)
 
             logger.info(f"Loaded {len(loaded_cogs)}/{len(cogs)} cogs successfully")
+            
+            # Add admin slash commands AFTER loading cogs
+            await self.add_admin_slash_commands()
+            
             logger.info("Setup hook completed successfully")
                 
         except Exception as e:
             logger.error(f"Error in setup_hook: {e}", exc_info=True)
             raise
+    
+    async def add_admin_slash_commands(self):
+        """Add admin slash commands to the command tree"""
+        try:
+            # Define sync command
+            @app_commands.command(name="admin_sync", description="Sync slash commands to this guild (Owner only)")
+            @app_commands.describe(guild_only="Whether to sync only to this guild")
+            async def sync_slash(interaction: discord.Interaction, guild_only: bool = True):
+                if not await self.is_owner(interaction.user):
+                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+                    return
+                
+                await interaction.response.defer(ephemeral=True)
+                
+                try:
+                    if guild_only:
+                        # Sync to current guild
+                        synced = await self.tree.sync(guild=interaction.guild)
+                        await interaction.followup.send(f'✅ Synced {len(synced)} commands to {interaction.guild.name}.')
+                        self._guild_synced.add(interaction.guild.id)
+                    else:
+                        synced = await self.tree.sync()
+                        await interaction.followup.send(f'✅ Synced {len(synced)} commands globally.')
+                        
+                except Exception as e:
+                    await interaction.followup.send(f'❌ Failed to sync commands: {e}')
+                    logger.error("Slash sync failed", exc_info=True)
+
+            # Define fix duplicates command
+            @app_commands.command(name="admin_fix_duplicates", description="Fix duplicate commands in this guild (Owner only)")
+            async def fix_duplicates_slash(interaction: discord.Interaction):
+                if not await self.is_owner(interaction.user):
+                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+                    return
+                
+                await interaction.response.defer(ephemeral=True)
+                
+                try:
+                    # Clear guild commands first
+                    self.tree.clear_commands(guild=interaction.guild)
+                    await self.tree.sync(guild=interaction.guild)
+                    await interaction.followup.send(f"✅ Cleared guild commands from {interaction.guild.name}")
+                    
+                    # Then sync all commands to guild
+                    synced = await self.tree.sync(guild=interaction.guild)
+                    await interaction.followup.send(f"✅ Re-synced {len(synced)} commands to {interaction.guild.name}")
+                    
+                    self._guild_synced.add(interaction.guild.id)
+                    
+                except Exception as e:
+                    await interaction.followup.send(f"❌ Failed to fix duplicate commands: {e}")
+                    logger.error("Failed to fix duplicate commands", exc_info=True)
+
+            # Define status command
+            @app_commands.command(name="admin_status", description="Show bot status and sync information (Owner only)")
+            async def status_slash(interaction: discord.Interaction):
+                if not await self.is_owner(interaction.user):
+                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+                    return
+                
+                try:
+                    embed = discord.Embed(
+                        title="🤖 Bot Status",
+                        color=0x5865F2
+                    )
+                    
+                    # Basic info
+                    embed.add_field(
+                        name="📊 Basic Info",
+                        value=f"Guilds: {len(self.guilds)}\nPrefix: `{self.command_prefix}`\nLatency: {round(self.latency * 1000)}ms",
+                        inline=True
+                    )
+                    
+                    # Command info
+                    all_commands = self.tree.get_commands()
+                    embed.add_field(
+                        name="⚡ Commands",
+                        value=f"Slash Commands: {len(all_commands)}\nPrefix Commands: {len(self.commands)}",
+                        inline=True
+                    )
+                    
+                    # Sync status
+                    synced_guilds = len(self._guild_synced)
+                    embed.add_field(
+                        name="🔄 Sync Status",
+                        value=f"Synced Guilds: {synced_guilds}/{len(self.guilds)}\nAuto-sync: ✅ Enabled",
+                        inline=True
+                    )
+                    
+                    # Loaded cogs
+                    loaded_cogs = list(self.cogs.keys())
+                    embed.add_field(
+                        name=f"📦 Loaded Cogs ({len(loaded_cogs)})",
+                        value=", ".join(loaded_cogs) if loaded_cogs else "None",
+                        inline=False
+                    )
+                    
+                    # List all commands for debugging
+                    command_names = [cmd.name for cmd in all_commands]
+                    embed.add_field(
+                        name=f"📋 All Commands ({len(command_names)})",
+                        value=", ".join(sorted(command_names)) if command_names else "None",
+                        inline=False
+                    )
+                    
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                    
+                except Exception as e:
+                    await interaction.response.send_message(f"❌ Failed to get bot status: {e}", ephemeral=True)
+
+            # Define clear global command
+            @app_commands.command(name="admin_clear_global", description="Clear all global commands (Owner only)")
+            async def clear_global_slash(interaction: discord.Interaction):
+                if not await self.is_owner(interaction.user):
+                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+                    return
+                
+                await interaction.response.defer(ephemeral=True)
+                
+                try:
+                    self.tree.clear_commands(guild=None)
+                    synced = await self.tree.sync()
+                    await interaction.followup.send(f'✅ Cleared all global commands. {len(synced)} commands remain.')
+                except Exception as e:
+                    await interaction.followup.send(f'❌ Failed to clear global commands: {e}')
+
+            # Define clear guild command
+            @app_commands.command(name="admin_clear_guild", description="Clear all guild-specific commands (Owner only)")
+            async def clear_guild_slash(interaction: discord.Interaction):
+                if not await self.is_owner(interaction.user):
+                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+                    return
+                
+                await interaction.response.defer(ephemeral=True)
+                
+                try:
+                    self.tree.clear_commands(guild=interaction.guild)
+                    synced = await self.tree.sync(guild=interaction.guild)
+                    await interaction.followup.send(f'✅ Cleared guild commands. {len(synced)} commands remain.')
+                except Exception as e:
+                    await interaction.followup.send(f'❌ Failed to clear guild commands: {e}')
+
+            # Define list commands command
+            @app_commands.command(name="admin_list_commands", description="List all registered commands (Owner only)")
+            async def list_commands_slash(interaction: discord.Interaction):
+                if not await self.is_owner(interaction.user):
+                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+                    return
+                
+                all_commands = self.tree.get_commands()
+                
+                if not all_commands:
+                    await interaction.response.send_message("No commands are currently registered.", ephemeral=True)
+                    return
+                
+                # Group by cog
+                cog_commands = {}
+                admin_commands = []
+                
+                for cmd in all_commands:
+                    if cmd.name.startswith("admin_"):
+                        admin_commands.append(cmd.name)
+                    else:
+                        cog_name = getattr(cmd.callback, '__qualname__', 'Unknown').split('.')[0]
+                        if cog_name not in cog_commands:
+                            cog_commands[cog_name] = []
+                        cog_commands[cog_name].append(cmd.name)
+                
+                message = f"**Total Commands: {len(all_commands)}**\n\n"
+                
+                if admin_commands:
+                    message += f"**Admin Commands:** {', '.join(sorted(admin_commands))}\n\n"
+                
+                for cog_name, cmd_names in cog_commands.items():
+                    message += f"**{cog_name}:** {', '.join(sorted(cmd_names))}\n"
+                
+                if len(message) > 4000:
+                    await interaction.response.send_message("Command list too long, check logs.", ephemeral=True)
+                    logger.info(message)
+                else:
+                    await interaction.response.send_message(message, ephemeral=True)
+
+            # Define emergency command
+            @app_commands.command(name="admin_emergency", description="Emergency fix for commands (Owner only)")
+            async def emergency_slash(interaction: discord.Interaction):
+                if not await self.is_owner(interaction.user):
+                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+                    return
+                
+                await interaction.response.defer(ephemeral=True)
+                
+                try:
+                    # First, clear all commands
+                    self.tree.clear_commands(guild=None)
+                    for guild in self.guilds:
+                        self.tree.clear_commands(guild=guild)
+                    
+                    # Sync to clear Discord's cache
+                    await self.tree.sync()
+                    for guild in self.guilds:
+                        await self.tree.sync(guild=guild)
+                    
+                    # Wait a moment
+                    await asyncio.sleep(2)
+                    
+                    # Re-add admin commands
+                    for cmd in self.admin_commands:
+                        self.tree.add_command(cmd)
+                    
+                    # Sync admin commands to current guild
+                    synced = await self.tree.sync(guild=interaction.guild)
+                    
+                    await interaction.followup.send(f"✅ Emergency fix applied! Synced {len(synced)} admin commands to {interaction.guild.name}. Please restart the bot to restore all commands.")
+                    
+                except Exception as e:
+                    await interaction.followup.send(f"❌ Emergency fix failed: {e}")
+                    logger.error(f"Emergency fix failed: {e}", exc_info=True)
+
+            # Store references to admin commands
+            self.admin_commands = [
+                sync_slash, 
+                fix_duplicates_slash, 
+                status_slash, 
+                clear_global_slash, 
+                clear_guild_slash, 
+                list_commands_slash,
+                emergency_slash
+            ]
+            
+            # Add all slash commands to the tree
+            for cmd in self.admin_commands:
+                self.tree.add_command(cmd)
+            
+            logger.info("✅ Added admin slash commands to command tree")
+            
+        except Exception as e:
+            logger.error(f"Failed to add admin slash commands: {e}", exc_info=True)
     
     async def on_ready(self):
         """Called when bot is ready"""
@@ -115,14 +356,23 @@ class SlackBot(commands.Bot):
         self._ready_fired = True
         logger.info(f'{self.user} has connected to Discord!')
         logger.info(f'Bot is in {len(self.guilds)} guilds')
+        logger.info(f'Command prefix: {self.command_prefix}')
+        logger.info(f'Prefix commands loaded: {len(self.commands)}')
+        logger.info(f'Slash commands loaded: {len(self.tree.get_commands())}')
+        
+        # List all loaded commands for debugging
+        prefix_commands = [cmd.name for cmd in self.commands]
+        slash_commands = [cmd.name for cmd in self.tree.get_commands()]
+        logger.info(f'Prefix commands: {", ".join(prefix_commands)}')
+        logger.info(f'Slash commands: {", ".join(slash_commands)}')
         
         # Only sync once when the bot first starts
         if not self._synced:
             # Wait a moment for all cogs to fully initialize
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             
-            # Sync commands once
-            await self.sync_commands_once()
+            # Sync commands once with automatic global clearing
+            await self.sync_commands_with_auto_clear()
             self._synced = True
         
         logger.info(f'Bot deployment successful! 🚄')
@@ -140,12 +390,27 @@ class SlackBot(commands.Bot):
         if message.author.bot:
             return
         
+        # Debug message processing
+        if message.content.startswith(self.command_prefix):
+            logger.info(f"Processing command: {message.content}")
+        
         # Check for workflow triggers
         if self.workflow_manager:
             await self.workflow_manager.check_message_triggers(message)
         
         # Process commands
         await self.process_commands(message)
+
+    async def on_command_error(self, ctx, error):
+        """Handle command errors"""
+        if isinstance(error, commands.CommandNotFound):
+            logger.warning(f"Command not found: {ctx.message.content}")
+            return
+        elif isinstance(error, commands.NotOwner):
+            await ctx.send("❌ Only the bot owner can use this command.")
+        else:
+            logger.error(f"Command error in {ctx.command}: {error}", exc_info=True)
+            await ctx.send(f"❌ An error occurred: {error}")
 
     async def on_member_join(self, member):
         """Handle member join events for workflow triggers"""
@@ -157,10 +422,10 @@ class SlackBot(commands.Bot):
         if self.workflow_manager:
             await self.workflow_manager.check_thread_create_triggers(thread)
 
-    async def sync_commands_once(self):
-        """Sync commands only once to avoid duplicates"""
+    async def sync_commands_with_auto_clear(self):
+        """Sync commands with automatic global command clearing to prevent duplicates"""
         try:
-            logger.info("Starting one-time command sync...")
+            logger.info("Starting command sync with automatic global clearing...")
             
             # Get all commands from the tree
             all_commands = self.tree.get_commands()
@@ -170,133 +435,44 @@ class SlackBot(commands.Bot):
                 logger.warning("No commands found to sync!")
                 return
             
-            # Choose sync strategy based on environment
-            if len(self.guilds) <= 3:  # Development mode
-                logger.info("Development mode: Syncing globally for faster updates")
-                try:
-                    synced = await self.tree.sync()
-                    logger.info(f"✅ Synced {len(synced)} commands globally")
-                except Exception as e:
-                    logger.error(f"❌ Failed to sync globally: {e}")
-            else:  # Production mode
-                logger.info("Production mode: Syncing globally")
-                try:
-                    synced = await self.tree.sync()
-                    logger.info(f"✅ Synced {len(synced)} commands globally")
-                except Exception as e:
-                    logger.error(f"❌ Failed to sync globally: {e}")
-            
-            # List synced commands for debugging
+            # Log all command names for debugging
             command_names = [cmd.name for cmd in all_commands]
-            logger.info(f"Synced commands: {', '.join(sorted(command_names))}")
+            logger.info(f"Commands to sync: {', '.join(sorted(command_names))}")
+            
+            # Sync to first guild only to avoid rate limits
+            if self.guilds:
+                first_guild = self.guilds[0]
+                try:
+                    # Sync to first guild
+                    synced = await self.tree.sync(guild=first_guild)
+                    logger.info(f"✅ Synced {len(synced)} commands to {first_guild.name}")
+                    self._guild_synced.add(first_guild.id)
+                    
+                    # Log synced command names
+                    synced_names = [cmd['name'] for cmd in synced]
+                    logger.info(f"Synced commands: {', '.join(sorted(synced_names))}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to sync to guild {first_guild.name}: {e}")
             
         except Exception as e:
             logger.error(f"❌ Failed to sync commands: {e}", exc_info=True)
 
-    # Manual sync commands for debugging (owner only)
-    @commands.command(name='sync')
-    @commands.is_owner()
-    async def sync_commands(self, ctx):
-        """Manually sync slash commands to current guild (Owner only)"""
-        try:
-            await ctx.send("Starting manual guild sync...")
-            
-            # Clear existing guild commands first
-            self.tree.clear_commands(guild=ctx.guild)
-            
-            # Copy global commands to guild
-            global_commands = self.tree.get_commands()
-            for command in global_commands:
-                self.tree.add_command(command, guild=ctx.guild)
-            
-            # Sync to current guild
-            synced = await self.tree.sync(guild=ctx.guild)
-            await ctx.send(f'✅ Synced {len(synced)} commands to {ctx.guild.name}.')
-            
-        except Exception as e:
-            await ctx.send(f'❌ Failed to sync commands: {e}')
-            logger.error("Manual sync failed", exc_info=True)
-
-    @commands.command(name='sync_global')
-    @commands.is_owner()
-    async def sync_global(self, ctx):
-        """Manually sync slash commands globally (Owner only)"""
-        try:
-            await ctx.send("Starting manual global sync...")
-            synced = await self.tree.sync()
-            await ctx.send(f'✅ Synced {len(synced)} commands globally.')
-        except Exception as e:
-            await ctx.send(f'❌ Failed to sync commands globally: {e}')
-            logger.error("Global sync failed", exc_info=True)
-
-    @commands.command(name='clear_guild')
-    @commands.is_owner()
-    async def clear_guild_commands(self, ctx):
-        """Clear all guild-specific commands (Owner only)"""
-        try:
-            await ctx.send("Clearing guild commands...")
-            self.tree.clear_commands(guild=ctx.guild)
-            synced = await self.tree.sync(guild=ctx.guild)
-            await ctx.send(f'✅ Cleared guild commands. {len(synced)} commands remain.')
-        except Exception as e:
-            await ctx.send(f'❌ Failed to clear guild commands: {e}')
-
-    @commands.command(name='clear_global')
-    @commands.is_owner()
-    async def clear_global_commands(self, ctx):
-        """Clear all global commands (Owner only)"""
-        try:
-            await ctx.send("⚠️ Clearing ALL global commands...")
-            self.tree.clear_commands(guild=None)
-            synced = await self.tree.sync()
-            await ctx.send(f'✅ Cleared all global commands. {len(synced)} commands remain.')
-        except Exception as e:
-            await ctx.send(f'❌ Failed to clear global commands: {e}')
-
-    @commands.command(name='list_commands')
-    @commands.is_owner()
-    async def list_commands_cmd(self, ctx):
-        """List all registered commands"""
-        all_commands = self.tree.get_commands()
-        
-        if not all_commands:
-            await ctx.send("No commands are currently registered.")
-            return
-        
-        # Group by cog
-        cog_commands = {}
-        for cmd in all_commands:
-            cog_name = getattr(cmd.callback, '__qualname__', 'Unknown').split('.')[0]
-            if cog_name not in cog_commands:
-                cog_commands[cog_name] = []
-            cog_commands[cog_name].append(cmd.name)
-        
-        message = f"**Total Commands: {len(all_commands)}**\n\n"
-        for cog_name, cmd_names in cog_commands.items():
-            message += f"**{cog_name}:** {', '.join(sorted(cmd_names))}\n"
-        
-        if len(message) > 2000:
-            # Split into multiple messages if too long
-            parts = message.split('\n')
-            current = ""
-            for part in parts:
-                if len(current + part + '\n') > 1900:
-                    await ctx.send(current)
-                    current = part + '\n'
-                else:
-                    current += part + '\n'
-            if current:
-                await ctx.send(current)
-        else:
-            await ctx.send(message)
-    
     async def on_error(self, event, *args, **kwargs):
         logger.error(f'An error occurred in {event}', exc_info=True)
 
     async def on_guild_join(self, guild):
-        """Don't auto-sync when joining new guilds to avoid duplicates"""
+        """Automatically sync commands when joining a new guild"""
         logger.info(f"Bot joined new guild: {guild.name} ({guild.id})")
-        logger.info("Use manual sync commands if needed for this guild")
+        
+        try:
+            # Auto-sync to new guild
+            synced = await self.tree.sync(guild=guild)
+            logger.info(f"✅ Auto-synced {len(synced)} commands to new guild: {guild.name}")
+            self._guild_synced.add(guild.id)
+                
+        except Exception as e:
+            logger.error(f"Failed to auto-sync to new guild {guild.name}: {e}")
 
     async def close(self):
         """Clean shutdown"""
@@ -317,14 +493,14 @@ async def main():
             try:
                 logger.info(f"Starting bot (attempt {attempt + 1}/{max_retries})")
                 await bot.start(Settings.DISCORD_TOKEN)
-                break  # If we get here, the bot started successfully
+                break
                 
             except discord.LoginFailure:
                 logger.error("Invalid Discord token provided")
-                break  # Don't retry on authentication failures
+                break
                 
             except discord.HTTPException as e:
-                if e.status == 429:  # Rate limited
+                if e.status == 429:
                     logger.warning(f"Rate limited, waiting {retry_delay * 2} seconds...")
                     await asyncio.sleep(retry_delay * 2)
                 else:
@@ -335,7 +511,7 @@ async def main():
                 if attempt < max_retries - 1:
                     logger.info(f"Retrying in {retry_delay} seconds...")
                     await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
+                    retry_delay *= 2
                 
             except KeyboardInterrupt:
                 logger.info("Bot stopped by user")
@@ -348,7 +524,6 @@ async def main():
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2
         else:
-            # This executes if the for loop completes without breaking
             logger.error(f"Failed to start bot after {max_retries} attempts")
             
     except KeyboardInterrupt:
@@ -360,7 +535,6 @@ async def main():
             await bot.close()
 
 if __name__ == "__main__":
-    # Deployment compatibility
     port = int(os.environ.get("PORT", 8080))
     logger.info(f"Starting Discord bot on Railway (port {port})")
     
