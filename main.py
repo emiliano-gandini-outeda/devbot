@@ -128,6 +128,43 @@ class SlackBot(commands.Bot):
             logger.error(f"Error in setup_hook: {e}", exc_info=True)
             raise
     
+    async def clear_all_global_commands(self):
+        """Completely clear all global commands from Discord"""
+        try:
+            logger.info("🔄 Clearing all global commands...")
+            
+            # Method 1: Clear from tree and sync
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync()
+            
+            # Method 2: Fetch and delete individual commands
+            try:
+                global_commands = await self.tree.fetch_commands()
+                if global_commands:
+                    logger.info(f"Found {len(global_commands)} global commands to delete")
+                    
+                    for cmd in global_commands:
+                        try:
+                            await self.http.delete_global_command(self.user.id, cmd.id)
+                            logger.info(f"Deleted global command: {cmd.name}")
+                        except Exception as e:
+                            logger.error(f"Failed to delete global command {cmd.name}: {e}")
+                    
+                    # Verify deletion
+                    remaining = await self.tree.fetch_commands()
+                    if remaining:
+                        logger.warning(f"⚠️ {len(remaining)} global commands still remain")
+                    else:
+                        logger.info("✅ All global commands successfully deleted")
+                else:
+                    logger.info("✅ No global commands found")
+                    
+            except Exception as e:
+                logger.error(f"Error fetching/deleting global commands: {e}")
+            
+        except Exception as e:
+            logger.error(f"Failed to clear global commands: {e}", exc_info=True)
+    
     async def register_all_commands_to_guild(self, guild):
         """Register ALL commands from cogs to a specific guild"""
         try:
@@ -185,6 +222,9 @@ class SlackBot(commands.Bot):
                         logger.error(f"Error processing synced commands: {e}")
                         logger.info(f"Raw synced data: {synced}")
                     
+                    # After syncing guild commands, clear global commands to prevent duplicates
+                    await self.clear_all_global_commands()
+                    
                     return True
                 else:
                     logger.error(f"❌ 0 commands synced to {guild.name}!")
@@ -210,6 +250,10 @@ class SlackBot(commands.Bot):
                 await interaction.response.defer(ephemeral=True)
                 
                 try:
+                    # First clear all global commands
+                    await self.clear_all_global_commands()
+                    await interaction.followup.send("✅ Cleared all global commands")
+                    
                     # Register and sync all commands to this guild
                     success = await self.register_all_commands_to_guild(interaction.guild)
                     
@@ -230,29 +274,47 @@ class SlackBot(commands.Bot):
                     await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
                     return
                 
-                # Get commands for this specific guild
-                guild_commands = self.tree.get_commands(guild=interaction.guild)
-                global_commands = self.tree.get_commands(guild=None)
+                await interaction.response.defer(ephemeral=True)
                 
-                message = f"**Guild Commands ({interaction.guild.name}): {len(guild_commands)}**\n"
-                if guild_commands:
-                    guild_names = [cmd.name for cmd in guild_commands]
-                    message += f"{', '.join(sorted(guild_names))}\n\n"
-                else:
-                    message += "None\n\n"
-                
-                message += f"**Global Commands: {len(global_commands)}**\n"
-                if global_commands:
-                    global_names = [cmd.name for cmd in global_commands]
-                    message += f"{', '.join(sorted(global_names))}"
-                else:
-                    message += "None"
-                
-                if len(message) > 4000:
-                    await interaction.response.send_message("Message too long, check logs.", ephemeral=True)
-                    logger.info(message)
-                else:
-                    await interaction.response.send_message(message, ephemeral=True)
+                try:
+                    # Get commands for this specific guild
+                    guild_commands = self.tree.get_commands(guild=interaction.guild)
+                    global_commands = self.tree.get_commands(guild=None)
+                    
+                    # Also fetch from Discord API
+                    api_guild_commands = await self.tree.fetch_commands(guild=interaction.guild)
+                    api_global_commands = await self.tree.fetch_commands()
+                    
+                    embed = discord.Embed(title="🔍 Command Debug Info", color=0x5865F2)
+                    
+                    embed.add_field(
+                        name=f"Guild Commands (Tree): {len(guild_commands)}",
+                        value=", ".join([cmd.name for cmd in guild_commands]) if guild_commands else "None",
+                        inline=False
+                    )
+                    
+                    embed.add_field(
+                        name=f"Guild Commands (API): {len(api_guild_commands)}",
+                        value=", ".join([cmd.name for cmd in api_guild_commands]) if api_guild_commands else "None",
+                        inline=False
+                    )
+                    
+                    embed.add_field(
+                        name=f"Global Commands (Tree): {len(global_commands)}",
+                        value=", ".join([cmd.name for cmd in global_commands]) if global_commands else "None",
+                        inline=False
+                    )
+                    
+                    embed.add_field(
+                        name=f"Global Commands (API): {len(api_global_commands)}",
+                        value=", ".join([cmd.name for cmd in api_global_commands]) if api_global_commands else "None",
+                        inline=False
+                    )
+                    
+                    await interaction.followup.send(embed=embed)
+                    
+                except Exception as e:
+                    await interaction.followup.send(f"❌ Debug failed: {e}")
 
             # Define force reload command
             @app_commands.command(name="admin_reload", description="Force reload all cogs and commands (Owner only)")
@@ -265,7 +327,7 @@ class SlackBot(commands.Bot):
                 
                 try:
                     # Clear all commands
-                    self.tree.clear_commands(guild=None)
+                    await self.clear_all_global_commands()
                     self.tree.clear_commands(guild=interaction.guild)
                     
                     # Reload all cogs
@@ -363,32 +425,23 @@ class SlackBot(commands.Bot):
                 await interaction.response.defer(ephemeral=True)
                 
                 try:
-                    # Get current global commands
-                    global_commands = await self.tree.fetch_commands()
+                    await self.clear_all_global_commands()
                     
-                    if not global_commands:
-                        await interaction.followup.send("✅ No global commands to clear!")
-                        return
-                    
-                    # Clear global commands
-                    self.tree.clear_commands(guild=None)
-                    await self.tree.sync()
-                    
-                    # Check if global commands were cleared
+                    # Verify global commands were cleared
                     remaining_commands = await self.tree.fetch_commands()
                     
                     if not remaining_commands:
-                        await interaction.followup.send(f"✅ Successfully cleared {len(global_commands)} global commands!")
+                        await interaction.followup.send("✅ Successfully cleared all global commands!")
                     else:
-                        await interaction.followup.send(f"⚠️ Some global commands remain: {len(remaining_commands)}")
+                        await interaction.followup.send(f"⚠️ {len(remaining_commands)} global commands still remain")
                     
                 except Exception as e:
                     await interaction.followup.send(f"❌ Failed to clear global commands: {e}")
                     logger.error(f"Failed to clear global commands: {e}", exc_info=True)
 
-            # Define fix duplicates command
-            @app_commands.command(name="admin_fix_duplicates", description="Fix duplicate commands (Owner only)")
-            async def fix_duplicates_slash(interaction: discord.Interaction):
+            # Define nuclear option command
+            @app_commands.command(name="admin_nuclear", description="Nuclear option: Delete ALL commands everywhere (Owner only)")
+            async def nuclear_slash(interaction: discord.Interaction):
                 if not await self.is_owner(interaction.user):
                     await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
                     return
@@ -396,46 +449,40 @@ class SlackBot(commands.Bot):
                 await interaction.response.defer(ephemeral=True)
                 
                 try:
-                    # Step 1: Get all global commands
+                    # Clear everything from the tree
+                    self.tree.clear_commands(guild=None)
+                    self.tree.clear_commands(guild=interaction.guild)
+                    
+                    # Sync to clear from Discord
+                    await self.tree.sync()
+                    await self.tree.sync(guild=interaction.guild)
+                    
+                    # Delete all global commands via API
                     global_commands = await self.tree.fetch_commands()
-                    global_command_names = [cmd.name for cmd in global_commands]
-                    
-                    # Step 2: Get all guild commands
-                    guild_commands = await self.tree.fetch_commands(guild=interaction.guild)
-                    guild_command_names = [cmd.name for cmd in guild_commands]
-                    
-                    # Step 3: Find duplicates (commands that exist both globally and in guild)
-                    duplicates = set(global_command_names).intersection(set(guild_command_names))
-                    
-                    if not duplicates:
-                        await interaction.followup.send("✅ No duplicate commands found!")
-                        return
-                    
-                    # Step 4: Remove only the duplicate global commands
-                    await interaction.followup.send(f"🔄 Found {len(duplicates)} duplicate commands. Removing global duplicates...")
-                    
-                    # We need to use the Discord API directly to delete specific commands
-                    # This requires the application ID and bot token
-                    app_id = self.user.id
-                    
-                    # Find the command IDs for the duplicates
                     for cmd in global_commands:
-                        if cmd.name in duplicates:
-                            # Delete this specific global command
-                            try:
-                                await self.http.delete_global_command(app_id, cmd.id)
-                                logger.info(f"Deleted global duplicate: {cmd.name}")
-                            except Exception as e:
-                                logger.error(f"Failed to delete global command {cmd.name}: {e}")
+                        try:
+                            await self.http.delete_global_command(self.user.id, cmd.id)
+                            logger.info(f"Deleted global command: {cmd.name}")
+                        except Exception as e:
+                            logger.error(f"Failed to delete global command {cmd.name}: {e}")
                     
-                    await interaction.followup.send(f"✅ Removed {len(duplicates)} duplicate global commands!")
+                    # Delete all guild commands via API
+                    guild_commands = await self.tree.fetch_commands(guild=interaction.guild)
+                    for cmd in guild_commands:
+                        try:
+                            await self.http.delete_guild_command(self.user.id, interaction.guild.id, cmd.id)
+                            logger.info(f"Deleted guild command: {cmd.name}")
+                        except Exception as e:
+                            logger.error(f"Failed to delete guild command {cmd.name}: {e}")
+                    
+                    await interaction.followup.send("💥 Nuclear option executed! All commands deleted from everywhere.")
                     
                 except Exception as e:
-                    await interaction.followup.send(f"❌ Failed to fix duplicates: {e}")
-                    logger.error(f"Failed to fix duplicates: {e}", exc_info=True)
+                    await interaction.followup.send(f"❌ Nuclear option failed: {e}")
+                    logger.error(f"Nuclear option failed: {e}", exc_info=True)
 
             # Store references to admin commands
-            self.admin_commands = [sync_slash, debug_slash, reload_slash, db_test_slash, clear_global_slash, fix_duplicates_slash]
+            self.admin_commands = [sync_slash, debug_slash, reload_slash, db_test_slash, clear_global_slash, nuclear_slash]
             
             logger.info(f"✅ Created {len(self.admin_commands)} admin slash commands")
             
@@ -458,6 +505,9 @@ class SlackBot(commands.Bot):
         if not self._synced:
             # Wait a moment for all cogs to fully initialize
             await asyncio.sleep(3)
+            
+            # Clear all global commands first
+            await self.clear_all_global_commands()
             
             # Register and sync commands to all guilds
             await self.sync_all_guilds()
