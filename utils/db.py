@@ -103,8 +103,8 @@ class DatabaseManager:
                 message TEXT NOT NULL,
                 remind_at TIMESTAMP NOT NULL,
                 type TEXT DEFAULT 'personal',
-                recurring TEXT,
-                is_sent BOOLEAN DEFAULT FALSE,
+                recurring BOOLEAN DEFAULT FALSE,
+                send_dm BOOLEAN DEFAULT TRUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
@@ -134,7 +134,8 @@ class DatabaseManager:
                 data_type TEXT NOT NULL,
                 data_content JSONB DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, data_type)
             )
             """,
             
@@ -207,6 +208,32 @@ class DatabaseManager:
                 is_read BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """,
+            
+            # GitHub tracked repositories table
+            """
+            CREATE TABLE IF NOT EXISTS github_tracked_repos (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                repo_name TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                added_by TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, repo_name, channel_id)
+            )
+            """,
+
+            # GitHub user subscriptions table  
+            """
+            CREATE TABLE IF NOT EXISTS github_subscriptions (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                guild_id TEXT NOT NULL,
+                repo_name TEXT NOT NULL,
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, guild_id, repo_name)
+            )
             """
         ]
         
@@ -229,7 +256,9 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_workflows_guild_id ON workflows(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_admin_roles_guild_id ON admin_roles(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_meetings_guild_id ON meetings(guild_id)",
-            "CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id)"
+            "CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_github_tracked_repos_guild_id ON github_tracked_repos(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_github_subscriptions_user_id ON github_subscriptions(user_id)"
         ]
         
         for index_sql in indexes:
@@ -286,8 +315,8 @@ class DatabaseManager:
                 message TEXT NOT NULL,
                 remind_at TIMESTAMP NOT NULL,
                 type TEXT DEFAULT 'personal',
-                recurring TEXT,
-                is_sent INTEGER DEFAULT 0,
+                recurring INTEGER DEFAULT 0,
+                send_dm INTEGER DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
@@ -317,7 +346,8 @@ class DatabaseManager:
                 data_type TEXT NOT NULL,
                 data_content TEXT DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, data_type)
             )
             """,
             
@@ -390,6 +420,32 @@ class DatabaseManager:
                 is_read INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """,
+            
+            # GitHub tracked repositories table
+            """
+            CREATE TABLE IF NOT EXISTS github_tracked_repos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                repo_name TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                added_by TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, repo_name, channel_id)
+            )
+            """,
+
+            # GitHub user subscriptions table
+            """
+            CREATE TABLE IF NOT EXISTS github_subscriptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                guild_id TEXT NOT NULL,
+                repo_name TEXT NOT NULL,
+                enabled INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, guild_id, repo_name)
+            )
             """
         ]
         
@@ -409,7 +465,8 @@ class DatabaseManager:
         """Verify that all required tables exist"""
         required_tables = [
             'users', 'tickets', 'reminders', 'workflows', 'user_data',
-            'admin_roles', 'ticket_configs', 'log_configs', 'meetings', 'notifications'
+            'admin_roles', 'ticket_configs', 'log_configs', 'meetings', 
+            'notifications', 'github_tracked_repos', 'github_subscriptions'
         ]
         
         existing_tables = []

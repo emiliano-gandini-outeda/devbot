@@ -206,7 +206,7 @@ class MeetingManager:
             
             # Mark meeting as started
             meeting['status'] = 'started'
-            await self.save_meetings(meeting['guild_id'])
+            await self.save_meeting(meeting)
             
         except asyncio.CancelledError:
             # Task was cancelled
@@ -237,7 +237,7 @@ class MeetingManager:
         }
         
         self.meetings[meeting_id] = meeting
-        await self.save_meetings(guild_id)
+        await self.save_meeting(meeting)
         
         # Schedule the meeting
         self.schedule_meeting(meeting_id, meeting)
@@ -256,9 +256,11 @@ class MeetingManager:
             task.cancel()
             del self.scheduled_tasks[meeting_id]
         
-        # Remove meeting
+        # Delete from database
+        await self.delete_meeting(meeting_id)
+        
+        # Remove from memory
         del self.meetings[meeting_id]
-        await self.save_meetings(meeting['guild_id'])
         
         return True
 
@@ -282,6 +284,8 @@ class Meetings(commands.Cog):
     )
     async def create_meeting(self, interaction: discord.Interaction, name: str, time: str, 
                            description: str, voice_channel: discord.VoiceChannel):
+        await interaction.response.defer()
+        
         # Parse time
         duration = TimeParser.parse_duration(time)
         if not duration:
@@ -289,49 +293,54 @@ class Meetings(commands.Cog):
                 "Invalid Time Format",
                 "Please use format like: `1h`, `30m`, `2d`, `1h30m`"
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
         
         start_time = datetime.utcnow() + duration
         
-        # Create meeting
-        meeting_id = await self.bot.meeting_manager.create_meeting(
-            str(interaction.guild.id),
-            str(interaction.user.id),
-            name,
-            description,
-            start_time,
-            str(interaction.channel.id),
-            str(voice_channel.id)
-        )
-        
-        # Create meeting announcement embed
-        embed = discord.Embed(
-            title=f"📅 Meeting Scheduled: {name}",
-            description=description,
-            color=0x5865F2
-        )
-        
-        embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
-        embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
-        
-        # Format start time
-        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
-        time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-        embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
-        
-        embed.add_field(
-            name="How to Join",
-            value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
-            inline=False
-        )
-        
-        # Create view with join button
-        view = MeetingView(self.bot, meeting_id)
-        self.bot.meeting_manager.active_views[meeting_id] = view
-        
-        await interaction.response.send_message(embed=embed, view=view)
+        try:
+            # Create meeting
+            meeting_id = await self.bot.meeting_manager.create_meeting(
+                str(interaction.guild.id),
+                str(interaction.user.id),
+                name,
+                description,
+                start_time,
+                str(interaction.channel.id),
+                str(voice_channel.id)
+            )
+            
+            # Create meeting announcement embed
+            embed = discord.Embed(
+                title=f"📅 Meeting Scheduled: {name}",
+                description=description,
+                color=0x5865F2
+            )
+            
+            embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
+            embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
+            
+            # Format start time
+            time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+            time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
+            embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
+            
+            embed.add_field(
+                name="How to Join",
+                value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
+                inline=False
+            )
+            
+            # Create view with join button
+            view = MeetingView(self.bot, meeting_id)
+            self.bot.meeting_manager.active_views[meeting_id] = view
+            
+            await interaction.followup.send(embed=embed, view=view)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to create meeting: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="admin-meeting", description="Create a server-wide meeting announcement (Admin only)")
     @app_commands.describe(
@@ -348,6 +357,8 @@ class Meetings(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
+        await interaction.response.defer()
+        
         if mention_type not in ["here", "everyone"]:
             mention_type = "here"
         
@@ -358,61 +369,66 @@ class Meetings(commands.Cog):
                 "Invalid Time Format",
                 "Please use format like: `1h`, `30m`, `2d`, `1h30m`"
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
         
         start_time = datetime.utcnow() + duration
         
-        # Create meeting
-        meeting_id = await self.bot.meeting_manager.create_meeting(
-            str(interaction.guild.id),
-            str(interaction.user.id),
-            name,
-            description,
-            start_time,
-            str(interaction.channel.id),
-            str(voice_channel.id)
-        )
-        
-        # Create meeting announcement embed
-        embed = discord.Embed(
-            title=f"📅 Server Meeting: {name}",
-            description=description,
-            color=0x5865F2
-        )
-        
-        embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
-        embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
-        
-        # Format start time
-        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
-        time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-        embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
-        
-        embed.add_field(
-            name="How to Join",
-            value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
-            inline=False
-        )
-        
-        # Create view with join button
-        view = MeetingView(self.bot, meeting_id)
-        self.bot.meeting_manager.active_views[meeting_id] = view
-        
-        # Send announcement with proper mention - fix AllowedMentions
-        mention_text = "@here" if mention_type == "here" else "@everyone"
-        if mention_type == "everyone":
-            allowed_mentions = discord.AllowedMentions(everyone=True)
-        else:
-            allowed_mentions = discord.AllowedMentions(everyone=False)
+        try:
+            # Create meeting
+            meeting_id = await self.bot.meeting_manager.create_meeting(
+                str(interaction.guild.id),
+                str(interaction.user.id),
+                name,
+                description,
+                start_time,
+                str(interaction.channel.id),
+                str(voice_channel.id)
+            )
+            
+            # Create meeting announcement embed
+            embed = discord.Embed(
+                title=f"📅 Server Meeting: {name}",
+                description=description,
+                color=0x5865F2
+            )
+            
+            embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
+            embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
+            
+            # Format start time
+            time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+            time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
+            embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
+            
+            embed.add_field(
+                name="How to Join",
+                value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
+                inline=False
+            )
+            
+            # Create view with join button
+            view = MeetingView(self.bot, meeting_id)
+            self.bot.meeting_manager.active_views[meeting_id] = view
+            
+            # Send announcement with proper mention - fix AllowedMentions
+            mention_text = "@here" if mention_type == "here" else "@everyone"
+            if mention_type == "everyone":
+                allowed_mentions = discord.AllowedMentions(everyone=True)
+            else:
+                allowed_mentions = discord.AllowedMentions(everyone=False)
 
-        await interaction.response.send_message(
-            f"{mention_text} **Server Meeting Announcement**", 
-            embed=embed, 
-            view=view,
-            allowed_mentions=allowed_mentions
-        )
+            await interaction.followup.send(
+                f"{mention_text} **Server Meeting Announcement**", 
+                embed=embed, 
+                view=view,
+                allowed_mentions=allowed_mentions
+            )
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to create meeting: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
     
     @app_commands.command(name="join-meeting", description="Join a scheduled meeting")
     @app_commands.describe(meeting_id="ID of the meeting to join")
@@ -475,69 +491,83 @@ class Meetings(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Cancel the meeting
-        success = await self.bot.meeting_manager.cancel_meeting(meeting_id)
+        await interaction.response.defer()
         
-        if success:
-            embed = EmbedBuilder.success(
-                "Meeting Cancelled",
-                f"Meeting **{meeting['name']}** has been cancelled"
-            )
-            await interaction.response.send_message(embed=embed)
-        else:
-            embed = EmbedBuilder.error("Error", "Failed to cancel meeting")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+        try:
+            # Cancel the meeting
+            success = await self.bot.meeting_manager.cancel_meeting(meeting_id)
+            
+            if success:
+                embed = EmbedBuilder.success(
+                    "Meeting Cancelled",
+                    f"Meeting **{meeting['name']}** has been cancelled"
+                )
+                await interaction.followup.send(embed=embed)
+            else:
+                embed = EmbedBuilder.error("Error", "Failed to cancel meeting")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to cancel meeting: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
     
     @app_commands.command(name="list-meetings", description="List all scheduled meetings")
     async def list_meetings(self, interaction: discord.Interaction):
-        # Filter meetings for this guild
-        guild_id = str(interaction.guild.id)
-        guild_meetings = []
+        await interaction.response.defer()
         
-        for meeting_id, meeting in self.bot.meeting_manager.meetings.items():
-            if meeting['guild_id'] == guild_id and meeting['status'] == 'scheduled':
-                guild_meetings.append(meeting)
-        
-        if not guild_meetings:
-            embed = EmbedBuilder.info("No Meetings", "No meetings are currently scheduled")
-            await interaction.response.send_message(embed=embed)
-            return
-        
-        # Sort meetings by start time
-        guild_meetings.sort(key=lambda m: m['start_time'])
-        
-        embed = discord.Embed(
-            title="📅 Scheduled Meetings",
-            description=f"There are {len(guild_meetings)} upcoming meetings",
-            color=0x5865F2
-        )
-        
-        for meeting in guild_meetings[:10]:  # Show up to 10 meetings
-            start_time = datetime.fromisoformat(meeting['start_time'])
-            time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+        try:
+            # Filter meetings for this guild
+            guild_id = str(interaction.guild.id)
+            guild_meetings = []
             
-            if start_time > datetime.utcnow():
-                time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-                time_field = f"{time_str}\n(in {time_until})"
-            else:
-                time_field = f"{time_str}\n(starting now)"
+            for meeting_id, meeting in self.bot.meeting_manager.meetings.items():
+                if meeting['guild_id'] == guild_id and meeting['status'] == 'scheduled':
+                    guild_meetings.append(meeting)
             
-            creator = interaction.guild.get_member(int(meeting['creator_id']))
-            creator_name = creator.display_name if creator else "Unknown"
+            if not guild_meetings:
+                embed = EmbedBuilder.info("No Meetings", "No meetings are currently scheduled")
+                await interaction.followup.send(embed=embed)
+                return
             
-            voice_channel = interaction.guild.get_channel(int(meeting['voice_channel_id']))
-            voice_name = voice_channel.name if voice_channel else "Unknown Channel"
+            # Sort meetings by start time
+            guild_meetings.sort(key=lambda m: m['start_time'])
             
-            embed.add_field(
-                name=f"{meeting['name']} (ID: {meeting['id']})",
-                value=f"**Time:** {time_field}\n**Voice:** {voice_name}\n**Organizer:** {creator_name}",
-                inline=False
+            embed = discord.Embed(
+                title="📅 Scheduled Meetings",
+                description=f"There are {len(guild_meetings)} upcoming meetings",
+                color=0x5865F2
             )
-        
-        if len(guild_meetings) > 10:
-            embed.set_footer(text=f"Showing 10 of {len(guild_meetings)} meetings")
-        
-        await interaction.response.send_message(embed=embed)
+            
+            for meeting in guild_meetings[:10]:  # Show up to 10 meetings
+                start_time = datetime.fromisoformat(meeting['start_time'])
+                time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+                
+                if start_time > datetime.utcnow():
+                    time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
+                    time_field = f"{time_str}\n(in {time_until})"
+                else:
+                    time_field = f"{time_str}\n(starting now)"
+                
+                creator = interaction.guild.get_member(int(meeting['creator_id']))
+                creator_name = creator.display_name if creator else "Unknown"
+                
+                voice_channel = interaction.guild.get_channel(int(meeting['voice_channel_id']))
+                voice_name = voice_channel.name if voice_channel else "Unknown Channel"
+                
+                embed.add_field(
+                    name=f"{meeting['name']} (ID: {meeting['id']})",
+                    value=f"**Time:** {time_field}\n**Voice:** {voice_name}\n**Organizer:** {creator_name}",
+                    inline=False
+                )
+            
+            if len(guild_meetings) > 10:
+                embed.set_footer(text=f"Showing 10 of {len(guild_meetings)} meetings")
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to list meetings: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot):
     cog = Meetings(bot)
