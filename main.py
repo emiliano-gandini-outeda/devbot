@@ -77,6 +77,41 @@ class DiscordBot(commands.Bot):
             except Exception as e:
                 await ctx.send(f"❌ Sync failed: {e}")
                 logger.error(f"Admin sync failed: {e}")
+        
+        @self.command(name='force_sync')
+        @commands.is_owner()
+        async def force_sync(ctx):
+            """Force sync all commands (Owner only)"""
+            try:
+                await ctx.send("🔄 Starting force sync...")
+                
+                # Clear existing commands
+                self.tree.clear_commands()
+                await ctx.send("🗑️ Cleared existing commands")
+                
+                # Reload all cogs
+                for cog_name in list(self.cogs.keys()):
+                    try:
+                        await self.reload_extension(f"cogs.{cog_name.lower()}")
+                        await ctx.send(f"🔄 Reloaded {cog_name}")
+                    except Exception as e:
+                        await ctx.send(f"❌ Failed to reload {cog_name}: {e}")
+                
+                # Sync commands
+                synced = await self.tree.sync()
+                await ctx.send(f"✅ Force sync complete: {len(synced)} commands synced")
+                
+                # List synced commands
+                command_names = [cmd.name for cmd in synced]
+                if command_names:
+                    commands_text = ", ".join(command_names)
+                    if len(commands_text) > 1900:
+                        commands_text = commands_text[:1900] + "..."
+                    await ctx.send(f"📋 Synced commands: {commands_text}")
+                
+            except Exception as e:
+                await ctx.send(f"❌ Force sync failed: {e}")
+                logger.error(f"Force sync failed: {e}")
     
         @self.command(name='emergency_sync')
         @commands.is_owner()
@@ -261,15 +296,19 @@ class DiscordBot(commands.Bot):
             tree_command_names = [cmd.name for cmd in self.tree.get_commands()]
             logger.info(f"Tree commands: {tree_command_names}")
 
-            # Sync commands (optional - don't block startup)
-            logger.info("🔄 Syncing slash commands...")
+            # Force sync commands on startup
+            logger.info("🔄 Force syncing slash commands...")
             try:
-                async with asyncio.timeout(15):  # Increased timeout for sync
+                async with asyncio.timeout(20):  # Increased timeout for sync
                     synced = await self.tree.sync()
-                    logger.info(f"✅ Synced {len(synced)} slash commands")
+                    logger.info(f"✅ Force synced {len(synced)} slash commands")
+                    
+                    # Log synced command names
+                    synced_names = [cmd.name for cmd in synced]
+                    logger.info(f"Synced commands: {synced_names}")
+                    
             except (asyncio.TimeoutError, Exception) as e:
                 logger.warning(f"⚠️ Command sync failed/timed out: {e} - commands will sync later")
-                # Don't return here, let the bot continue
 
             logger.info("✅ Bot setup completed successfully!")
 
@@ -410,7 +449,7 @@ class DiscordBot(commands.Bot):
         # Process workflow triggers
         if self.workflow_manager and message.guild:
             try:
-                await self.workflow_manager.process_message_triggers(message)
+                await self.workflow_manager.check_message_triggers(message)
             except Exception as e:
                 logger.error(f"Error processing workflow triggers: {e}")
         
@@ -424,7 +463,7 @@ class DiscordBot(commands.Bot):
         # Process workflow triggers
         if self.workflow_manager:
             try:
-                await self.workflow_manager.process_member_join_triggers(member)
+                await self.workflow_manager.check_member_join_triggers(member)
             except Exception as e:
                 logger.error(f"Error processing member join workflow triggers: {e}")
         
@@ -453,7 +492,7 @@ class DiscordBot(commands.Bot):
         # Process workflow triggers
         if self.workflow_manager:
             try:
-                await self.workflow_manager.process_thread_create_triggers(thread)
+                await self.workflow_manager.check_thread_create_triggers(thread)
             except Exception as e:
                 logger.error(f"Error processing thread create workflow triggers: {e}")
     
@@ -464,7 +503,7 @@ class DiscordBot(commands.Bot):
         # Process workflow triggers
         if self.workflow_manager:
             try:
-                await self.workflow_manager.process_channel_create_triggers(channel)
+                await self.workflow_manager.check_channel_create_triggers(channel)
             except Exception as e:
                 logger.error(f"Error processing channel create workflow triggers: {e}")
     

@@ -1,8 +1,6 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import uuid
-from datetime import datetime
 from utils.helpers import EmbedBuilder
 from config.constants import TicketStatus
 from utils.ticket_manager import TicketJoinRequestView
@@ -603,20 +601,4 @@ class Tickets(commands.Cog):
 async def setup(bot):
     cog = Tickets(bot)
     await bot.add_cog(cog)
-    
-    # Manually add each command to the tree to ensure registration
-    commands_to_add = [
-        cog.create_ticket,
-        cog.ticket_private,
-        cog.ticket_public,
-        cog.ticket_join,
-        cog.list_tickets,
-        cog.assign_ticket,
-        cog.unassign_ticket
-    ]
-    
-    for command in commands_to_add:
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
-    
-    print(f"🎫 Successfully loaded Tickets cog with {len(commands_to_add)} commands")
+    print(f"🎫 Successfully loaded Tickets cog with {len(cog.get_app_commands())} commands")
