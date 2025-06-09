@@ -370,9 +370,12 @@ class Meetings(commands.Cog):
         view = MeetingView(self.bot, meeting_id)
         self.bot.meeting_manager.active_views[meeting_id] = view
         
-        # Send announcement with proper mention
+        # Send announcement with proper mention - fix AllowedMentions
         mention_text = "@here" if mention_type == "here" else "@everyone"
-        allowed_mentions = discord.AllowedMentions(everyone=(mention_type == "everyone"), here=(mention_type == "here"))
+        if mention_type == "everyone":
+            allowed_mentions = discord.AllowedMentions(everyone=True)
+        else:
+            allowed_mentions = discord.AllowedMentions(everyone=False)
 
         await interaction.response.send_message(
             f"{mention_text} **Server Meeting Announcement**", 

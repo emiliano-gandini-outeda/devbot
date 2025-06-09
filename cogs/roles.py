@@ -2,7 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder
-from datetime import datetime
+from datetime import datetime, timezone
 
 class Roles(commands.Cog):
     """Role and permission management"""
@@ -162,8 +162,9 @@ class Roles(commands.Cog):
         embed.add_field(name="Joined Server", value=joined_at, inline=True)
         embed.add_field(name="Account Created", value=created_at, inline=True)
         
-        # Calculate account age
-        account_age = datetime.utcnow() - user.created_at
+        # Calculate account age - fix timezone issue
+        now = datetime.now(timezone.utc)
+        account_age = now - user.created_at
         years = account_age.days // 365
         months = (account_age.days % 365) // 30
         days = (account_age.days % 365) % 30
