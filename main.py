@@ -209,20 +209,20 @@ class SlackBot(commands.Bot):
                                 raise
                             logger.warning(f"Retry {attempt + 1}/{max_retries} for guild {guild.name}: {e}")
                             await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                    
+                    # Delay to avoid rate limits
+                    await asyncio.sleep(1.0)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to sync commands to guild {guild.name}: {e}")
+                    failed_guilds.append(guild.name)
+            
+            logger.info(f"✅ Command sync completed! Total: {synced_count} commands across {len(self.guilds)} guilds")
+            if failed_guilds:
+                logger.warning(f"Failed to sync to {len(failed_guilds)} guilds: {', '.join(failed_guilds)}")
                 
-                # Delay to avoid rate limits
-                await asyncio.sleep(1.0)
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to sync commands to guild {guild.name}: {e}")
-                failed_guilds.append(guild.name)
-        
-        logger.info(f"✅ Command sync completed! Total: {synced_count} commands across {len(self.guilds)} guilds")
-        if failed_guilds:
-            logger.warning(f"Failed to sync to {len(failed_guilds)} guilds: {', '.join(failed_guilds)}")
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to sync commands: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"❌ Failed to sync commands: {e}", exc_info=True)
 
     async def register_cog_commands(self):
         """Ensure all cog commands are properly registered to the command tree"""
@@ -245,29 +245,29 @@ class SlackBot(commands.Bot):
                         if command.name not in existing_command_names:
                             commands_to_add.append(command)
                             logger.info(f"Adding command /{command.name} from {cog_name}")
+                
+                # Also check __cog_app_commands__ attribute
+                if hasattr(cog, '__cog_app_commands__'):
+                    for command in cog.__cog_app_commands__:
+                        if command.name not in existing_command_names and command not in commands_to_add:
+                            commands_to_add.append(command)
+                            logger.info(f"Adding command /{command.name} from {cog_name} via __cog_app_commands__")
             
-            # Also check __cog_app_commands__ attribute
-            if hasattr(cog, '__cog_app_commands__'):
-                for command in cog.__cog_app_commands__:
-                    if command.name not in existing_command_names and command not in commands_to_add:
-                        commands_to_add.append(command)
-                        logger.info(f"Adding command /{command.name} from {cog_name} via __cog_app_commands__")
-        
-        # Add any missing commands to the tree
-        for command in commands_to_add:
-            self.tree.add_command(command)
-            logger.info(f"Added command /{command.name} to command tree")
-        
-        total_commands = len(self.tree.get_commands())
-        logger.info(f"✅ Registered {total_commands} commands to command tree")
-        
-        # List all commands for debugging
-        all_commands = self.tree.get_commands()
-        command_names = [cmd.name for cmd in all_commands]
-        logger.info(f"Command tree now contains: {', '.join(command_names) if command_names else 'No commands'}")
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to register cog commands: {e}", exc_info=True)
+            # Add any missing commands to the tree
+            for command in commands_to_add:
+                self.tree.add_command(command)
+                logger.info(f"Added command /{command.name} to command tree")
+            
+            total_commands = len(self.tree.get_commands())
+            logger.info(f"✅ Registered {total_commands} commands to command tree")
+            
+            # List all commands for debugging
+            all_commands = self.tree.get_commands()
+            command_names = [cmd.name for cmd in all_commands]
+            logger.info(f"Command tree now contains: {', '.join(command_names) if command_names else 'No commands'}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to register cog commands: {e}", exc_info=True)
 
     # Add a sync command for debugging
     @commands.command(name='sync')
@@ -284,10 +284,10 @@ class SlackBot(commands.Bot):
             # List synced commands
             command_list = "\n".join([f"- /{cmd.name}" for cmd in synced])
             if command_list and len(command_list) < 1900:
-                await ctx.send(f"\`\`\`\nSynced commands:\n{command_list}\n\`\`\`")
+                await ctx.send(f"```\nSynced commands:\n{command_list}\n```")
             elif not command_list:
                 await ctx.send("No commands were synced.")
-        
+            
             # Check total registered commands
             all_commands = self.tree.get_commands()
             await ctx.send(f"Total registered commands in tree: {len(all_commands)}")
@@ -339,7 +339,7 @@ class SlackBot(commands.Bot):
         
         for cog_name, cmds in cog_commands.items():
             commands_text = "\n".join([f"- /{cmd.name}" for cmd in cmds])
-            await ctx.send(f"**{cog_name} Commands**:\n\`\`\`\n{commands_text}\n\`\`\`")
+            await ctx.send(f"**{cog_name} Commands**:\n```\n{commands_text}\n```")
         
         await ctx.send(f"Total commands: {len(all_commands)}")
     
@@ -371,7 +371,7 @@ class SlackBot(commands.Bot):
             all_commands = self.tree.get_commands()
             command_list = "\n".join([f"- /{cmd.name}" for cmd in all_commands])
             if command_list:
-                await ctx.send(f"**Available Commands**:\n\`\`\`\n{command_list}\n\`\`\`")
+                await ctx.send(f"**Available Commands**:\n```\n{command_list}\n```")
             else:
                 await ctx.send("No commands are registered in the command tree.")
             
