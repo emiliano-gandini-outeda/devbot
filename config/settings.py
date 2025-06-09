@@ -7,7 +7,7 @@ class Settings:
     PREFIX: str = os.getenv('BOT_PREFIX', '!')
     
     # Database Configuration - Railway provides DATABASE_URL for PostgreSQL
-    DATABASE_URL: str = os.getenv('DATABASE_URL', 'sqlite:///bot.db')
+    DATABASE_URL: str = os.getenv('DATABASE_URL', 'postgresql://postgres:QQCQuMDiLYyUhMLffEyUxizpDyYMxNxf@postgres.railway.internal:5432/railway')
     
     # Railway-specific environment
     RAILWAY_ENVIRONMENT: str = os.getenv('RAILWAY_ENVIRONMENT', 'development')
@@ -58,7 +58,10 @@ class Settings:
     @classmethod
     def get_database_url(cls) -> str:
         """Get appropriate database URL for Railway"""
-        if cls.DATABASE_URL.startswith('postgresql://'):
-            # Railway provides PostgreSQL URLs, ensure they're properly formatted
-            return cls.DATABASE_URL.replace('postgresql://', 'postgresql+asyncpg://')
-        return cls.DATABASE_URL
+        # Use the hardcoded Railway URL for now
+        railway_url = "postgresql://postgres:QQCQuMDiLYyUhMLffEyUxizpDyYMxNxf@postgres.railway.internal:5432/railway"
+        
+        if railway_url.startswith('postgresql://'):
+            # Convert to asyncpg format
+            return railway_url.replace('postgresql://', 'postgresql://')
+        return railway_url

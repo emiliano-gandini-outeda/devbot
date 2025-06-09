@@ -53,10 +53,28 @@ class SlackBot(commands.Bot):
             # Validate required environment variables
             Settings.validate_required_env_vars()
             
-            # Initialize database
+            # Initialize database with enhanced error handling
+            logger.info("🔄 Initializing database connection...")
             self.db = DatabaseManager()
             await self.db.init_database()
-            logger.info("Database initialized successfully")
+            
+            # Verify all tables exist
+            tables_ok = await self.db.verify_tables()
+            if not tables_ok:
+                logger.warning("⚠️ Some database tables are missing, attempting to recreate...")
+                await self.db.create_tables()
+                tables_ok = await self.db.verify_tables()
+            
+            if tables_ok:
+                logger.info("✅ Database initialization completed successfully")
+                # Test the connection
+                connection_ok = await self.db.test_connection()
+                if connection_ok:
+                    logger.info("✅ Database connection test passed")
+                else:
+                    logger.error("❌ Database connection test failed")
+            else:
+                logger.error("❌ Database initialization failed - some commands may not work")
             
             # Initialize managers
             from utils.admin import AdminManager
@@ -225,9 +243,9 @@ class SlackBot(commands.Bot):
                 else:
                     await interaction.response.send_message(message, ephemeral=True)
 
-            # Define force reload command
-            @app_commands.command(name="admin_reload", description="Force reload all cogs and commands (Owner only)")
-            async def reload_slash(interaction: discord.Interaction):
+            # Define database test command
+            @app_commands.command(name="admin_db_test", description="Test database connection (Owner only)")
+            async def db_test_slash(interaction: discord.Interaction):
                 if not await self.is_owner(interaction.user):
                     await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
                     return
@@ -235,38 +253,40 @@ class SlackBot(commands.Bot):
                 await interaction.response.defer(ephemeral=True)
                 
                 try:
-                    # Clear the command tree
-                    self.tree.clear_commands(guild=None)
-                    for guild in self.guilds:
-                        self.tree.clear_commands(guild=guild)
+                    # Test database connection
+                    connection_ok = await self.db.test_connection()
+                    tables_ok = await self.db.verify_tables()
                     
-                    # Reload all cogs
-                    cogs_to_reload = list(self.cogs.keys())
-                    for cog_name in cogs_to_reload:
-                        try:
-                            await self.reload_extension(f"cogs.{cog_name.split('.')[-1]}")
-                            logger.info(f"Reloaded cog: {cog_name}")
-                        except Exception as e:
-                            logger.error(f"Failed to reload {cog_name}: {e}")
+                    embed = discord.Embed(
+                        title="🗄️ Database Status",
+                        color=0x00ff00 if connection_ok and tables_ok else 0xff0000
+                    )
                     
-                    # Re-register all commands
-                    await self.register_all_commands()
+                    embed.add_field(
+                        name="Connection",
+                        value="✅ Connected" if connection_ok else "❌ Failed",
+                        inline=True
+                    )
                     
-                    # Re-add admin commands
-                    for cmd in [sync_slash, debug_slash, reload_slash]:
-                        self.tree.add_command(cmd)
+                    embed.add_field(
+                        name="Database Type",
+                        value="PostgreSQL (Railway)" if self.db.is_postgresql else "SQLite (Local)",
+                        inline=True
+                    )
                     
-                    # Sync to current guild
-                    synced = await self.tree.sync(guild=interaction.guild)
+                    embed.add_field(
+                        name="Tables",
+                        value="✅ All tables exist" if tables_ok else "❌ Missing tables",
+                        inline=True
+                    )
                     
-                    await interaction.followup.send(f"✅ Reloaded all cogs and synced {len(synced)} commands to {interaction.guild.name}")
+                    await interaction.followup.send(embed=embed)
                     
                 except Exception as e:
-                    await interaction.followup.send(f"❌ Failed to reload: {e}")
-                    logger.error(f"Failed to reload: {e}", exc_info=True)
+                    await interaction.followup.send(f"❌ Database test failed: {e}")
 
             # Store references to admin commands
-            self.admin_commands = [sync_slash, debug_slash, reload_slash]
+            self.admin_commands = [sync_slash, debug_slash, db_test_slash]
             
             # Add all slash commands to the tree
             for cmd in self.admin_commands:
