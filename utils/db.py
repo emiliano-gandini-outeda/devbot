@@ -190,9 +190,21 @@ class DatabaseManager:
                 data_type TEXT NOT NULL,
                 data_content JSONB DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                CONSTRAINT unique_user_data UNIQUE(user_id, data_type)
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """,
+
+            # Add unique constraint separately
+            """
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_constraint 
+                    WHERE conname = 'unique_user_data'
+                ) THEN
+                    ALTER TABLE user_data ADD CONSTRAINT unique_user_data UNIQUE(user_id, data_type);
+                END IF;
+            END $$
             """,
         
             # Log configs table

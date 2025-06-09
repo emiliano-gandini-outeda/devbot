@@ -64,12 +64,13 @@ class Setup(commands.Cog):
             }
             
             if self.bot.db.is_postgresql:
-                # Fixed: Use proper INSERT with explicit column names
+                # Delete existing config first, then insert new one
                 await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
-                       VALUES ($1, $1, $2, $3) 
-                       ON CONFLICT (user_id, data_type) 
-                       DO UPDATE SET data_content = $3, guild_id = $1""",
+                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                    str(interaction.guild.id), 'github_tracking_config'
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
                     str(interaction.guild.id), 'github_tracking_config', json.dumps(config)
                 )
             else:
@@ -160,12 +161,13 @@ class Setup(commands.Cog):
             }
             
             if self.bot.db.is_postgresql:
-                # Fixed: Use proper INSERT with explicit column names
+                # Delete existing config first, then insert new one
                 await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
-                       VALUES ($1, $1, $2, $3) 
-                       ON CONFLICT (user_id, data_type) 
-                       DO UPDATE SET data_content = $3, guild_id = $1""",
+                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                    str(interaction.guild.id), 'meeting_config'
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
                     str(interaction.guild.id), 'meeting_config', json.dumps(config)
                 )
             else:
@@ -209,12 +211,13 @@ class Setup(commands.Cog):
             }
             
             if self.bot.db.is_postgresql:
-                # Fixed: Use proper INSERT with explicit column names
+                # Delete existing config first, then insert new one
                 await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
-                       VALUES ($1, $1, $2, $3) 
-                       ON CONFLICT (user_id, data_type) 
-                       DO UPDATE SET data_content = $3, guild_id = $1""",
+                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                    str(interaction.guild.id), 'reminder_config'
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
                     str(interaction.guild.id), 'reminder_config', json.dumps(config)
                 )
             else:
@@ -257,12 +260,13 @@ class Setup(commands.Cog):
             }
             
             if self.bot.db.is_postgresql:
-                # Fixed: Use proper INSERT with explicit column names
+                # Delete existing config first, then insert new one
                 await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
-                       VALUES ($1, $1, $2, $3) 
-                       ON CONFLICT (user_id, data_type) 
-                       DO UPDATE SET data_content = $3, guild_id = $1""",
+                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                    str(interaction.guild.id), 'thread_config'
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
                     str(interaction.guild.id), 'thread_config', json.dumps(config)
                 )
             else:
