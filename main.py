@@ -76,20 +76,30 @@ class SlackBot(commands.Bot):
                 'cogs.help',
                 'cogs.logging'
             ]
-            
+
+            loaded_cogs = []
             for cog in cogs:
                 try:
                     await self.load_extension(cog)
-                    logger.info(f"Loaded cog: {cog}")
+                    loaded_cogs.append(cog)
+                    logger.info(f"✅ Loaded cog: {cog}")
                 except Exception as e:
-                    logger.error(f"Failed to load cog {cog}: {e}")
-            
-            # Sync slash commands
+                    logger.error(f"❌ Failed to load cog {cog}: {e}")
+
+            logger.info(f"Loaded {len(loaded_cogs)}/{len(cogs)} cogs successfully")
+
+            # Force sync slash commands
             try:
+                logger.info("Syncing slash commands...")
                 synced = await self.tree.sync()
-                logger.info(f"Synced {len(synced)} slash commands")
+                logger.info(f"✅ Synced {len(synced)} slash commands")
+                
+                # List all synced commands for debugging
+                for cmd in synced:
+                    logger.info(f"  - /{cmd.name}: {cmd.description}")
+                    
             except Exception as e:
-                logger.error(f"Failed to sync commands: {e}")
+                logger.error(f"❌ Failed to sync commands: {e}")
                 
         except Exception as e:
             logger.error(f"Error in setup_hook: {e}")
@@ -97,7 +107,29 @@ class SlackBot(commands.Bot):
     async def on_ready(self):
         logger.info(f'{self.user} has connected to Discord!')
         logger.info(f'Bot is in {len(self.guilds)} guilds')
+        
+        # List all loaded commands for debugging
+        logger.info("Loaded slash commands:")
+        for command in self.tree.get_commands():
+            logger.info(f"  - /{command.name}: {command.description}")
+        
         logger.info(f'Bot deployment successful! 🚀')
+
+    # Add a sync command for debugging
+    @commands.command(name='sync')
+    @commands.is_owner()
+    async def sync_commands(self, ctx):
+        """Manually sync slash commands (Owner only)"""
+        try:
+            synced = await self.tree.sync()
+            await ctx.send(f'Synced {len(synced)} commands.')
+            
+            # List synced commands
+            command_list = "\n".join([f"- /{cmd.name}" for cmd in synced])
+            if len(command_list) < 2000:
+                await ctx.send(f"\`\`\`\nSynced commands:\n{command_list}\n\`\`\`")
+        except Exception as e:
+            await ctx.send(f'Failed to sync commands: {e}')
     
     async def on_error(self, event, *args, **kwargs):
         logger.error(f'An error occurred in {event}', exc_info=True)
