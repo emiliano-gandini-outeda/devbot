@@ -11,12 +11,12 @@ class Logging(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
     
-    @app_commands.command(name="setup-logs", description="Configure server logging (Admin only)")
+    @app_commands.command(name="logging-setup", description="Configure server logging (Admin only)")
     @app_commands.describe(
         log_channel="Channel to send logs to",
         events="Events to log (comma-separated: message_delete, message_edit, member_join, member_leave)"
     )
-    async def setup_logs(self, interaction: discord.Interaction, log_channel: discord.TextChannel, events: str = "message_delete,message_edit,member_join,member_leave"):
+    async def logging_setup(self, interaction: discord.Interaction, log_channel: discord.TextChannel, events: str = "message_delete,message_edit,member_join,member_leave"):
         if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can configure logging")
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -64,7 +64,7 @@ class Logging(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to configure logging: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="export-data", description="Export server data (Admin only)")
+    @app_commands.command(name="logging-export", description="Export server logging data (Admin only)")
     @app_commands.describe(data_type="Type of data to export (logs, tickets, reminders, all)")
     async def export_data(self, interaction: discord.Interaction, data_type: str = "all"):
         if not self.bot.admin_manager.is_admin(interaction.user):

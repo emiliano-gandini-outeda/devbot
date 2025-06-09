@@ -420,7 +420,7 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             embed.add_field(
                 name="Admin Commands",
-                value="`/setup-logs <log_channel>` - Configure logging channel",
+                value="`/logging-setup <log_channel>` - Configure logging channel",
                 inline=False
             )
         
