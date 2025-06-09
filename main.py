@@ -318,6 +318,18 @@ class DiscordBot(commands.Bot):
                 logger.error(f"❌ Cog loading failed: {e}")
                 return
         
+            # Verify commands are registered
+            logger.info("🔍 Verifying command registration...")
+            total_commands = 0
+            for cog_name, cog in self.cogs.items():
+                cog_commands = len(cog.get_app_commands())
+                total_commands += cog_commands
+                logger.info(f"  • {cog_name}: {cog_commands} commands")
+
+            logger.info(f"📊 Total commands from cogs: {total_commands}")
+            tree_commands = len(self.tree.get_commands())
+            logger.info(f"📊 Commands in tree: {tree_commands}")
+        
             # Sync commands with timeout (this often hangs)
             logger.info("🔄 Syncing slash commands...")
             try:
@@ -377,6 +389,8 @@ class DiscordBot(commands.Bot):
             except Exception as e:
                 failed_count += 1
                 logger.error(f"  ❌ Failed to load {cog}: {e}")
+                if cog == 'cogs.integrations_github':
+                    logger.exception(f"GitHub cog error details:")
     
         logger.info(f"📦 Loaded {loaded_count}/{len(cogs)} cogs successfully")
         if failed_count > 0:
@@ -597,7 +611,7 @@ async def main():
         async with asyncio.timeout(180):  # 3 minute timeout for startup
             await bot.start(Settings.DISCORD_TOKEN)
     except asyncio.TimeoutError:
-        logger.error("❌ Bot startup timed out after 2 minutes")
+        logger.error("❌ Bot startup timed out after 3 minutes")
         await bot.close()
     except discord.LoginFailure:
         logger.error("❌ Invalid Discord token")

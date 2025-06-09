@@ -5,6 +5,9 @@ from datetime import datetime, timedelta
 import asyncio
 from utils.helpers import EmbedBuilder, TimeParser
 from config.constants import ReminderType
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Reminders(commands.Cog):
     """Reminder system for users and channels"""
@@ -22,53 +25,67 @@ class Reminders(commands.Cog):
         try:
             current_time = datetime.utcnow()
             
-            if self.bot.db.is_postgresql:
-                due_reminders = await self.bot.db.connection.fetch(
-                    "SELECT * FROM reminders WHERE remind_at <= $1",
-                    current_time
-                )
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM reminders WHERE remind_at <= ?",
-                    (current_time,)
-                )
-                due_reminders = await cursor.fetchall()
+            # Use retry logic for database operations
+            try:
+                if self.bot.db.is_postgresql:
+                    due_reminders = await self.bot.db.connection.fetch(
+                        "SELECT * FROM reminders WHERE remind_at <= $1",
+                        current_time
+                    )
+                else:
+                    async with self.bot.db._connection_lock:
+                        cursor = await self.bot.db.connection.execute(
+                            "SELECT * FROM reminders WHERE remind_at <= ?",
+                            (current_time,)
+                        )
+                        due_reminders = await cursor.fetchall()
+            except Exception as e:
+                if "operation is in progress" in str(e).lower():
+                    logger.warning("Database operation in progress, skipping reminder check")
+                    return
+                else:
+                    logger.error(f"Error checking reminders: {e}")
+                    return
             
             for reminder in due_reminders:
-                await self.send_reminder(reminder)
-                
-                # Delete non-recurring reminders
-                recurring = reminder['recurring'] if self.bot.db.is_postgresql else reminder[7]
-                reminder_id = reminder['id'] if self.bot.db.is_postgresql else reminder[0]
-                
-                if not recurring:
-                    if self.bot.db.is_postgresql:
-                        await self.bot.db.connection.execute(
-                            "DELETE FROM reminders WHERE id = $1", reminder_id
-                        )
+                try:
+                    await self.send_reminder(reminder)
+                    
+                    # Delete non-recurring reminders
+                    recurring = reminder['recurring'] if self.bot.db.is_postgresql else reminder[7]
+                    reminder_id = reminder['id'] if self.bot.db.is_postgresql else reminder[0]
+                    
+                    if not recurring:
+                        async with self.bot.db._connection_lock:
+                            if self.bot.db.is_postgresql:
+                                await self.bot.db.connection.execute(
+                                    "DELETE FROM reminders WHERE id = $1", reminder_id
+                                )
+                            else:
+                                await self.bot.db.connection.execute(
+                                    "DELETE FROM reminders WHERE id = ?", (reminder_id,)
+                                )
+                                await self.bot.db.connection.commit()
                     else:
-                        await self.bot.db.connection.execute(
-                            "DELETE FROM reminders WHERE id = ?", (reminder_id,)
-                        )
-                else:
-                    # Handle recurring reminders (basic implementation)
-                    next_remind = current_time + timedelta(days=1)  # Daily recurrence
-                    if self.bot.db.is_postgresql:
-                        await self.bot.db.connection.execute(
-                            "UPDATE reminders SET remind_at = $1 WHERE id = $2",
-                            next_remind, reminder_id
-                        )
-                    else:
-                        await self.bot.db.connection.execute(
-                            "UPDATE reminders SET remind_at = ? WHERE id = ?",
-                            (next_remind, reminder_id)
-                        )
-            
-            if due_reminders and not self.bot.db.is_postgresql:
-                await self.bot.db.connection.commit()
+                        # Handle recurring reminders (basic implementation)
+                        next_remind = current_time + timedelta(days=1)  # Daily recurrence
+                        async with self.bot.db._connection_lock:
+                            if self.bot.db.is_postgresql:
+                                await self.bot.db.connection.execute(
+                                    "UPDATE reminders SET remind_at = $1 WHERE id = $2",
+                                    next_remind, reminder_id
+                                )
+                            else:
+                                await self.bot.db.connection.execute(
+                                    "UPDATE reminders SET remind_at = ? WHERE id = ?",
+                                    (next_remind, reminder_id)
+                                )
+                                await self.bot.db.connection.commit()
+                except Exception as e:
+                    logger.error(f"Error processing reminder {reminder_id}: {e}")
                 
         except Exception as e:
-            print(f"Error checking reminders: {e}")
+            logger.error(f"Error in check_reminders: {e}")
     
     async def send_reminder(self, reminder):
         """Send a reminder to the appropriate channel/user"""

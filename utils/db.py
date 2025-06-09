@@ -14,36 +14,38 @@ class DatabaseManager:
         self.database_url = Settings.get_database_url()
         self.connection = None
         self.is_postgresql = self.database_url.startswith('postgresql')
+        self._connection_lock = asyncio.Lock()
         
         logger.info(f"Database type: {'PostgreSQL' if self.is_postgresql else 'SQLite'}")
         logger.info(f"Database URL: {self.database_url[:50]}...")  # Log partial URL for debugging
     
     async def init_database(self):
         """Initialize database connection and create tables"""
-        if self.is_postgresql:
-            # Railway PostgreSQL connection
-            try:
-                # Use the direct URL for Railway
-                connection_url = "postgresql://postgres:QQCQuMDiLYyUhMLffEyUxizpDyYMxNxf@postgres.railway.internal:5432/railway"
-                self.connection = await asyncpg.connect(connection_url)
-                logger.info("✅ Connected to Railway PostgreSQL database")
-                
-                # Test the connection
-                result = await self.connection.fetchval("SELECT version()")
-                logger.info(f"PostgreSQL version: {result}")
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to connect to PostgreSQL: {e}")
-                logger.info("Falling back to SQLite...")
-                self.is_postgresql = False
+        async with self._connection_lock:
+            if self.is_postgresql:
+                # Railway PostgreSQL connection
+                try:
+                    # Use the direct URL for Railway
+                    connection_url = "postgresql://postgres:QQCQuMDiLYyUhMLffEyUxizpDyYMxNxf@postgres.railway.internal:5432/railway"
+                    self.connection = await asyncpg.connect(connection_url)
+                    logger.info("✅ Connected to Railway PostgreSQL database")
+                    
+                    # Test the connection
+                    result = await self.connection.fetchval("SELECT version()")
+                    logger.info(f"PostgreSQL version: {result}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to connect to PostgreSQL: {e}")
+                    logger.info("Falling back to SQLite...")
+                    self.is_postgresql = False
+                    self.connection = await aiosqlite.connect("bot.db")
+                    logger.info("✅ Connected to local SQLite database")
+            else:
+                # Local SQLite fallback
                 self.connection = await aiosqlite.connect("bot.db")
                 logger.info("✅ Connected to local SQLite database")
-        else:
-            # Local SQLite fallback
-            self.connection = await aiosqlite.connect("bot.db")
-            logger.info("✅ Connected to local SQLite database")
-        
-        await self.create_tables()
+            
+            await self.create_tables()
     
     async def create_tables(self):
         """Create all necessary database tables"""
@@ -239,7 +241,7 @@ class DatabaseManager:
         
         for i, table_sql in enumerate(tables, 1):
             try:
-                await self.connection.execute(table_sql)
+                await self.execute_with_retry(table_sql)
                 table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0]
                 logger.info(f"✅ Created PostgreSQL table {i}/{len(tables)}: {table_name}")
             except Exception as e:
@@ -263,7 +265,7 @@ class DatabaseManager:
         
         for index_sql in indexes:
             try:
-                await self.connection.execute(index_sql)
+                await self.execute_with_retry(index_sql)
             except Exception as e:
                 logger.warning(f"Failed to create index: {e}")
         
@@ -451,7 +453,7 @@ class DatabaseManager:
         
         for i, table_sql in enumerate(tables, 1):
             try:
-                await self.connection.execute(table_sql)
+                await self.execute_with_retry(table_sql)
                 table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0]
                 logger.info(f"✅ Created SQLite table {i}/{len(tables)}: {table_name}")
             except Exception as e:
@@ -523,16 +525,15 @@ class DatabaseManager:
         """Create new user in database"""
         try:
             if self.is_postgresql:
-                await self.connection.execute(
+                await self.execute_with_retry(
                     "INSERT INTO users (discord_id, username) VALUES ($1, $2) ON CONFLICT (discord_id) DO NOTHING",
                     discord_id, username
                 )
             else:
-                await self.connection.execute(
+                await self.execute_with_retry(
                     "INSERT OR IGNORE INTO users (discord_id, username) VALUES (?, ?)",
-                    (discord_id, username)
+                    discord_id, username
                 )
-                await self.connection.commit()
             return True
         except Exception as e:
             logger.error(f"Failed to create user {discord_id}: {e}")
@@ -578,3 +579,26 @@ class DatabaseManager:
                 logger.info("✅ Database connection closed")
             except Exception as e:
                 logger.error(f"Error closing database connection: {e}")
+
+    async def execute_with_retry(self, query, *args, max_retries=3):
+        """Execute query with retry logic for concurrency issues"""
+        for attempt in range(max_retries):
+            try:
+                async with self._connection_lock:
+                    if self.is_postgresql:
+                        if args:
+                            await self.connection.execute(query, *args)
+                        else:
+                            await self.connection.execute(query)
+                        return
+                    else:
+                        cursor = await self.connection.execute(query, args if args else ())
+                        await self.connection.commit()
+                        return cursor
+            except Exception as e:
+                if "operation is in progress" in str(e).lower() and attempt < max_retries - 1:
+                    logger.warning(f"Database operation in progress, retrying... (attempt {attempt + 1})")
+                    await asyncio.sleep(0.1 * (attempt + 1))  # Exponential backoff
+                    continue
+                else:
+                    raise e
