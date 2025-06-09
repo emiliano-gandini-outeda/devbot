@@ -104,6 +104,7 @@ class Admin(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to list admin roles: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
+    # Renamed from bot_status to status_check to avoid Discord.py naming conflict
     @app_commands.command(name="status-check", description="Check bot status and loaded features (Admin only)")
     async def status_check(self, interaction: discord.Interaction):
         if not self.bot.admin_manager.is_admin(interaction.user):
@@ -230,6 +231,66 @@ class Admin(commands.Cog):
                         "created_at": ticket[10]
                     })
             
+            # Get reminders
+            if self.bot.db.is_postgresql:
+                reminders = await self.bot.db.connection.fetch(
+                    "SELECT * FROM reminders WHERE user_id = $1", user_id
+                )
+                
+                data["reminders"] = []
+                for reminder in reminders:
+                    data["reminders"].append({
+                        "message": reminder['message'],
+                        "remind_at": str(reminder['remind_at']),
+                        "type": reminder['type'],
+                        "created_at": str(reminder['created_at'])
+                    })
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM reminders WHERE user_id = ?", (user_id,)
+                )
+                reminders = await cursor.fetchall()
+                
+                data["reminders"] = []
+                for reminder in reminders:
+                    data["reminders"].append({
+                        "message": reminder[4],
+                        "remind_at": reminder[5],
+                        "type": reminder[6],
+                        "created_at": reminder[8]
+                    })
+            
+            # Get workflows created by user
+            if self.bot.db.is_postgresql:
+                workflows = await self.bot.db.connection.fetch(
+                    "SELECT * FROM workflows WHERE creator_id = $1 AND guild_id = $2", 
+                    user_id, str(interaction.guild.id)
+                )
+                
+                data["workflows"] = []
+                for workflow in workflows:
+                    data["workflows"].append({
+                        "name": workflow['name'],
+                        "trigger_type": workflow['trigger_type'],
+                        "status": workflow['status'],
+                        "created_at": str(workflow['created_at'])
+                    })
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM workflows WHERE creator_id = ? AND guild_id = ?", 
+                    (user_id, str(interaction.guild.id))
+                )
+                workflows = await cursor.fetchall()
+                
+                data["workflows"] = []
+                for workflow in workflows:
+                    data["workflows"].append({
+                        "name": workflow[1],
+                        "trigger_type": workflow[4],
+                        "status": workflow[7],
+                        "created_at": workflow[8]
+                    })
+            
             # Create and send file with data
             import io
             import json
@@ -251,6 +312,27 @@ class Admin(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to retrieve user data: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
 
+    @commands.command(name='list_commands')
+    @commands.is_owner()
+    async def list_commands_cmd(self, ctx):
+        """List all commands and their registration status"""
+        all_commands = self.bot.tree.get_commands()
+        
+        # Group by cog
+        cog_commands = {}
+        for cmd in all_commands:
+            cog_name = getattr(cmd, "_cog_name", "Unknown")
+            if cog_name not in cog_commands:
+                cog_commands[cog_name] = []
+            cog_commands[cog_name].append(cmd)
+        
+        for cog_name, cmds in cog_commands.items():
+            commands_text = "\n".join([f"- /{cmd.name}" for cmd in cmds])
+            await ctx.send(f"**{cog_name} Commands**:\n\`\`\`\n{commands_text}\n\`\`\`")
+        
+        await ctx.send(f"Total commands: {len(all_commands)}")
+
 async def setup(bot):
-    await bot.add_cog(Admin(bot))
-    print(f"🛡️ Successfully loaded Admin cog")
+    cog = Admin(bot)
+    await bot.add_cog(cog)
+    print(f"🛡️ Successfully loaded Admin cog with {len(cog.get_app_commands())} commands")

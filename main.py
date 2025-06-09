@@ -31,9 +31,10 @@ class SlackBot(commands.Bot):
         intents.guilds = True
         
         super().__init__(
-            command_prefix='!',
+            command_prefix=Settings.PREFIX,
             intents=intents,
             help_command=None,
+            # Add connection resilience settings
             heartbeat_timeout=60.0,
             guild_ready_timeout=5.0
         )
@@ -44,7 +45,7 @@ class SlackBot(commands.Bot):
         self.logging_manager = None
         self.workflow_manager = None
         self._ready_fired = False
-        self._synced = False
+        self._synced = False  # Track if we've already synced
     
     async def setup_hook(self):
         """Setup database and load cogs"""
@@ -99,61 +100,11 @@ class SlackBot(commands.Bot):
                     logger.error(f"❌ Failed to load cog {cog}: {e}", exc_info=True)
 
             logger.info(f"Loaded {len(loaded_cogs)}/{len(cogs)} cogs successfully")
-            
-            # Add emergency sync command
-            await self.add_emergency_sync_command()
-            
             logger.info("Setup hook completed successfully")
                 
         except Exception as e:
             logger.error(f"Error in setup_hook: {e}", exc_info=True)
             raise
-    
-    async def add_emergency_sync_command(self):
-        """Add emergency sync command"""
-        try:
-            @app_commands.command(name="emergency_sync", description="Emergency sync all commands (Owner only)")
-            async def emergency_sync(interaction: discord.Interaction):
-                if not await self.is_owner(interaction.user):
-                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
-                    return
-                
-                await interaction.response.defer(ephemeral=True)
-                
-                try:
-                    # Clear everything first
-                    self.tree.clear_commands(guild=None)
-                    self.tree.clear_commands(guild=interaction.guild)
-                    
-                    # Sync empty to clear Discord's cache
-                    await self.tree.sync(guild=None)
-                    await self.tree.sync(guild=interaction.guild)
-                    
-                    # Wait a moment
-                    await asyncio.sleep(2)
-                    
-                    # Now sync all commands to this guild only
-                    synced = await self.tree.sync(guild=interaction.guild)
-                    
-                    await interaction.followup.send(f"✅ Emergency sync complete! Synced {len(synced)} commands to {interaction.guild.name}")
-                    
-                    # Log what was synced
-                    if synced:
-                        synced_names = [cmd['name'] for cmd in synced]
-                        logger.info(f"Emergency synced commands: {', '.join(sorted(synced_names))}")
-                    else:
-                        logger.warning("No commands were synced!")
-                    
-                except Exception as e:
-                    await interaction.followup.send(f"❌ Emergency sync failed: {e}")
-                    logger.error(f"Emergency sync failed: {e}", exc_info=True)
-            
-            # Add the emergency command to the tree
-            self.tree.add_command(emergency_sync)
-            logger.info("✅ Added emergency sync command")
-            
-        except Exception as e:
-            logger.error(f"Failed to add emergency sync command: {e}", exc_info=True)
     
     async def on_ready(self):
         """Called when bot is ready"""
@@ -165,37 +116,16 @@ class SlackBot(commands.Bot):
         logger.info(f'{self.user} has connected to Discord!')
         logger.info(f'Bot is in {len(self.guilds)} guilds')
         
-        # Get all commands from tree
-        all_commands = self.tree.get_commands()
-        logger.info(f'Total commands in tree: {len(all_commands)}')
-        
-        if all_commands:
-            command_names = [cmd.name for cmd in all_commands]
-            logger.info(f'Commands in tree: {", ".join(sorted(command_names))}')
-        else:
-            logger.warning("⚠️ NO COMMANDS FOUND IN TREE!")
-        
         # Only sync once when the bot first starts
         if not self._synced:
-            await asyncio.sleep(2)  # Wait for everything to initialize
+            # Wait a moment for all cogs to fully initialize
+            await asyncio.sleep(2)
             
-            # Simple sync to first guild only
-            if self.guilds:
-                first_guild = self.guilds[0]
-                try:
-                    logger.info(f"Syncing commands to {first_guild.name}...")
-                    synced = await self.tree.sync(guild=first_guild)
-                    logger.info(f"✅ Synced {len(synced)} commands to {first_guild.name}")
-                    
-                    if synced:
-                        synced_names = [cmd['name'] for cmd in synced]
-                        logger.info(f"Synced commands: {', '.join(sorted(synced_names))}")
-                    
-                    self._synced = True
-                except Exception as e:
-                    logger.error(f"Failed to sync to {first_guild.name}: {e}")
+            # Sync commands once
+            await self.sync_commands_once()
+            self._synced = True
         
-        logger.info(f'Bot ready! Use /emergency_sync if commands don\'t work')
+        logger.info(f'Bot deployment successful! 🚄')
 
     async def on_disconnect(self):
         """Called when bot disconnects"""
@@ -217,16 +147,6 @@ class SlackBot(commands.Bot):
         # Process commands
         await self.process_commands(message)
 
-    async def on_command_error(self, ctx, error):
-        """Handle command errors"""
-        if isinstance(error, commands.CommandNotFound):
-            return
-        elif isinstance(error, commands.NotOwner):
-            await ctx.send("❌ Only the bot owner can use this command.")
-        else:
-            logger.error(f"Command error in {ctx.command}: {error}", exc_info=True)
-            await ctx.send(f"❌ An error occurred: {error}")
-
     async def on_member_join(self, member):
         """Handle member join events for workflow triggers"""
         if self.workflow_manager:
@@ -237,8 +157,146 @@ class SlackBot(commands.Bot):
         if self.workflow_manager:
             await self.workflow_manager.check_thread_create_triggers(thread)
 
+    async def sync_commands_once(self):
+        """Sync commands only once to avoid duplicates"""
+        try:
+            logger.info("Starting one-time command sync...")
+            
+            # Get all commands from the tree
+            all_commands = self.tree.get_commands()
+            logger.info(f"Found {len(all_commands)} commands to sync")
+            
+            if not all_commands:
+                logger.warning("No commands found to sync!")
+                return
+            
+            # Choose sync strategy based on environment
+            if len(self.guilds) <= 3:  # Development mode
+                logger.info("Development mode: Syncing globally for faster updates")
+                try:
+                    synced = await self.tree.sync()
+                    logger.info(f"✅ Synced {len(synced)} commands globally")
+                except Exception as e:
+                    logger.error(f"❌ Failed to sync globally: {e}")
+            else:  # Production mode
+                logger.info("Production mode: Syncing globally")
+                try:
+                    synced = await self.tree.sync()
+                    logger.info(f"✅ Synced {len(synced)} commands globally")
+                except Exception as e:
+                    logger.error(f"❌ Failed to sync globally: {e}")
+            
+            # List synced commands for debugging
+            command_names = [cmd.name for cmd in all_commands]
+            logger.info(f"Synced commands: {', '.join(sorted(command_names))}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to sync commands: {e}", exc_info=True)
+
+    # Manual sync commands for debugging (owner only)
+    @commands.command(name='sync')
+    @commands.is_owner()
+    async def sync_commands(self, ctx):
+        """Manually sync slash commands to current guild (Owner only)"""
+        try:
+            await ctx.send("Starting manual guild sync...")
+            
+            # Clear existing guild commands first
+            self.tree.clear_commands(guild=ctx.guild)
+            
+            # Copy global commands to guild
+            global_commands = self.tree.get_commands()
+            for command in global_commands:
+                self.tree.add_command(command, guild=ctx.guild)
+            
+            # Sync to current guild
+            synced = await self.tree.sync(guild=ctx.guild)
+            await ctx.send(f'✅ Synced {len(synced)} commands to {ctx.guild.name}.')
+            
+        except Exception as e:
+            await ctx.send(f'❌ Failed to sync commands: {e}')
+            logger.error("Manual sync failed", exc_info=True)
+
+    @commands.command(name='sync_global')
+    @commands.is_owner()
+    async def sync_global(self, ctx):
+        """Manually sync slash commands globally (Owner only)"""
+        try:
+            await ctx.send("Starting manual global sync...")
+            synced = await self.tree.sync()
+            await ctx.send(f'✅ Synced {len(synced)} commands globally.')
+        except Exception as e:
+            await ctx.send(f'❌ Failed to sync commands globally: {e}')
+            logger.error("Global sync failed", exc_info=True)
+
+    @commands.command(name='clear_guild')
+    @commands.is_owner()
+    async def clear_guild_commands(self, ctx):
+        """Clear all guild-specific commands (Owner only)"""
+        try:
+            await ctx.send("Clearing guild commands...")
+            self.tree.clear_commands(guild=ctx.guild)
+            synced = await self.tree.sync(guild=ctx.guild)
+            await ctx.send(f'✅ Cleared guild commands. {len(synced)} commands remain.')
+        except Exception as e:
+            await ctx.send(f'❌ Failed to clear guild commands: {e}')
+
+    @commands.command(name='clear_global')
+    @commands.is_owner()
+    async def clear_global_commands(self, ctx):
+        """Clear all global commands (Owner only)"""
+        try:
+            await ctx.send("⚠️ Clearing ALL global commands...")
+            self.tree.clear_commands(guild=None)
+            synced = await self.tree.sync()
+            await ctx.send(f'✅ Cleared all global commands. {len(synced)} commands remain.')
+        except Exception as e:
+            await ctx.send(f'❌ Failed to clear global commands: {e}')
+
+    @commands.command(name='list_commands')
+    @commands.is_owner()
+    async def list_commands_cmd(self, ctx):
+        """List all registered commands"""
+        all_commands = self.tree.get_commands()
+        
+        if not all_commands:
+            await ctx.send("No commands are currently registered.")
+            return
+        
+        # Group by cog
+        cog_commands = {}
+        for cmd in all_commands:
+            cog_name = getattr(cmd.callback, '__qualname__', 'Unknown').split('.')[0]
+            if cog_name not in cog_commands:
+                cog_commands[cog_name] = []
+            cog_commands[cog_name].append(cmd.name)
+        
+        message = f"**Total Commands: {len(all_commands)}**\n\n"
+        for cog_name, cmd_names in cog_commands.items():
+            message += f"**{cog_name}:** {', '.join(sorted(cmd_names))}\n"
+        
+        if len(message) > 2000:
+            # Split into multiple messages if too long
+            parts = message.split('\n')
+            current = ""
+            for part in parts:
+                if len(current + part + '\n') > 1900:
+                    await ctx.send(current)
+                    current = part + '\n'
+                else:
+                    current += part + '\n'
+            if current:
+                await ctx.send(current)
+        else:
+            await ctx.send(message)
+    
     async def on_error(self, event, *args, **kwargs):
         logger.error(f'An error occurred in {event}', exc_info=True)
+
+    async def on_guild_join(self, guild):
+        """Don't auto-sync when joining new guilds to avoid duplicates"""
+        logger.info(f"Bot joined new guild: {guild.name} ({guild.id})")
+        logger.info("Use manual sync commands if needed for this guild")
 
     async def close(self):
         """Clean shutdown"""
@@ -251,11 +309,50 @@ async def main():
     """Main function with improved error handling"""
     bot = SlackBot()
     
+    max_retries = 5
+    retry_delay = 5
+    
     try:
-        logger.info("Starting bot...")
-        await bot.start(Settings.DISCORD_TOKEN)
-    except discord.LoginFailure:
-        logger.error("Invalid Discord token provided")
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Starting bot (attempt {attempt + 1}/{max_retries})")
+                await bot.start(Settings.DISCORD_TOKEN)
+                break  # If we get here, the bot started successfully
+                
+            except discord.LoginFailure:
+                logger.error("Invalid Discord token provided")
+                break  # Don't retry on authentication failures
+                
+            except discord.HTTPException as e:
+                if e.status == 429:  # Rate limited
+                    logger.warning(f"Rate limited, waiting {retry_delay * 2} seconds...")
+                    await asyncio.sleep(retry_delay * 2)
+                else:
+                    logger.error(f"HTTP error: {e}")
+                    
+            except (discord.ConnectionClosed, discord.GatewayNotFound) as e:
+                logger.warning(f"Connection issue (attempt {attempt + 1}): {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                
+            except KeyboardInterrupt:
+                logger.info("Bot stopped by user")
+                break
+                
+            except Exception as e:
+                logger.error(f"Unexpected error (attempt {attempt + 1}): {e}", exc_info=True)
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+        else:
+            # This executes if the for loop completes without breaking
+            logger.error(f"Failed to start bot after {max_retries} attempts")
+            
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
     finally:
@@ -263,6 +360,10 @@ async def main():
             await bot.close()
 
 if __name__ == "__main__":
+    # Deployment compatibility
+    port = int(os.environ.get("PORT", 8080))
+    logger.info(f"Starting Discord bot on Railway (port {port})")
+    
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

@@ -542,10 +542,4 @@ class Help(commands.Cog):
 async def setup(bot):
     cog = Help(bot)
     await bot.add_cog(cog)
-    
-    # Ensure commands are added to the tree
-    for command in cog.__cog_app_commands__:
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
-    
     print(f"❓ Successfully loaded Help cog with {len(cog.get_app_commands())} commands")
