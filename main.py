@@ -119,10 +119,10 @@ class SlackBot(commands.Bot):
 
             logger.info(f"Loaded {len(loaded_cogs)}/{len(cogs)} cogs successfully")
             
-            # THEN register all commands from cogs to the tree
-            await self.register_all_commands()
+            # Clear any existing commands from the tree
+            self.tree.clear_commands(guild=None)
             
-            # FINALLY add admin slash commands
+            # Add admin slash commands FIRST
             await self.add_admin_slash_commands()
             
             logger.info("Setup hook completed successfully")
@@ -130,42 +130,6 @@ class SlackBot(commands.Bot):
         except Exception as e:
             logger.error(f"Error in setup_hook: {e}", exc_info=True)
             raise
-    
-    async def register_all_commands(self):
-        """Register all commands from loaded cogs to the command tree"""
-        try:
-            total_registered = 0
-            
-            for cog_name, cog in self.cogs.items():
-                cog_commands = 0
-                
-                # Get all app commands from the cog
-                for attr_name in dir(cog):
-                    attr = getattr(cog, attr_name)
-                    if isinstance(attr, app_commands.Command):
-                        # Add command to tree
-                        self.tree.add_command(attr)
-                        cog_commands += 1
-                        total_registered += 1
-                        logger.info(f"  Registered command: /{attr.name} from {cog_name}")
-                
-                if cog_commands > 0:
-                    logger.info(f"✅ Registered {cog_commands} commands from {cog_name}")
-                else:
-                    logger.warning(f"⚠️ No commands found in {cog_name}")
-            
-            logger.info(f"✅ Total commands registered from cogs: {total_registered}")
-            
-            # Log all commands currently in tree
-            all_tree_commands = self.tree.get_commands()
-            if all_tree_commands:
-                command_names = [cmd.name for cmd in all_tree_commands]
-                logger.info(f"Commands in tree after cog registration: {', '.join(sorted(command_names))}")
-            else:
-                logger.warning("⚠️ No commands in tree after cog registration!")
-            
-        except Exception as e:
-            logger.error(f"Failed to register commands from cogs: {e}", exc_info=True)
     
     async def add_admin_slash_commands(self):
         """Add admin slash commands to the command tree"""
@@ -182,6 +146,10 @@ class SlackBot(commands.Bot):
                 
                 try:
                     if guild_only:
+                        # Clear global commands first to prevent duplicates
+                        self.tree.clear_commands(guild=None)
+                        await self.tree.sync()
+                        
                         # Sync to current guild
                         synced = await self.tree.sync(guild=interaction.guild)
                         await interaction.followup.send(f'✅ Synced {len(synced)} commands to {interaction.guild.name}.')
@@ -243,6 +211,60 @@ class SlackBot(commands.Bot):
                 else:
                     await interaction.response.send_message(message, ephemeral=True)
 
+            # Define force reload command
+            @app_commands.command(name="admin_reload", description="Force reload all cogs and commands (Owner only)")
+            async def reload_slash(interaction: discord.Interaction):
+                if not await self.is_owner(interaction.user):
+                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+                    return
+                
+                await interaction.response.defer(ephemeral=True)
+                
+                try:
+                    # Clear all commands from the tree
+                    self.tree.clear_commands(guild=None)
+                    self.tree.clear_commands(guild=interaction.guild)
+                    
+                    # Reload all cogs
+                    cogs_to_reload = [
+                        'cogs.admin',
+                        'cogs.conversations', 
+                        'cogs.help',
+                        'cogs.integrations_github',
+                        'cogs.logging',
+                        'cogs.meetings',
+                        'cogs.notifications',
+                        'cogs.privacy',
+                        'cogs.reminders',
+                        'cogs.roles',
+                        'cogs.setup',
+                        'cogs.tickets',
+                        'cogs.workflows'
+                    ]
+                    
+                    for cog_name in cogs_to_reload:
+                        try:
+                            if cog_name in self.extensions:
+                                await self.reload_extension(cog_name)
+                            else:
+                                await self.load_extension(cog_name)
+                            logger.info(f"Reloaded cog: {cog_name}")
+                        except Exception as e:
+                            logger.error(f"Failed to reload {cog_name}: {e}")
+                    
+                    # Re-add admin commands
+                    for cmd in [sync_slash, debug_slash, reload_slash]:
+                        self.tree.add_command(cmd)
+                    
+                    # Sync to current guild
+                    synced = await self.tree.sync(guild=interaction.guild)
+                    
+                    await interaction.followup.send(f"✅ Reloaded all cogs and synced {len(synced)} commands to {interaction.guild.name}")
+                    
+                except Exception as e:
+                    await interaction.followup.send(f"❌ Failed to reload: {e}")
+                    logger.error(f"Failed to reload: {e}", exc_info=True)
+
             # Define database test command
             @app_commands.command(name="admin_db_test", description="Test database connection (Owner only)")
             async def db_test_slash(interaction: discord.Interaction):
@@ -286,7 +308,7 @@ class SlackBot(commands.Bot):
                     await interaction.followup.send(f"❌ Database test failed: {e}")
 
             # Store references to admin commands
-            self.admin_commands = [sync_slash, debug_slash, db_test_slash]
+            self.admin_commands = [sync_slash, debug_slash, reload_slash, db_test_slash]
             
             # Add all slash commands to the tree
             for cmd in self.admin_commands:
@@ -399,24 +421,29 @@ class SlackBot(commands.Bot):
             command_names = [cmd.name for cmd in all_commands]
             logger.info(f"Commands to sync: {', '.join(sorted(command_names))}")
             
-            # Sync to first guild only
-            if self.guilds:
-                first_guild = self.guilds[0]
+            # Clear global commands first to prevent duplicates
+            logger.info("Clearing global commands to prevent duplicates...")
+            self.tree.clear_commands(guild=None)
+            await self.tree.sync()
+            logger.info("✅ Cleared global commands")
+            
+            # Sync to all guilds
+            for guild in self.guilds:
                 try:
-                    # Sync to first guild
-                    synced = await self.tree.sync(guild=first_guild)
-                    logger.info(f"✅ Synced {len(synced)} commands to {first_guild.name}")
-                    self._guild_synced.add(first_guild.id)
+                    # Sync to guild
+                    synced = await self.tree.sync(guild=guild)
+                    logger.info(f"✅ Synced {len(synced)} commands to {guild.name}")
+                    self._guild_synced.add(guild.id)
                     
                     # Log synced command names
                     if synced:
                         synced_names = [cmd['name'] for cmd in synced]
-                        logger.info(f"Successfully synced commands: {', '.join(sorted(synced_names))}")
+                        logger.info(f"Successfully synced commands to {guild.name}: {', '.join(sorted(synced_names))}")
                     else:
-                        logger.error("❌ 0 commands synced - this will cause 'Unknown integration' errors!")
+                        logger.error(f"❌ 0 commands synced to {guild.name} - this will cause 'Unknown integration' errors!")
                     
                 except Exception as e:
-                    logger.error(f"❌ Failed to sync to guild {first_guild.name}: {e}")
+                    logger.error(f"❌ Failed to sync to guild {guild.name}: {e}")
             
         except Exception as e:
             logger.error(f"❌ Failed to sync commands: {e}", exc_info=True)
