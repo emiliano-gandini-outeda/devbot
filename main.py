@@ -102,7 +102,7 @@ class DiscordBot(commands.Bot):
                     cog_text = "\n".join(cog_info)
                     if len(cog_text) > 1900:
                         cog_text = cog_text[:1900] + "..."
-                    await ctx.send(f"📦 Cog commands:\n\`\`\`\n{cog_text}\n\`\`\`")
+                    await ctx.send(f"📦 Cog commands:\n```\n{cog_text}\n```")
             
                 await ctx.send(f"🔢 Total commands from cogs: {total_cog_commands}")
             
@@ -247,25 +247,15 @@ class DiscordBot(commands.Bot):
             # Verify commands are registered
             logger.info("🔍 Verifying command registration...")
             total_commands = 0
-            github_commands_found = False
 
             for cog_name, cog in self.cogs.items():
                 cog_commands = cog.get_app_commands()
                 total_commands += len(cog_commands)
                 logger.info(f"  • {cog_name}: {len(cog_commands)} commands")
-                
-                # Check specifically for GitHub commands
-                if cog_name == "GitHubIntegrations":
-                    github_commands_found = True
-                    command_names = [cmd.name for cmd in cog_commands]
-                    logger.info(f"    GitHub commands: {command_names}")
 
             logger.info(f"📊 Total commands from cogs: {total_commands}")
             tree_commands = len(self.tree.get_commands())
             logger.info(f"📊 Commands in tree: {tree_commands}")
-
-            if not github_commands_found:
-                logger.warning("⚠️ GitHub commands not found in cogs!")
 
             # List all commands in tree for debugging
             tree_command_names = [cmd.name for cmd in self.tree.get_commands()]
@@ -295,7 +285,7 @@ class DiscordBot(commands.Bot):
             'cogs.admin',
             'cogs.help',
             'cogs.setup',
-            'cogs.tickets',  # Only load tickets.py, not ticket.py
+            'cogs.tickets',
             'cogs.reminders',
             'cogs.workflows',
             'cogs.roles',
@@ -327,8 +317,6 @@ class DiscordBot(commands.Bot):
             except Exception as e:
                 failed_count += 1
                 logger.error(f"  ❌ Failed to load {cog}: {e}")
-                if cog == 'cogs.integrations_github':
-                    logger.exception(f"GitHub cog error details:")
     
         logger.info(f"📦 Loaded {loaded_count}/{len(cogs)} cogs successfully")
         if failed_count > 0:

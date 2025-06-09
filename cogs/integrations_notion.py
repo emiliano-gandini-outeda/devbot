@@ -1,68 +1,65 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from utils.notion_api import NotionAPI
 from utils.helpers import EmbedBuilder
+import json
 
 class NotionIntegrations(commands.Cog):
-    """Notion workspace integrations"""
+    """Notion integration commands"""
     
     def __init__(self, bot):
         self.bot = bot
-        self.notion = NotionAPI()
     
     @app_commands.command(name="notion-databases", description="List your Notion databases")
     async def notion_databases(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        
-        try:
-            databases = await self.notion.get_databases()
-            
-            if not databases:
-                embed = EmbedBuilder.info("No Databases", "No Notion databases found or invalid token")
-                await interaction.followup.send(embed=embed, ephemeral=True)
-                return
-            
-            embed = discord.Embed(
-                title="📚 Your Notion Databases",
-                color=0x000000
-            )
-            
-            for db in databases[:10]:  # Show first 10 databases
-                title = db.get('title', [{}])[0].get('plain_text', 'Untitled')
-                embed.add_field(
-                    name=title,
-                    value=f"ID: `{db['id']}`\nURL: [Open]({db['url']})",
-                    inline=False
-                )
-            
-            await interaction.followup.send(embed=embed)
-            
-        except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to fetch databases: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+        embed = EmbedBuilder.info(
+            "Notion Integration",
+            "Notion integration is not yet implemented. This feature will allow you to:\n\n"
+            "• List your Notion databases\n"
+            "• Create new pages and notes\n"
+            "• Search your Notion workspace\n"
+            "• Sync Discord messages to Notion\n\n"
+            "Stay tuned for updates!"
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="create-note", description="Create a quick note in Notion")
+    @app_commands.command(name="create-note", description="Create a new note in Notion")
     @app_commands.describe(
-        title="Note title",
-        content="Note content",
-        database_id="Database ID (optional)"
+        title="Title for the note",
+        content="Content of the note",
+        database_id="Notion database ID (optional)"
     )
     async def create_note(self, interaction: discord.Interaction, title: str, content: str, database_id: str = None):
-        await interaction.response.defer()
-        
-        embed = EmbedBuilder.railway_info(
-            "Feature Coming Soon",
-            "Notion note creation will be available in the next Railway deployment!"
+        embed = EmbedBuilder.info(
+            "Notion Integration",
+            "Notion integration is not yet implemented. This command would create a new note with:\n\n"
+            f"**Title:** {title}\n"
+            f"**Content:** {content[:100]}{'...' if len(content) > 100 else ''}\n"
+            f"**Database:** {database_id or 'Default'}\n\n"
+            "Stay tuned for updates!"
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="notion-search", description="Search your Notion workspace")
+    @app_commands.describe(query="Search query")
+    async def notion_search(self, interaction: discord.Interaction, query: str):
+        embed = EmbedBuilder.info(
+            "Notion Integration",
+            f"Notion search is not yet implemented. This would search for: **{query}**\n\n"
+            "This feature will allow you to:\n"
+            "• Search across all your Notion pages\n"
+            "• Filter by database or page type\n"
+            "• Get quick links to results\n\n"
+            "Stay tuned for updates!"
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
     cog = NotionIntegrations(bot)
     await bot.add_cog(cog)
     
     # Ensure commands are added to the tree
-    for command in cog.__cog_app_commands__:
+    for command in cog.get_app_commands():
         if command not in bot.tree.get_commands():
             bot.tree.add_command(command)
     
