@@ -275,19 +275,13 @@ class HelpDropdown(discord.ui.Select):
             "`/calendar-events [count]` - Show upcoming calendar events"
         ]
         
-        notion_commands = [
-            "`/notion-databases` - List your Notion databases",
-            "`/create-note <title> <content>` - Create Notion note"
-        ]
-        
-        trello_commands = [
-            "`/trello-boards` - List your Trello boards",
-            "`/create-task <board_id> <list_name> <task_name>` - Create Trello task"
+        github_commands = [
+            "`/track-repo <repo> <channel>` - Track GitHub repository",
+            "`/list-repos` - List tracked repositories"
         ]
         
         embed.add_field(name="📅 Google Calendar", value="\n".join(google_commands), inline=False)
-        embed.add_field(name="📚 Notion", value="\n".join(notion_commands), inline=False)
-        embed.add_field(name="📋 Trello", value="\n".join(trello_commands), inline=False)
+        embed.add_field(name="🐙 GitHub", value="\n".join(github_commands), inline=False)
         
         return embed
     
@@ -308,12 +302,6 @@ class HelpDropdown(discord.ui.Select):
         embed.add_field(
             name="Available Commands",
             value="\n".join(commands),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="Supported Languages",
-            value="Spanish, French, German, Italian, Portuguese, and more",
             inline=False
         )
         
@@ -372,12 +360,6 @@ class HelpDropdown(discord.ui.Select):
             inline=False
         )
         
-        embed.add_field(
-            name="Your Rights",
-            value="• Request data export in JSON format\n• Request complete data deletion\n• View what data is collected",
-            inline=False
-        )
-        
         return embed
     
     def get_admin_embed(self) -> discord.Embed:
@@ -391,25 +373,12 @@ class HelpDropdown(discord.ui.Select):
             "`/add-admin-role <role>` - Add role to admin list",
             "`/remove-admin-role <role>` - Remove role from admin list",
             "`/list-admin-roles` - List all admin roles",
-            "`/admin-panel` - View bot status and configuration",
-            "`/ticket-system-setup <category> <transcript_channel>` - Setup tickets",
-            "`/server-logs-setup <log_channel>` - Setup server logging",
-            "`/ticket assign <ticket_id> <assignee>` - Assign ticket",
-            "`/archive-thread` - Archive current thread",
-            "`/assign-role <user> <role>` - Assign role to user",
-            "`/remove-role <user> <role>` - Remove role from user",
-            "`/get-data <user>` - Get user data (Admin only)"
+            "`/admin-panel` - View bot status and configuration"
         ]
         
         embed.add_field(
             name="Available Commands",
             value="\n".join(admin_commands),
-            inline=False
-        )
-        
-        embed.add_field(
-            name="⚠️ Important",
-            value="These commands require admin permissions or admin role assignment.",
             inline=False
         )
         
@@ -423,33 +392,14 @@ class HelpDropdown(discord.ui.Select):
         )
         
         commands = [
-            "`/create-workflow <name> <trigger> [trigger_channel] [log_channel]` - Create workflow",
+            "`/create-workflow <name> <trigger>` - Create workflow",
             "`/list-workflows` - List all server workflows",
             "`/toggle-workflow <workflow_name>` - Enable/disable workflow"
         ]
         
         embed.add_field(
-            name="User Commands",
+            name="Available Commands",
             value="\n".join(commands),
-            inline=False
-        )
-        
-        if self.is_admin:
-            embed.add_field(
-                name="Admin Commands",
-                value="`/add-workflow-action <workflow_name> <action_type> [parameters]` - Add action to workflow",
-                inline=False
-            )
-        
-        embed.add_field(
-            name="Trigger Types",
-            value="• `message` - When messages are sent\n• `member_join` - When users join\n• `thread_create` - When threads are created\n• `channel_create` - When channels are created",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="Action Types",
-            value="• `send_message` - Send message to channel\n• `add_role` - Add role to user\n• `create_channel` - Create new channel\n• `send_dm` - Send direct message",
             inline=False
         )
         
@@ -465,19 +415,13 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             embed.add_field(
                 name="Admin Commands",
-                value="`/server-logs-setup <log_channel>` - Configure logging channel",
+                value="`/setup-logs <log_channel>` - Configure logging channel",
                 inline=False
             )
         
         embed.add_field(
             name="Logged Events",
-            value="• Message deletions and edits\n• Channel creation, deletion, updates\n• Role creation, deletion, assignments\n• Command usage\n• Workflow executions",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="Features",
-            value="• Real-time event logging\n• Detailed event information\n• User action tracking\n• Audit trail maintenance",
+            value="• Message deletions and edits\n• Channel creation, deletion, updates\n• Role creation, deletion, assignments\n• Command usage",
             inline=False
         )
         
@@ -504,7 +448,7 @@ class Help(commands.Cog):
         
         embed = discord.Embed(
             title="🤖 Bot Help Menu",
-            description="Welcome to the Discord Bot help system! Use the dropdown menu below to explore different command categories.\n\n"
+            description="Welcome to the Railway Bot help system! Use the dropdown menu below to explore different command categories.\n\n"
                        f"**Your Access Level:** {'Administrator' if is_admin else 'User'}\n"
                        f"**Total Categories:** {12 if is_admin else 9}",
             color=0x5865F2
@@ -518,38 +462,10 @@ class Help(commands.Cog):
             inline=False
         )
         
-        embed.add_field(
-            name="🔧 Setup Commands",
-            value="• `/ticket-system-setup` - Configure support tickets\n"
-                  "• `/server-logs-setup` - Configure server logging\n"
-                  "• `/add-admin-role` - Add admin roles",
-            inline=True
-        )
-        
-        embed.add_field(
-            name="🚀 Popular Commands",
-            value="• `/ticket create` - Get support\n"
-                  "• `/remind` - Set reminders\n"
-                  "• `/summarize` - AI summaries",
-            inline=True
-        )
-        
         embed.set_footer(text="Select a category below to view detailed commands")
         
         view = HelpView(self.bot, is_admin)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 async def setup(bot):
-    cog = Help(bot)
-    await bot.add_cog(cog)
-    
-    # Sync commands to all guilds
-    for guild in bot.guilds:
-        try:
-            bot.tree.copy_global_to(guild=guild)
-            await bot.tree.sync(guild=guild)
-            print(f"❓ Synced Help commands to {guild.name}")
-        except Exception as e:
-            print(f"❌ Failed to sync Help commands to {guild.name}: {e}")
-    
-    print(f"❓ Successfully loaded Help cog with 1 command")
+    await bot.add_cog(Help(bot))

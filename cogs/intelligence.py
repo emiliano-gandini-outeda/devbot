@@ -1,127 +1,130 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-import aiohttp
-import json
 from utils.helpers import EmbedBuilder
-from config.settings import Settings
+import random
+from datetime import datetime
 
 class Intelligence(commands.Cog):
-    """AI-powered features for productivity and analysis"""
+    """AI-powered features"""
     
     def __init__(self, bot):
         self.bot = bot
     
-    @app_commands.command(name="summarize", description="Summarize recent messages in this channel")
+    @app_commands.command(name="summarize", description="Summarize recent messages")
     @app_commands.describe(
-        count="Number of messages to summarize (max 50)",
+        count="Number of messages to summarize (default: 20, max: 50)",
         user="Only summarize messages from this user"
     )
     async def summarize(self, interaction: discord.Interaction, count: int = 20, user: discord.Member = None):
-        if count > 50:
-            count = 50
-        
         await interaction.response.defer()
         
         try:
+            # Validate count
+            if count > 50:
+                count = 50
+            elif count < 1:
+                count = 20
+            
+            # Get messages
             messages = []
             async for message in interaction.channel.history(limit=count):
-                if user and message.author != user:
-                    continue
-                if not message.author.bot and message.content:
-                    messages.append(f"{message.author.display_name}: {message.content}")
+                if not message.author.bot and (user is None or message.author == user):
+                    messages.append(message.content)
             
             if not messages:
                 embed = EmbedBuilder.info("No Messages", "No messages found to summarize")
                 await interaction.followup.send(embed=embed)
                 return
             
-            # Reverse to get chronological order
-            messages.reverse()
-            conversation = "\n".join(messages)
-            
-            # Mock AI summary (replace with actual AI service)
-            summary = await self.generate_summary(conversation)
+            # Mock AI summarization (in a real implementation, this would use OpenAI or another AI service)
+            summary = self._mock_summarize(messages)
             
             embed = discord.Embed(
-                title="📋 Conversation Summary",
+                title="📝 Message Summary",
                 description=summary,
                 color=0x5865F2
             )
-            embed.add_field(name="Messages Analyzed", value=str(len(messages)), inline=True)
-            embed.add_field(name="Channel", value=interaction.channel.mention, inline=True)
-            embed.add_field(name="Platform", value="Railway 🚄", inline=True)
             
-            if user:
-                embed.add_field(name="User Filter", value=user.mention, inline=True)
+            embed.add_field(
+                name="Details",
+                value=f"Summarized {len(messages)} messages{f' from {user.mention}' if user else ''}",
+                inline=False
+            )
             
             await interaction.followup.send(embed=embed)
             
         except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to generate summary: {str(e)}")
-            await interaction.followup.send(embed=embed)
+            embed = EmbedBuilder.error("Error", f"Failed to summarize messages: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
     
     @app_commands.command(name="translate", description="Translate text to another language")
     @app_commands.describe(
         text="Text to translate",
-        target_language="Target language (e.g., 'spanish', 'french', 'german')"
+        target_language="Language to translate to"
     )
     async def translate(self, interaction: discord.Interaction, text: str, target_language: str):
         await interaction.response.defer()
         
         try:
-            # Mock translation (replace with actual translation service)
-            translated = await self.translate_text(text, target_language)
+            # Mock translation (in a real implementation, this would use a translation API)
+            translated_text = self._mock_translate(text, target_language)
             
             embed = discord.Embed(
-                title="🌐 Translation",
+                title=f"🌐 Translation to {target_language.title()}",
                 color=0x5865F2
             )
-            embed.add_field(name="Original", value=text[:1000], inline=False)
-            embed.add_field(name=f"Translated ({target_language.title()})", value=translated[:1000], inline=False)
-            embed.set_footer(text="Powered by Railway 🚄")
+            
+            embed.add_field(name="Original Text", value=text, inline=False)
+            embed.add_field(name="Translated Text", value=translated_text, inline=False)
             
             await interaction.followup.send(embed=embed)
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to translate text: {str(e)}")
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="ask-ai", description="Ask a question to the AI assistant")
-    @app_commands.describe(question="Your question for the AI")
+    @app_commands.command(name="ask-ai", description="Ask the AI assistant a question")
+    @app_commands.describe(question="Question to ask the AI")
     async def ask_ai(self, interaction: discord.Interaction, question: str):
         await interaction.response.defer()
         
         try:
-            # Mock AI response (replace with actual AI service)
-            answer = await self.get_ai_response(question)
+            # Mock AI response (in a real implementation, this would use OpenAI or another AI service)
+            answer = self._mock_ai_answer(question)
             
             embed = discord.Embed(
                 title="🤖 AI Assistant",
                 color=0x5865F2
             )
+            
             embed.add_field(name="Question", value=question, inline=False)
             embed.add_field(name="Answer", value=answer, inline=False)
-            embed.set_footer(text="AI responses may not always be accurate • Railway 🚄")
+            
+            embed.set_footer(text="Powered by Railway AI")
             
             await interaction.followup.send(embed=embed)
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to get AI response: {str(e)}")
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
     
     @app_commands.command(name="analyze-tone", description="Analyze the tone of recent messages")
-    @app_commands.describe(count="Number of messages to analyze (max 20)")
-    async def analyze_tone(self, interaction: discord.Interaction, count: int = 10):
-        if count > 20:
-            count = 20
-        
+    @app_commands.describe(count="Number of messages to analyze (default: 20, max: 50)")
+    async def analyze_tone(self, interaction: discord.Interaction, count: int = 20):
         await interaction.response.defer()
         
         try:
+            # Validate count
+            if count > 50:
+                count = 50
+            elif count < 1:
+                count = 20
+            
+            # Get messages
             messages = []
             async for message in interaction.channel.history(limit=count):
-                if not message.author.bot and message.content:
+                if not message.author.bot:
                     messages.append(message.content)
             
             if not messages:
@@ -129,104 +132,110 @@ class Intelligence(commands.Cog):
                 await interaction.followup.send(embed=embed)
                 return
             
-            # Mock tone analysis (replace with actual sentiment analysis)
-            tone_analysis = await self.analyze_message_tone(messages)
+            # Mock tone analysis (in a real implementation, this would use an AI service)
+            analysis = self._mock_tone_analysis(messages)
             
             embed = discord.Embed(
-                title="📊 Tone Analysis",
-                description=f"Analysis of the last {len(messages)} messages",
+                title="🎭 Tone Analysis",
+                description=f"Analysis of {len(messages)} recent messages",
                 color=0x5865F2
             )
             
-            for tone, percentage in tone_analysis.items():
-                embed.add_field(name=tone.title(), value=f"{percentage}%", inline=True)
+            embed.add_field(name="Positive", value=f"{analysis['positive']}%", inline=True)
+            embed.add_field(name="Neutral", value=f"{analysis['neutral']}%", inline=True)
+            embed.add_field(name="Negative", value=f"{analysis['negative']}%", inline=True)
             
-            embed.set_footer(text="Powered by Railway 🚄")
+            embed.add_field(
+                name="Summary",
+                value=analysis['summary'],
+                inline=False
+            )
+            
             await interaction.followup.send(embed=embed)
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to analyze tone: {str(e)}")
-            await interaction.followup.send(embed=embed)
+            await interaction.followup.send(embed=embed, ephemeral=True)
     
-    async def generate_summary(self, conversation: str) -> str:
-        """Generate a summary of the conversation (mock implementation)"""
-        # This is a mock implementation. In a real bot, you'd use OpenAI API or similar
-        if not Settings.OPENAI_API_KEY:
-            return "Summary generation requires OpenAI API configuration. Key topics discussed in the conversation include general discussion and information sharing. Deployed on Railway for scalable AI processing."
+    def _mock_summarize(self, messages):
+        """Mock implementation of message summarization"""
+        if not messages:
+            return "No messages to summarize."
         
-        # Mock summary for demonstration
-        return f"The conversation involved multiple participants discussing various topics. Key themes included collaboration, planning, and information sharing. The discussion was generally positive and productive, with {len(conversation.split('\\n'))} total messages analyzed. Processing completed on Railway infrastructure."
+        total_words = sum(len(msg.split()) for msg in messages)
+        
+        summaries = [
+            f"The conversation contains {len(messages)} messages with approximately {total_words} words. The discussion appears to be focused on various topics including project updates, questions, and general conversation.",
+            f"In this conversation with {len(messages)} messages, users are discussing several topics. The main themes include technical questions, planning, and some casual conversation.",
+            f"This conversation of {len(messages)} messages includes discussion about upcoming events, technical issues, and some problem-solving. Users are actively engaged in the topics.",
+            f"The {len(messages)} messages in this conversation cover topics like project management, technical support, and general updates. There are questions being asked and answered throughout."
+        ]
+        
+        return random.choice(summaries)
     
-    async def translate_text(self, text: str, target_language: str) -> str:
-        """Translate text to target language (mock implementation)"""
-        # Mock translation for demonstration
+    def _mock_translate(self, text, target_language):
+        """Mock implementation of text translation"""
         translations = {
-            "spanish": f"[Traducción al español de: {text}]",
-            "french": f"[Traduction française de: {text}]",
-            "german": f"[Deutsche Übersetzung von: {text}]",
-            "italian": f"[Traduzione italiana di: {text}]",
-            "portuguese": f"[Tradução portuguesa de: {text}]"
+            "spanish": f"{text} (translated to Spanish)",
+            "french": f"{text} (translated to French)",
+            "german": f"{text} (translated to German)",
+            "japanese": f"{text} (translated to Japanese)",
+            "chinese": f"{text} (translated to Chinese)",
+            "russian": f"{text} (translated to Russian)",
+            "italian": f"{text} (translated to Italian)"
         }
         
-        return translations.get(target_language.lower(), f"[{target_language.title()} translation of: {text}]")
+        target_language = target_language.lower()
+        return translations.get(target_language, f"{text} (translated to {target_language.title()})")
     
-    async def get_ai_response(self, question: str) -> str:
-        """Get AI response to question (mock implementation)"""
-        # This is a mock implementation. In a real bot, you'd use OpenAI API or similar
-        if not Settings.OPENAI_API_KEY:
-            return "AI responses require OpenAI API configuration. I'm a mock response for demonstration purposes, running on Railway's scalable infrastructure."
+    def _mock_ai_answer(self, question):
+        """Mock implementation of AI question answering"""
+        question = question.lower()
         
-        # Mock responses for common questions
-        mock_responses = {
-            "hello": "Hello! I'm an AI assistant integrated into this Discord bot, running on Railway's cloud platform. How can I help you today?",
-            "weather": "I don't have access to real-time weather data, but you can check your local weather service for current conditions.",
-            "time": "I don't have access to real-time data, but you can check your system clock for the current time.",
-            "help": "I can help with various tasks including answering questions, providing explanations, and assisting with general information. This bot is powered by Railway!",
-            "railway": "Railway is an amazing deployment platform that makes it easy to deploy and scale applications like this Discord bot!"
-        }
+        if "who are you" in question:
+            return "I am Railway Bot, an AI assistant designed to help with various tasks in your Discord server."
         
-        question_lower = question.lower()
-        for key, response in mock_responses.items():
-            if key in question_lower:
-                return response
+        if "what can you do" in question:
+            return "I can help with various tasks like summarizing conversations, translating text, answering questions, and analyzing message tone. Use the /help command to see all available commands."
         
-        return f"I understand you're asking about: '{question}'. This is a mock AI response for demonstration. In a production environment, this would be powered by a real AI service like OpenAI's GPT, running efficiently on Railway's infrastructure."
+        if "how does" in question or "what is" in question:
+            return f"Based on my knowledge, {question} involves several factors. While I don't have complete information, I can provide a general explanation. Please note that for more accurate information, you might want to consult specialized resources."
+        
+        if "when" in question:
+            return f"Regarding {question}, the timing depends on various factors. I don't have real-time data, but I can suggest checking the official documentation or announcements for the most accurate information."
+        
+        # Generic responses
+        generic_responses = [
+            "That's an interesting question. While I don't have complete information, I can provide a general perspective based on my knowledge.",
+            "I understand you're asking about this topic. While my knowledge is limited, I can offer some insights that might be helpful.",
+            "This is a good question. I don't have all the details, but I can share what I know about this subject.",
+            "I appreciate your curiosity. My information might not be comprehensive, but I can provide some thoughts on this topic."
+        ]
+        
+        return random.choice(generic_responses)
     
-    async def analyze_message_tone(self, messages: list) -> dict:
-        """Analyze the tone of messages (mock implementation)"""
-        # Mock sentiment analysis
-        import random
+    def _mock_tone_analysis(self, messages):
+        """Mock implementation of tone analysis"""
+        # Generate random percentages that add up to 100
+        positive = random.randint(20, 60)
+        remaining = 100 - positive
+        neutral = random.randint(10, remaining - 10)
+        negative = 100 - positive - neutral
         
-        # Generate mock percentages that add up to 100
-        positive = random.randint(30, 60)
-        negative = random.randint(5, 20)
-        neutral = 100 - positive - negative
+        # Generate summary based on percentages
+        if positive > 50:
+            summary = "The conversation has a predominantly positive tone. Users are engaging constructively and the atmosphere appears collaborative."
+        elif negative > 40:
+            summary = "The conversation has a significant negative tone. There may be disagreements or frustrations being expressed."
+        else:
+            summary = "The conversation has a balanced tone with a mix of positive, neutral, and negative elements."
         
         return {
             "positive": positive,
             "neutral": neutral,
-            "negative": negative
+            "negative": negative,
+            "summary": summary
         }
 
 async def setup(bot):
-    cog = Intelligence(bot)
-    await bot.add_cog(cog)
-    
-    # Sync commands to all guilds
-    for guild in bot.guilds:
-        try:
-            # Copy global commands to guild
-            bot.tree.copy_global_to(guild=guild)
-            
-            # Add cog commands to guild
-            for command in cog.get_app_commands():
-                if command not in bot.tree.get_commands(guild=guild):
-                    bot.tree.add_command(command, guild=guild)
-            
-            # Sync to guild
-            await bot.tree.sync(guild=guild)
-            print(f"✅ Synced Intelligence commands to {guild.name}")
-        except Exception as e:
-            print(f"❌ Failed to sync Intelligence commands to {guild.name}: {e}")
-    
-    print(f"🤖 Successfully loaded Intelligence cog with {len(cog.get_app_commands())} commands")
+    await bot.add_cog(Intelligence(bot))

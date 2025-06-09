@@ -6,7 +6,7 @@ class Settings:
     DISCORD_TOKEN: str = os.getenv('DISCORD_TOKEN', '')
     PREFIX: str = os.getenv('BOT_PREFIX', '!')
     
-    # Database Configuration - Railway provides DATABASE_URL for PostgreSQL
+    # Database Configuration - Railway PostgreSQL
     DATABASE_URL: str = os.getenv('DATABASE_URL', 'postgresql://postgres:QQCQuMDiLYyUhMLffEyUxizpDyYMxNxf@postgres.railway.internal:5432/railway')
     
     # Railway-specific environment
@@ -27,10 +27,6 @@ class Settings:
     
     # OpenAI Configuration
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY', '')
-    
-    # Redis Configuration (Railway Redis add-on)
-    REDIS_URL: str = os.getenv('REDIS_URL', '')
-    REDIS_PRIVATE_URL: str = os.getenv('REDIS_PRIVATE_URL', '')
     
     # Application Settings
     DEBUG: bool = os.getenv('DEBUG', 'False').lower() == 'true'
@@ -53,22 +49,9 @@ class Settings:
         
         # Validate Discord token format
         if not cls.DISCORD_TOKEN.startswith(('Bot ', 'MTk', 'MTA', 'MTI', 'MTE', 'MTM', 'MTQ', 'MTU', 'MTY', 'MTc', 'MTg')):
-            # Most Discord bot tokens start with these patterns
             print("⚠️ Warning: Discord token format may be invalid")
     
     @classmethod
     def is_railway_production(cls) -> bool:
         """Check if running in Railway production environment"""
         return cls.RAILWAY_ENVIRONMENT == 'production'
-    
-    @classmethod
-    def get_database_url(cls) -> str:
-        """Get appropriate database URL for Railway"""
-        # Use environment variable if available, otherwise fallback to hardcoded
-        db_url = os.getenv('DATABASE_URL')
-        if db_url:
-            return db_url
-        
-        # Fallback to hardcoded Railway URL
-        railway_url = "postgresql://postgres:QQCQuMDiLYyUhMLffEyUxizpDyYMxNxf@postgres.railway.internal:5432/railway"
-        return railway_url

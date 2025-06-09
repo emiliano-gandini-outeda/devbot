@@ -16,7 +16,7 @@ class Setup(commands.Cog):
         transcript_channel="Channel where ticket transcripts will be sent"
     )
     async def setup_tickets(self, interaction: discord.Interaction, category: discord.CategoryChannel, transcript_channel: discord.TextChannel):
-        if not self.bot.admin_manager.is_admin(interaction.user):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup the ticket system")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -29,7 +29,14 @@ class Setup(commands.Cog):
                 'setup_at': str(discord.utils.utcnow())
             }
             
-            await self.bot.ticket_manager.save_ticket_config(str(interaction.guild.id), config)
+            # Store in user_data table
+            await self.bot.db.connection.execute(
+                """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
+                   VALUES ($1, $1, $2, $3)
+                   ON CONFLICT (user_id, guild_id, data_type) DO UPDATE SET
+                   data_content = $3, updated_at = CURRENT_TIMESTAMP""",
+                str(interaction.guild.id), 'ticket_config', json.dumps(config)
+            )
             
             embed = EmbedBuilder.success(
                 "Ticket System Setup",
@@ -293,16 +300,15 @@ class Setup(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
-    cog = Setup(bot)
-    await bot.add_cog(cog)
+    await bot.add_cog(Setup(bot))
     
     # Sync commands to all guilds
-    for guild in bot.guilds:
-        try:
-            bot.tree.copy_global_to(guild=guild)
-            await bot.tree.sync(guild=guild)
-            print(f"⚙️ Synced Setup commands to {guild.name}")
-        except Exception as e:
-            print(f"❌ Failed to sync Setup commands to {guild.name}: {e}")
+    # for guild in bot.guilds:
+    #     try:
+    #         bot.tree.copy_global_to(guild=guild)
+    #         await bot.tree.sync(guild=guild)
+    #         print(f"⚙️ Synced Setup commands to {guild.name}")
+    #     except Exception as e:
+    #         print(f"❌ Failed to sync Setup commands to {guild.name}: {e}")
     
-    print(f"⚙️ Successfully loaded Setup cog with {len(cog.get_app_commands())} commands")
+    print(f"⚙️ Successfully loaded Setup cog with {len(Setup(bot).get_app_commands())} commands")

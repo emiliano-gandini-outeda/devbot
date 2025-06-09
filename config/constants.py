@@ -23,18 +23,35 @@ class Emojis:
 
 class TicketStatus(Enum):
     OPEN = "open"
-    IN_PROGRESS = "in_progress"
     CLOSED = "closed"
+    IN_PROGRESS = "in_progress"
+
+class TicketPriority(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+class ReminderType(Enum):
+    PERSONAL = "personal"
+    CHANNEL = "channel"
+    ROLE = "role"
 
 class WorkflowStatus(Enum):
     ACTIVE = "active"
     INACTIVE = "inactive"
     PAUSED = "paused"
 
-class ReminderType(Enum):
-    PERSONAL = "personal"
-    CHANNEL = "channel"
-    ROLE = "role"
+class WorkflowTrigger(Enum):
+    MESSAGE = "message"
+    MEMBER_JOIN = "member_join"
+    THREAD_CREATE = "thread_create"
+    CHANNEL_CREATE = "channel_create"
+
+class WorkflowAction(Enum):
+    SEND_MESSAGE = "send_message"
+    ADD_ROLE = "add_role"
+    CREATE_CHANNEL = "create_channel"
+    SEND_DM = "send_dm"
 
 class RailwayConfig:
     """Railway-specific configuration constants"""

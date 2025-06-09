@@ -14,10 +14,10 @@ class Logging(commands.Cog):
     @app_commands.command(name="setup-logs", description="Configure server logging (Admin only)")
     @app_commands.describe(
         log_channel="Channel to send logs to",
-        events="Events to log (comma-separated: message_delete, message_edit, member_join, member_leave, role_update)"
+        events="Events to log (comma-separated: message_delete, message_edit, member_join, member_leave)"
     )
     async def setup_logs(self, interaction: discord.Interaction, log_channel: discord.TextChannel, events: str = "message_delete,message_edit,member_join,member_leave"):
-        if not self.bot.admin_manager.is_admin(interaction.user):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can configure logging")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -44,21 +44,13 @@ class Logging(commands.Cog):
                 'enabled': True
             }
             
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    """INSERT INTO guild_configs (guild_id, config_key, config_value)
-                       VALUES ($1, $2, $3)
-                       ON CONFLICT (guild_id, config_key) DO UPDATE SET
-                       config_value = $3, updated_at = CURRENT_TIMESTAMP""",
-                    str(interaction.guild.id), 'logging', json.dumps(config)
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO guild_configs (guild_id, config_key, config_value)
-                       VALUES (?, ?, ?)""",
-                    (str(interaction.guild.id), 'logging', json.dumps(config))
-                )
-                await self.bot.db.connection.commit()
+            await self.bot.db.connection.execute(
+                """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
+                   VALUES ($1, $1, $2, $3)
+                   ON CONFLICT (user_id, guild_id, data_type) DO UPDATE SET
+                   data_content = $3, updated_at = CURRENT_TIMESTAMP""",
+                str(interaction.guild.id), 'logging_config', json.dumps(config)
+            )
             
             embed = EmbedBuilder.success(
                 "Logging Configured",
@@ -230,7 +222,7 @@ class Logging(commands.Cog):
     async def privacy_policy(self, interaction: discord.Interaction):
         embed = discord.Embed(
             title="🔒 Privacy Policy",
-            description="Information about how devBot handles your data",
+            description="Information about how Railway Bot handles your data",
             color=0x5865F2
         )
         
@@ -248,7 +240,7 @@ class Logging(commands.Cog):
         
         embed.add_field(
             name="Data Storage",
-            value="• Data is stored securely\n• No data is shared with third parties\n• Data can be deleted upon request",
+            value="• Data is stored securely on Railway\n• No data is shared with third parties\n• Data can be deleted upon request",
             inline=False
         )
         
@@ -315,7 +307,7 @@ class Logging(commands.Cog):
         try:
             # Get logging configuration
             if self.bot.db.is_postgresql:
-                config_row = await self.bot.db.connection.fetchrow(
+                config_row = await self.bot.db.connection.fetch(
                     "SELECT config_value FROM guild_configs WHERE guild_id = $1 AND config_key = $2",
                     str(guild.id), 'logging'
                 )
@@ -359,16 +351,4 @@ class Logging(commands.Cog):
             print(f"Error logging event {event_type}: {e}")
 
 async def setup(bot):
-    cog = Logging(bot)
-    await bot.add_cog(cog)
-    
-    # Sync commands to all guilds
-    for guild in bot.guilds:
-        try:
-            bot.tree.copy_global_to(guild=guild)
-            await bot.tree.sync(guild=guild)
-            print(f"✅ Synced Logging commands to {guild.name}")
-        except Exception as e:
-            print(f"❌ Failed to sync Logging commands to {guild.name}: {e}")
-    
-    print(f"📝 Successfully loaded Logging cog with {len(cog.get_app_commands())} commands")
+    await bot.add_cog(Logging(bot))
