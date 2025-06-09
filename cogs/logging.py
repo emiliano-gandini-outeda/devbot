@@ -218,42 +218,6 @@ class Logging(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to delete data: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="privacy-policy", description="View the bot's privacy policy")
-    async def privacy_policy(self, interaction: discord.Interaction):
-        embed = discord.Embed(
-            title="🔒 Privacy Policy",
-            description="Information about how Railway Bot handles your data",
-            color=0x5865F2
-        )
-        
-        embed.add_field(
-            name="Data Collection",
-            value="• Server configurations\n• User commands and interactions\n• Ticket and reminder data\n• Message content for keyword notifications",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="Data Usage",
-            value="• Provide bot functionality\n• Improve user experience\n• Debug and error tracking",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="Data Storage",
-            value="• Data is stored securely on Railway\n• No data is shared with third parties\n• Data can be deleted upon request",
-            inline=False
-        )
-        
-        embed.add_field(
-            name="Your Rights",
-            value="• Request data export\n• Request data deletion\n• Contact support for questions",
-            inline=False
-        )
-        
-        embed.set_footer(text="For questions, contact the bot administrator")
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    
     # Event listeners for logging
     @commands.Cog.listener()
     async def on_message_delete(self, message):
