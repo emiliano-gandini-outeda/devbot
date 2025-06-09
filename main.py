@@ -31,10 +31,9 @@ class SlackBot(commands.Bot):
         intents.guilds = True
         
         super().__init__(
-            command_prefix='!',  # Set explicit prefix
+            command_prefix='!',
             intents=intents,
             help_command=None,
-            # Add connection resilience settings
             heartbeat_timeout=60.0,
             guild_ready_timeout=5.0
         )
@@ -45,8 +44,8 @@ class SlackBot(commands.Bot):
         self.logging_manager = None
         self.workflow_manager = None
         self._ready_fired = False
-        self._synced = False  # Track if we've already synced
-        self._guild_synced = set()  # Track which guilds have been synced
+        self._synced = False
+        self._guild_synced = set()
     
     async def setup_hook(self):
         """Setup database and load cogs"""
@@ -102,7 +101,7 @@ class SlackBot(commands.Bot):
 
             logger.info(f"Loaded {len(loaded_cogs)}/{len(cogs)} cogs successfully")
             
-            # Add admin slash commands
+            # Add admin slash commands AFTER loading cogs
             await self.add_admin_slash_commands()
             
             logger.info("Setup hook completed successfully")
@@ -114,8 +113,8 @@ class SlackBot(commands.Bot):
     async def add_admin_slash_commands(self):
         """Add admin slash commands to the command tree"""
         try:
-            # Sync commands slash command
-            @app_commands.command(name="sync", description="Sync slash commands to this guild (Owner only)")
+            # Define sync command
+            @app_commands.command(name="admin_sync", description="Sync slash commands to this guild (Owner only)")
             @app_commands.describe(guild_only="Whether to sync only to this guild")
             async def sync_slash(interaction: discord.Interaction, guild_only: bool = True):
                 if not await self.is_owner(interaction.user):
@@ -126,15 +125,13 @@ class SlackBot(commands.Bot):
                 
                 try:
                     if guild_only:
+                        # Get all commands from the tree
+                        all_commands = [cmd for cmd in self.tree.get_commands() if cmd.name != "admin_sync"]
+                        
                         # Clear existing guild commands first
                         self.tree.clear_commands(guild=interaction.guild)
                         
-                        # Get all commands and copy to guild
-                        all_commands = self.tree.get_commands()
-                        if not all_commands:
-                            await interaction.followup.send("❌ No commands found in tree!")
-                            return
-                        
+                        # Add all commands to guild
                         for command in all_commands:
                             self.tree.add_command(command, guild=interaction.guild)
                         
@@ -154,9 +151,9 @@ class SlackBot(commands.Bot):
                 except Exception as e:
                     await interaction.followup.send(f'❌ Failed to sync commands: {e}')
                     logger.error("Slash sync failed", exc_info=True)
-            
-            # Fix duplicates slash command
-            @app_commands.command(name="fix_duplicates", description="Fix duplicate commands in this guild (Owner only)")
+
+            # Define fix duplicates command
+            @app_commands.command(name="admin_fix_duplicates", description="Fix duplicate commands in this guild (Owner only)")
             async def fix_duplicates_slash(interaction: discord.Interaction):
                 if not await self.is_owner(interaction.user):
                     await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
@@ -165,8 +162,9 @@ class SlackBot(commands.Bot):
                 await interaction.response.defer(ephemeral=True)
                 
                 try:
-                    # Get all global commands
-                    all_commands = self.tree.get_commands()
+                    # Get all commands except admin commands
+                    all_commands = [cmd for cmd in self.tree.get_commands() if not cmd.name.startswith("admin_")]
+                    
                     if not all_commands:
                         await interaction.followup.send("❌ No commands found in command tree!")
                         return
@@ -174,7 +172,7 @@ class SlackBot(commands.Bot):
                     # Clear existing guild commands
                     self.tree.clear_commands(guild=interaction.guild)
                     
-                    # Add global commands to guild
+                    # Add all commands to guild
                     for command in all_commands:
                         self.tree.add_command(command, guild=interaction.guild)
                     
@@ -193,9 +191,9 @@ class SlackBot(commands.Bot):
                 except Exception as e:
                     await interaction.followup.send(f"❌ Failed to fix duplicate commands: {e}")
                     logger.error("Failed to fix duplicate commands", exc_info=True)
-            
-            # Status slash command
-            @app_commands.command(name="bot_status", description="Show bot status and sync information (Owner only)")
+
+            # Define status command
+            @app_commands.command(name="admin_status", description="Show bot status and sync information (Owner only)")
             async def status_slash(interaction: discord.Interaction):
                 if not await self.is_owner(interaction.user):
                     await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
@@ -242,9 +240,9 @@ class SlackBot(commands.Bot):
                     
                 except Exception as e:
                     await interaction.response.send_message(f"❌ Failed to get bot status: {e}", ephemeral=True)
-            
-            # Clear global slash command
-            @app_commands.command(name="clear_global", description="Clear all global commands (Owner only)")
+
+            # Define clear global command
+            @app_commands.command(name="admin_clear_global", description="Clear all global commands (Owner only)")
             async def clear_global_slash(interaction: discord.Interaction):
                 if not await self.is_owner(interaction.user):
                     await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
@@ -258,9 +256,9 @@ class SlackBot(commands.Bot):
                     await interaction.followup.send(f'✅ Cleared all global commands. {len(synced)} commands remain.')
                 except Exception as e:
                     await interaction.followup.send(f'❌ Failed to clear global commands: {e}')
-            
-            # Clear guild slash command
-            @app_commands.command(name="clear_guild", description="Clear all guild-specific commands (Owner only)")
+
+            # Define clear guild command
+            @app_commands.command(name="admin_clear_guild", description="Clear all guild-specific commands (Owner only)")
             async def clear_guild_slash(interaction: discord.Interaction):
                 if not await self.is_owner(interaction.user):
                     await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
@@ -274,9 +272,9 @@ class SlackBot(commands.Bot):
                     await interaction.followup.send(f'✅ Cleared guild commands. {len(synced)} commands remain.')
                 except Exception as e:
                     await interaction.followup.send(f'❌ Failed to clear guild commands: {e}')
-            
-            # List commands slash command
-            @app_commands.command(name="list_commands", description="List all registered commands (Owner only)")
+
+            # Define list commands command
+            @app_commands.command(name="admin_list_commands", description="List all registered commands (Owner only)")
             async def list_commands_slash(interaction: discord.Interaction):
                 if not await self.is_owner(interaction.user):
                     await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
@@ -290,13 +288,22 @@ class SlackBot(commands.Bot):
                 
                 # Group by cog
                 cog_commands = {}
+                admin_commands = []
+                
                 for cmd in all_commands:
-                    cog_name = getattr(cmd.callback, '__qualname__', 'Unknown').split('.')[0]
-                    if cog_name not in cog_commands:
-                        cog_commands[cog_name] = []
-                    cog_commands[cog_name].append(cmd.name)
+                    if cmd.name.startswith("admin_"):
+                        admin_commands.append(cmd.name)
+                    else:
+                        cog_name = getattr(cmd.callback, '__qualname__', 'Unknown').split('.')[0]
+                        if cog_name not in cog_commands:
+                            cog_commands[cog_name] = []
+                        cog_commands[cog_name].append(cmd.name)
                 
                 message = f"**Total Commands: {len(all_commands)}**\n\n"
+                
+                if admin_commands:
+                    message += f"**Admin Commands:** {', '.join(sorted(admin_commands))}\n\n"
+                
                 for cog_name, cmd_names in cog_commands.items():
                     message += f"**{cog_name}:** {', '.join(sorted(cmd_names))}\n"
                 
@@ -305,14 +312,13 @@ class SlackBot(commands.Bot):
                     logger.info(message)
                 else:
                     await interaction.response.send_message(message, ephemeral=True)
+
+            # Store references to admin commands
+            self.admin_commands = [sync_slash, fix_duplicates_slash, status_slash, clear_global_slash, clear_guild_slash, list_commands_slash]
             
             # Add all slash commands to the tree
-            self.tree.add_command(sync_slash)
-            self.tree.add_command(fix_duplicates_slash)
-            self.tree.add_command(status_slash)
-            self.tree.add_command(clear_global_slash)
-            self.tree.add_command(clear_guild_slash)
-            self.tree.add_command(list_commands_slash)
+            for cmd in self.admin_commands:
+                self.tree.add_command(cmd)
             
             logger.info("✅ Added admin slash commands to command tree")
             
@@ -377,7 +383,6 @@ class SlackBot(commands.Bot):
         """Handle command errors"""
         if isinstance(error, commands.CommandNotFound):
             logger.warning(f"Command not found: {ctx.message.content}")
-            # Don't send error message to avoid spam
             return
         elif isinstance(error, commands.NotOwner):
             await ctx.send("❌ Only the bot owner can use this command.")
@@ -494,14 +499,14 @@ async def main():
             try:
                 logger.info(f"Starting bot (attempt {attempt + 1}/{max_retries})")
                 await bot.start(Settings.DISCORD_TOKEN)
-                break  # If we get here, the bot started successfully
+                break
                 
             except discord.LoginFailure:
                 logger.error("Invalid Discord token provided")
-                break  # Don't retry on authentication failures
+                break
                 
             except discord.HTTPException as e:
-                if e.status == 429:  # Rate limited
+                if e.status == 429:
                     logger.warning(f"Rate limited, waiting {retry_delay * 2} seconds...")
                     await asyncio.sleep(retry_delay * 2)
                 else:
@@ -512,7 +517,7 @@ async def main():
                 if attempt < max_retries - 1:
                     logger.info(f"Retrying in {retry_delay} seconds...")
                     await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
+                    retry_delay *= 2
                 
             except KeyboardInterrupt:
                 logger.info("Bot stopped by user")
@@ -525,7 +530,6 @@ async def main():
                     await asyncio.sleep(retry_delay)
                     retry_delay *= 2
         else:
-            # This executes if the for loop completes without breaking
             logger.error(f"Failed to start bot after {max_retries} attempts")
             
     except KeyboardInterrupt:
@@ -537,7 +541,6 @@ async def main():
             await bot.close()
 
 if __name__ == "__main__":
-    # Deployment compatibility
     port = int(os.environ.get("PORT", 8080))
     logger.info(f"Starting Discord bot on Railway (port {port})")
     

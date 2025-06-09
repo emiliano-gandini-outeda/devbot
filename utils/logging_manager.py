@@ -87,7 +87,7 @@ class LoggingManager:
         
         if message.content:
             content = message.content[:1000] + "..." if len(message.content) > 1000 else message.content
-            embed.add_field(name="Content", value=f"```{content}```", inline=False)
+            embed.add_field(name="Content", value=f"\`\`\`{content}\`\`\`", inline=False)
         
         if message.attachments:
             attachments = "\n".join([f"• {att.filename}" for att in message.attachments])
@@ -111,11 +111,11 @@ class LoggingManager:
         
         if before.content:
             before_content = before.content[:500] + "..." if len(before.content) > 500 else before.content
-            embed.add_field(name="Before", value=f"```{before_content}```", inline=False)
+            embed.add_field(name="Before", value=f"\`\`\`{before_content}\`\`\`", inline=False)
         
         if after.content:
             after_content = after.content[:500] + "..." if len(after.content) > 500 else after.content
-            embed.add_field(name="After", value=f"```{after_content}```", inline=False)
+            embed.add_field(name="After", value=f"\`\`\`{after_content}\`\`\`", inline=False)
         
         await self.log_event(before.guild, embed)
     
@@ -238,6 +238,10 @@ class LoggingManager:
         """Log command usage"""
         if not interaction.guild:
             return
+        
+        # Check if command exists
+        if not interaction.command:
+            return  # Skip logging if command is None
         
         embed = discord.Embed(
             title="⚡ Command Used",
