@@ -158,11 +158,11 @@ class SlackBot(commands.Bot):
                         self.tree.add_command(command)
                         logger.debug(f"Added command /{command.name} from {cog_name}")
         
-        total_commands = len(self.tree.get_commands())
-        logger.info(f"✅ Registered {total_commands} commands to command tree")
+            total_commands = len(self.tree.get_commands())
+            logger.info(f"✅ Registered {total_commands} commands to command tree")
         
-    except Exception as e:
-        logger.error(f"❌ Failed to register cog commands: {e}", exc_info=True)
+        except Exception as e:
+            logger.error(f"❌ Failed to register cog commands: {e}", exc_info=True)
 
     # Add a sync command for debugging
     @commands.command(name='sync')
