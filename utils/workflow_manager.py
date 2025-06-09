@@ -154,7 +154,7 @@ class WorkflowManager:
         except Exception as e:
             print(f"Error logging workflow execution: {e}")
     
-    async def check_message_triggers(self, message: discord.Message):
+    async def process_message_triggers(self, message: discord.Message):
         """Check if message triggers any workflows"""
         if not message.guild or message.author.bot:
             return
@@ -235,7 +235,7 @@ class WorkflowManager:
         except Exception as e:
             print(f"Error checking message triggers: {e}")
     
-    async def check_member_join_triggers(self, member: discord.Member):
+    async def process_member_join_triggers(self, member: discord.Member):
         """Check if member join triggers any workflows"""
         try:
             # Get workflows for this guild
@@ -283,7 +283,7 @@ class WorkflowManager:
         except Exception as e:
             print(f"Error checking member join triggers: {e}")
     
-    async def check_thread_create_triggers(self, thread: discord.Thread):
+    async def process_thread_create_triggers(self, thread: discord.Thread):
         """Check if thread creation triggers any workflows"""
         try:
             # Get workflows for this guild
@@ -330,3 +330,44 @@ class WorkflowManager:
                 
         except Exception as e:
             print(f"Error checking thread create triggers: {e}")
+
+    async def process_channel_create_triggers(self, channel: discord.abc.GuildChannel):
+        """Check if channel creation triggers any workflows."""
+        try:
+            # Get workflows for this guild
+            if self.bot.db.is_postgresql:
+                workflows = await self.bot.db.connection.fetch(
+                    "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type = 'channel_create'",
+                    str(channel.guild.id)
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type = 'channel_create'",
+                    (str(channel.guild.id),)
+                )
+                workflows = await cursor.fetchall()
+
+            for workflow in workflows:
+                trigger_data = {
+                    'channel_id': str(channel.id),
+                    'channel_name': channel.name,
+                    'channel_mention': channel.mention,
+                    'guild_id': str(channel.guild.id)
+                }
+
+                workflow_dict = dict(workflow) if self.bot.db.is_postgresql else {
+                    'id': workflow[0],
+                    'name': workflow[1],
+                    'guild_id': workflow[2],
+                    'creator_id': workflow[3],
+                    'trigger_type': workflow[4],
+                    'trigger_data': workflow[5],
+                    'actions': workflow[6],
+                    'status': workflow[7]
+                }
+
+                await self.execute_workflow_actions(workflow_dict, trigger_data)
+
+        except Exception as e:
+            print(f"Error checking channel create triggers: {e}")
+

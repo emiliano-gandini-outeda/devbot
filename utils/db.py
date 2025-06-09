@@ -250,7 +250,18 @@ class DatabaseManager:
                 is_read BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """,
+            # Keywords table for notifications
             """
+            CREATE TABLE IF NOT EXISTS keywords (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, user_id, keyword)
+            )
+            """,
         ]
     
         github_tables = [
@@ -404,8 +415,7 @@ class DatabaseManager:
                 trigger_data TEXT DEFAULT '{}',
                 actions TEXT DEFAULT '[]',
                 status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
             
@@ -517,7 +527,18 @@ class DatabaseManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, guild_id, repo_name)
             )
+            """,
+            # Keywords table
             """
+            CREATE TABLE IF NOT EXISTS keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, user_id, keyword)
+            )
+            """,
         ]
         
         for i, table_sql in enumerate(tables, 1):
@@ -537,7 +558,8 @@ class DatabaseManager:
         required_tables = [
             'users', 'tickets', 'reminders', 'workflows', 'user_data',
             'admin_roles', 'ticket_configs', 'log_configs', 'meetings', 
-            'notifications', 'github_tracked_repos', 'github_subscriptions'
+            'notifications', 'github_tracked_repos', 'github_subscriptions',
+            'keywords'
         ]
         
         existing_tables = []
