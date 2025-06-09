@@ -208,13 +208,18 @@ class Reminders(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to set reminder: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="remind-channel", description="Set a channel reminder")
+    @app_commands.command(name="remind-channel", description="Set a channel reminder (Admin only)")
     @app_commands.describe(
         time="When to remind (e.g., '1h', '30m', '2d')",
         message="Reminder message",
         channel="Channel to send reminder to"
     )
     async def remind_channel(self, interaction: discord.Interaction, time: str, message: str, channel: discord.TextChannel = None):
+        if not self.bot.admin_manager.is_admin(interaction.user):
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can set channel reminders")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
         if not channel:
             channel = interaction.channel
         
@@ -268,103 +273,6 @@ class Reminders(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to set reminder: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="edit-reminder", description="Edit an existing reminder")
-    @app_commands.describe(
-        reminder_number="Number of the reminder to edit (from /list-reminders)",
-        new_time="New time for the reminder (optional, e.g., '1h', '30m', '2d')",
-        new_message="New message for the reminder (optional)"
-    )
-    async def edit_reminder(
-        self, 
-        interaction: discord.Interaction, 
-        reminder_number: int, 
-        new_time: str = None, 
-        new_message: str = None
-    ):
-        if not new_time and not new_message:
-            embed = EmbedBuilder.error(
-                "Missing Parameters",
-                "You must provide either a new time or a new message."
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-            
-        try:
-            # Get the reminder
-            if self.bot.db.is_postgresql:
-                reminder = await self.bot.db.connection.fetchrow(
-                    "SELECT * FROM reminders WHERE user_id = $1 ORDER BY remind_at ASC LIMIT 1 OFFSET $2",
-                    str(interaction.user.id), reminder_number - 1
-                )
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM reminders WHERE user_id = ? ORDER BY remind_at ASC LIMIT 1 OFFSET ?",
-                    (str(interaction.user.id), reminder_number - 1)
-                )
-                reminder = await cursor.fetchone()
-            
-            if not reminder:
-                embed = EmbedBuilder.error("Not Found", f"Reminder #{reminder_number} not found")
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-                
-            # Extract current values
-            reminder_id = reminder['id'] if self.bot.db.is_postgresql else reminder[0]
-            current_message = reminder['message'] if self.bot.db.is_postgresql else reminder[4]
-            current_remind_at = reminder['remind_at'] if self.bot.db.is_postgresql else reminder[5]
-            
-            # Calculate new remind_at if time is provided
-            new_remind_at = current_remind_at
-            if new_time:
-                duration = TimeParser.parse_duration(new_time)
-                if not duration:
-                    embed = EmbedBuilder.error(
-                        "Invalid Time Format",
-                        "Please use format like: `1h`, `30m`, `2d`, `1h30m`"
-                    )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
-                    return
-                    
-                new_remind_at = datetime.utcnow() + duration
-                
-                # Check if time is within the 9-year limit
-                nine_years_seconds = 9 * 365.25 * 24 * 60 * 60  # Approximately 9 years in seconds
-                if duration.total_seconds() > nine_years_seconds:
-                    embed = EmbedBuilder.error(
-                        "Time Limit Exceeded",
-                        "Reminder time cannot exceed 9 years."
-                    )
-                    await interaction.response.send_message(embed=embed, ephemeral=True)
-                    return
-            
-            # Use provided message or keep existing one
-            final_message = new_message if new_message else current_message
-            
-            # Update the reminder in the database
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "UPDATE reminders SET message = $1, remind_at = $2 WHERE id = $3",
-                    final_message, new_remind_at, reminder_id
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    "UPDATE reminders SET message = ?, remind_at = ? WHERE id = ?",
-                    (final_message, new_remind_at, reminder_id)
-                )
-                await self.bot.db.connection.commit()
-            
-            embed = EmbedBuilder.success(
-                "Reminder Updated",
-                f"**Original Message:** {current_message}\n" +
-                (f"**New Message:** {final_message}\n" if new_message else "") +
-                (f"**New Time:** {new_remind_at.strftime('%Y-%m-%d %H:%M UTC')}" if new_time else "")
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            
-        except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to edit reminder: {str(e)}")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
     @app_commands.command(name="list-reminders", description="List your active reminders")
     async def list_reminders(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -487,17 +395,13 @@ async def setup(bot):
     cog = Reminders(bot)
     await bot.add_cog(cog)
     
-    # Manually add each command to the tree to ensure registration
-    commands_to_add = [
-        cog.remind,
-        cog.remind_channel,
-        cog.edit_reminder,
-        cog.list_reminders,
-        cog.delete_reminder
-    ]
+    # Sync commands to all guilds
+    for guild in bot.guilds:
+        try:
+            bot.tree.copy_global_to(guild=guild)
+            await bot.tree.sync(guild=guild)
+            print(f"⏰ Synced Reminder commands to {guild.name}")
+        except Exception as e:
+            print(f"❌ Failed to sync Reminder commands to {guild.name}: {e}")
     
-    for command in commands_to_add:
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
-    
-    print(f"⏰ Successfully loaded Reminders cog with {len(commands_to_add)} commands")
+    print(f"⏰ Successfully loaded Reminders cog with {len(cog.get_app_commands())} commands")

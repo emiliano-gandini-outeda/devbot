@@ -142,7 +142,7 @@ class Admin(commands.Cog):
                 value=f"**Status:** 🟢 Online\n"
                       f"**Guilds:** {len(self.bot.guilds)}\n"
                       f"**Users:** {sum(g.member_count for g in self.bot.guilds)}\n"
-                      f"**Commands:** {len(self.bot.tree.get_commands())}",
+                      f"**Commands:** {len(self.bot.tree.get_commands(guild=interaction.guild))}",
                 inline=True
             )
             
@@ -374,4 +374,14 @@ class Admin(commands.Cog):
 async def setup(bot):
     cog = Admin(bot)
     await bot.add_cog(cog)
+    
+    # Sync commands to all guilds
+    for guild in bot.guilds:
+        try:
+            bot.tree.copy_global_to(guild=guild)
+            await bot.tree.sync(guild=guild)
+            print(f"🛡️ Synced Admin commands to {guild.name}")
+        except Exception as e:
+            print(f"❌ Failed to sync Admin commands to {guild.name}: {e}")
+    
     print(f"🛡️ Successfully loaded Admin cog with {len(cog.get_app_commands())} commands")

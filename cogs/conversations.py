@@ -318,9 +318,21 @@ async def setup(bot):
     cog = Conversations(bot)
     await bot.add_cog(cog)
     
-    # Ensure commands are added to the tree
-    for command in cog.get_app_commands():
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
+    # Sync commands to all guilds
+    for guild in bot.guilds:
+        try:
+            # Copy global commands to guild
+            bot.tree.copy_global_to(guild=guild)
+            
+            # Add cog commands to guild
+            for command in cog.get_app_commands():
+                if command not in bot.tree.get_commands(guild=guild):
+                    bot.tree.add_command(command, guild=guild)
+            
+            # Sync to guild
+            await bot.tree.sync(guild=guild)
+            print(f"✅ Synced Conversations commands to {guild.name}")
+        except Exception as e:
+            print(f"❌ Failed to sync Conversations commands to {guild.name}: {e}")
     
     print(f"🗨️ Successfully loaded Conversations cog with {len(cog.get_app_commands())} commands")

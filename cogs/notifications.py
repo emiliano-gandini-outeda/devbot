@@ -201,9 +201,13 @@ async def setup(bot):
     cog = Notifications(bot)
     await bot.add_cog(cog)
     
-    # Ensure commands are added to the tree
-    for command in cog.get_app_commands():
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
+    # Sync commands to all guilds
+    for guild in bot.guilds:
+        try:
+            bot.tree.copy_global_to(guild=guild)
+            await bot.tree.sync(guild=guild)
+            print(f"✅ Synced Notifications commands to {guild.name}")
+        except Exception as e:
+            print(f"❌ Failed to sync Notifications commands to {guild.name}: {e}")
     
     print(f"🔔 Successfully loaded Notifications cog with {len(cog.get_app_commands())} commands")

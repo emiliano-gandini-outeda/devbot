@@ -66,88 +66,41 @@ class DiscordBot(commands.Bot):
     def add_admin_commands(self):
         """Add admin-only commands"""
         
-        @self.command(name='admin_sync')
+        @self.command(name='guild_sync')
         @commands.is_owner()
-        async def admin_sync(ctx):
-            """Sync slash commands (Owner only)"""
+        async def guild_sync(ctx):
+            """Sync slash commands to current guild only (Owner only)"""
             try:
-                synced = await self.tree.sync()
-                await ctx.send(f"✅ Synced {len(synced)} commands")
-                logger.info(f"Admin sync: {len(synced)} commands synced")
+                synced = await self.tree.sync(guild=ctx.guild)
+                await ctx.send(f"✅ Synced {len(synced)} commands to {ctx.guild.name}")
+                logger.info(f"Guild sync: {len(synced)} commands synced to {ctx.guild.name}")
             except Exception as e:
                 await ctx.send(f"❌ Sync failed: {e}")
-                logger.error(f"Admin sync failed: {e}")
+                logger.error(f"Guild sync failed: {e}")
         
-        @self.command(name='force_sync')
+        @self.command(name='sync_all_guilds')
         @commands.is_owner()
-        async def force_sync(ctx):
-            """Force sync all commands (Owner only)"""
+        async def sync_all_guilds(ctx):
+            """Sync commands to all guilds (Owner only)"""
             try:
-                await ctx.send("🔄 Starting force sync...")
+                await ctx.send("🔄 Starting sync to all guilds...")
+                synced_count = 0
+                failed_count = 0
                 
-                # Clear existing commands
-                self.tree.clear_commands()
-                await ctx.send("🗑️ Cleared existing commands")
-                
-                # Reload all cogs
-                for cog_name in list(self.cogs.keys()):
+                for guild in self.guilds:
                     try:
-                        await self.reload_extension(f"cogs.{cog_name.lower()}")
-                        await ctx.send(f"🔄 Reloaded {cog_name}")
+                        synced = await self.tree.sync(guild=guild)
+                        synced_count += 1
+                        await ctx.send(f"✅ Synced {len(synced)} commands to {guild.name}")
                     except Exception as e:
-                        await ctx.send(f"❌ Failed to reload {cog_name}: {e}")
+                        failed_count += 1
+                        await ctx.send(f"❌ Failed to sync to {guild.name}: {e}")
                 
-                # Sync commands
-                synced = await self.tree.sync()
-                await ctx.send(f"✅ Force sync complete: {len(synced)} commands synced")
-                
-                # List synced commands
-                command_names = [cmd.name for cmd in synced]
-                if command_names:
-                    commands_text = ", ".join(command_names)
-                    if len(commands_text) > 1900:
-                        commands_text = commands_text[:1900] + "..."
-                    await ctx.send(f"📋 Synced commands: {commands_text}")
+                await ctx.send(f"🎉 Sync complete! {synced_count} guilds synced, {failed_count} failed")
                 
             except Exception as e:
-                await ctx.send(f"❌ Force sync failed: {e}")
-                logger.error(f"Force sync failed: {e}")
-    
-        @self.command(name='emergency_sync')
-        @commands.is_owner()
-        async def emergency_sync(ctx):
-            """Emergency command sync with detailed output (Owner only)"""
-            try:
-                await ctx.send("🔄 Starting emergency sync...")
-            
-                # Get current commands
-                current_commands = self.tree.get_commands()
-                await ctx.send(f"📊 Current commands in tree: {len(current_commands)}")
-            
-                # List cogs and their commands
-                cog_info = []
-                total_cog_commands = 0
-            
-                for cog_name, cog in self.cogs.items():
-                    cog_commands = cog.get_app_commands()
-                    total_cog_commands += len(cog_commands)
-                    cog_info.append(f"• {cog_name}: {len(cog_commands)} commands")
-            
-                if cog_info:
-                    cog_text = "\n".join(cog_info)
-                    if len(cog_text) > 1900:
-                        cog_text = cog_text[:1900] + "..."
-                    await ctx.send(f"📦 Cog commands:\n```\n{cog_text}\n```")
-            
-                await ctx.send(f"🔢 Total commands from cogs: {total_cog_commands}")
-            
-                # Sync
-                synced = await self.tree.sync()
-                await ctx.send(f"✅ Emergency sync complete: {len(synced)} commands synced")
-            
-            except Exception as e:
-                await ctx.send(f"❌ Emergency sync failed: {e}")
-                logger.error(f"Emergency sync failed: {e}")
+                await ctx.send(f"❌ Sync all failed: {e}")
+                logger.error(f"Sync all failed: {e}")
     
     async def setup_hook(self):
         """Called when the bot is starting up"""
@@ -160,19 +113,17 @@ class DiscordBot(commands.Bot):
             # Initialize database with shorter timeout
             logger.info("📊 Initializing database...")
             try:
-                async with asyncio.timeout(30):  # Reduced from 60 to 30 seconds
+                async with asyncio.timeout(30):
                     self.db = DatabaseManager()
                     await self.db.init_database()
                     logger.info("✅ Database initialized successfully")
             except asyncio.TimeoutError:
                 logger.error("❌ Database initialization timed out after 30 seconds")
                 logger.info("🔄 Attempting minimal SQLite fallback...")
-                # Quick SQLite fallback
                 try:
                     self.db = DatabaseManager()
                     self.db.connection = await aiosqlite.connect("bot.db")
                     self.db.is_postgresql = False
-                    # Create minimal tables only
                     await self.db.connection.execute("""
                         CREATE TABLE IF NOT EXISTS users (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -202,120 +153,41 @@ class DiscordBot(commands.Bot):
                 logger.info("🚀 Continuing without database...")
                 self.db = None
         
-            # Verify database tables with shorter timeout (optional)
-            if self.db:
-                logger.info("🔍 Verifying database tables...")
-                try:
-                    async with asyncio.timeout(10):  # Reduced from 20 to 10 seconds
-                        tables_ok = await self.db.verify_tables()
-                        if not tables_ok:
-                            logger.warning("⚠️ Some database tables missing - continuing anyway")
-                        else:
-                            logger.info("✅ Database tables verified successfully")
-                except (asyncio.TimeoutError, Exception) as e:
-                    logger.warning(f"⚠️ Database table verification failed/timed out: {e} - continuing anyway")
-        
-            # Test database connection (optional)
-            if self.db:
-                logger.info("🧪 Testing database connection...")
-                try:
-                    async with asyncio.timeout(5):  # Reduced from 10 to 5 seconds
-                        connection_ok = await self.db.test_connection()
-                        if connection_ok:
-                            logger.info("✅ Database connection test passed")
-                        else:
-                            logger.warning("⚠️ Database connection test failed - continuing anyway")
-                except (asyncio.TimeoutError, Exception) as e:
-                    logger.warning(f"⚠️ Database connection test failed/timed out: {e} - continuing anyway")
-        
-            # Initialize managers with shorter timeout (optional)
+            # Initialize managers
             logger.info("🛡️ Initializing managers...")
             try:
-                async with asyncio.timeout(10):  # Reduced from 20 to 10 seconds
-                    if self.db:
-                        # Admin manager
-                        logger.info("  • Initializing Admin Manager...")
-                        self.admin_manager = AdminManager(self)
-                        await self.admin_manager.load_admin_roles()
-                        logger.info("  ✅ Admin Manager initialized")
+                if self.db:
+                    self.admin_manager = AdminManager(self)
+                    await self.admin_manager.load_admin_roles()
                     
-                        # Ticket manager
-                        logger.info("  • Initializing Ticket Manager...")
-                        self.ticket_manager = TicketManager(self)
-                        await self.ticket_manager.load_ticket_configs()
-                        logger.info("  ✅ Ticket Manager initialized")
+                    self.ticket_manager = TicketManager(self)
+                    await self.ticket_manager.load_ticket_configs()
                     
-                        # Logging manager
-                        logger.info("  • Initializing Logging Manager...")
-                        self.logging_manager = LoggingManager(self)
-                        await self.logging_manager.load_log_configs()
-                        logger.info("  ✅ Logging Manager initialized")
+                    self.logging_manager = LoggingManager(self)
+                    await self.logging_manager.load_log_configs()
                     
-                        # Workflow manager
-                        logger.info("  • Initializing Workflow Manager...")
-                        self.workflow_manager = WorkflowManager(self)
-                        await self.workflow_manager.load_workflows()
-                        logger.info("  ✅ Workflow Manager initialized")
-                    else:
-                        logger.warning("⚠️ Skipping manager initialization (no database)")
-                
-                logger.info("✅ Manager initialization completed")
-            except (asyncio.TimeoutError, Exception) as e:
-                logger.warning(f"⚠️ Manager initialization failed/timed out: {e} - continuing without managers")
-                # Set managers to None to prevent errors
-                self.admin_manager = None
-                self.ticket_manager = None
-                self.logging_manager = None
-                self.workflow_manager = None
+                    self.workflow_manager = WorkflowManager(self)
+                    await self.workflow_manager.load_workflows()
+                    
+                    logger.info("✅ Manager initialization completed")
+                else:
+                    logger.warning("⚠️ Skipping manager initialization (no database)")
+            except Exception as e:
+                logger.warning(f"⚠️ Manager initialization failed: {e}")
 
-            # Load cogs with shorter timeout
+            # Load cogs
             logger.info("🔧 Loading cogs...")
             try:
-                async with asyncio.timeout(20):  # Reduced from 30 to 20 seconds
-                    await self.load_cogs()
-                    logger.info("✅ Cogs loaded successfully")
-            except asyncio.TimeoutError:
-                logger.warning("⚠️ Cog loading timed out after 20 seconds - continuing with loaded cogs")
+                await self.load_cogs()
+                logger.info("✅ Cogs loaded successfully")
             except Exception as e:
-                logger.warning(f"⚠️ Cog loading failed: {e} - continuing with loaded cogs")
-
-            # Verify commands are registered
-            logger.info("🔍 Verifying command registration...")
-            total_commands = 0
-
-            for cog_name, cog in self.cogs.items():
-                cog_commands = cog.get_app_commands()
-                total_commands += len(cog_commands)
-                logger.info(f"  • {cog_name}: {len(cog_commands)} commands")
-
-            logger.info(f"📊 Total commands from cogs: {total_commands}")
-            tree_commands = len(self.tree.get_commands())
-            logger.info(f"📊 Commands in tree: {tree_commands}")
-
-            # List all commands in tree for debugging
-            tree_command_names = [cmd.name for cmd in self.tree.get_commands()]
-            logger.info(f"Tree commands: {tree_command_names}")
-
-            # Force sync commands on startup
-            logger.info("🔄 Force syncing slash commands...")
-            try:
-                async with asyncio.timeout(20):  # Increased timeout for sync
-                    synced = await self.tree.sync()
-                    logger.info(f"✅ Force synced {len(synced)} slash commands")
-                    
-                    # Log synced command names
-                    synced_names = [cmd.name for cmd in synced]
-                    logger.info(f"Synced commands: {synced_names}")
-                    
-            except (asyncio.TimeoutError, Exception) as e:
-                logger.warning(f"⚠️ Command sync failed/timed out: {e} - commands will sync later")
+                logger.warning(f"⚠️ Cog loading failed: {e}")
 
             logger.info("✅ Bot setup completed successfully!")
 
         except Exception as e:
             logger.error(f"❌ Error during setup: {e}")
             logger.exception("Full traceback:")
-            # Don't close the bot, just log the error and continue
             logger.info("🚀 Continuing bot startup despite setup errors...")
     
     async def load_cogs(self):
@@ -346,13 +218,9 @@ class DiscordBot(commands.Bot):
         for cog in cogs:
             try:
                 logger.info(f"  • Loading {cog}...")
-                async with asyncio.timeout(5):  # 5 second timeout per cog
-                    await self.load_extension(cog)
-                    loaded_count += 1
-                    logger.info(f"  ✅ Loaded {cog}")
-            except asyncio.TimeoutError:
-                failed_count += 1
-                logger.error(f"  ❌ {cog} timed out after 5 seconds")
+                await self.load_extension(cog)
+                loaded_count += 1
+                logger.info(f"  ✅ Loaded {cog}")
             except Exception as e:
                 failed_count += 1
                 logger.error(f"  ❌ Failed to load {cog}: {e}")
@@ -366,17 +234,22 @@ class DiscordBot(commands.Bot):
         logger.info(f"🚀 {self.user} is now online!")
         logger.info(f"📊 Connected to {len(self.guilds)} guilds")
         logger.info(f"👥 Serving {sum(guild.member_count for guild in self.guilds)} users")
-        logger.info(f"⚡ {len(self.tree.get_commands())} slash commands available")
         
-        # If startup wasn't complete, try to sync commands now
-        if not self.startup_complete:
-            logger.info("🔄 Startup was incomplete, attempting command sync now...")
+        # Sync commands to all guilds
+        logger.info("🔄 Syncing commands to all guilds...")
+        synced_guilds = 0
+        failed_guilds = 0
+        
+        for guild in self.guilds:
             try:
-                synced = await self.tree.sync()
-                logger.info(f"✅ Late sync completed: {len(synced)} commands")
-                self.startup_complete = True
+                synced = await self.tree.sync(guild=guild)
+                synced_guilds += 1
+                logger.info(f"✅ Synced {len(synced)} commands to {guild.name}")
             except Exception as e:
-                logger.warning(f"⚠️ Late sync failed: {e}")
+                failed_guilds += 1
+                logger.error(f"❌ Failed to sync commands to {guild.name}: {e}")
+        
+        logger.info(f"🎉 Command sync complete! {synced_guilds} guilds synced, {failed_guilds} failed")
         
         # Set bot status
         try:
@@ -391,6 +264,13 @@ class DiscordBot(commands.Bot):
     async def on_guild_join(self, guild):
         """Called when the bot joins a new guild"""
         logger.info(f"📥 Joined new guild: {guild.name} (ID: {guild.id}) with {guild.member_count} members")
+        
+        # Sync commands to the new guild
+        try:
+            synced = await self.tree.sync(guild=guild)
+            logger.info(f"✅ Synced {len(synced)} commands to new guild {guild.name}")
+        except Exception as e:
+            logger.error(f"❌ Failed to sync commands to new guild {guild.name}: {e}")
         
         # Update status
         try:

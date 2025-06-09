@@ -36,7 +36,7 @@ class Setup(commands.Cog):
                 f"Ticket system has been configured successfully!\n\n"
                 f"**Ticket Category:** {category.mention}\n"
                 f"**Transcript Channel:** {transcript_channel.mention}\n\n"
-                f"Users can now create tickets using `/ticket-create`"
+                f"Users can now create tickets using `/ticket create`"
             )
             
             await interaction.response.send_message(embed=embed)
@@ -296,18 +296,13 @@ async def setup(bot):
     cog = Setup(bot)
     await bot.add_cog(cog)
     
-    # Manually add each command to the tree to ensure registration
-    commands_to_add = [
-        cog.setup_tickets,
-        cog.setup_tracking,
-        cog.setup_logs,
-        cog.setup_meetings,
-        cog.setup_reminders,
-        cog.setup_threads
-    ]
+    # Sync commands to all guilds
+    for guild in bot.guilds:
+        try:
+            bot.tree.copy_global_to(guild=guild)
+            await bot.tree.sync(guild=guild)
+            print(f"⚙️ Synced Setup commands to {guild.name}")
+        except Exception as e:
+            print(f"❌ Failed to sync Setup commands to {guild.name}: {e}")
     
-    for command in commands_to_add:
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
-    
-    print(f"⚙️ Successfully loaded Setup cog with {len(commands_to_add)} commands")
+    print(f"⚙️ Successfully loaded Setup cog with {len(cog.get_app_commands())} commands")

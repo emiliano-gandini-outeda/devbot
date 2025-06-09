@@ -369,7 +369,7 @@ class Workflows(commands.Cog):
                 )
                 await self.bot.db.connection.commit()
             
-            # Format action description - Fixed f-string backslash issue
+            # Format action description
             action_desc = f"**Type:** {action_type}\n"
             if action_type == "send_message":
                 channel_text = 'Same as trigger' if channel == 'same' else f'<#{action_data["channel_id"]}>'
@@ -399,14 +399,16 @@ async def setup(bot):
         cog = Workflows(bot)
         await bot.add_cog(cog)
         
-        # Ensure commands are added to the tree
-        for command in cog.get_app_commands():
-            if command not in bot.tree.get_commands():
-                bot.tree.add_command(command)
+        # Sync commands to all guilds
+        for guild in bot.guilds:
+            try:
+                bot.tree.copy_global_to(guild=guild)
+                await bot.tree.sync(guild=guild)
+                print(f"✅ Synced Workflows commands to {guild.name}")
+            except Exception as e:
+                print(f"❌ Failed to sync Workflows commands to {guild.name}: {e}")
         
-        # List all commands from this cog for debugging
-        commands = [c.name for c in cog.get_app_commands()]
-        print(f"🔄 Successfully loaded {len(commands)} workflow commands: {', '.join(commands)}")
+        print(f"🔄 Successfully loaded Workflows cog with {len(cog.get_app_commands())} commands")
     except Exception as e:
         print(f"❌ Failed to load Workflows cog: {e}")
         traceback.print_exc()

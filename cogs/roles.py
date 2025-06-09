@@ -162,7 +162,7 @@ class Roles(commands.Cog):
         embed.add_field(name="Joined Server", value=joined_at, inline=True)
         embed.add_field(name="Account Created", value=created_at, inline=True)
         
-        # Calculate account age - fix timezone issue
+        # Calculate account age
         now = datetime.now(timezone.utc)
         account_age = now - user.created_at
         years = account_age.days // 365
@@ -197,9 +197,13 @@ async def setup(bot):
     cog = Roles(bot)
     await bot.add_cog(cog)
     
-    # Ensure commands are added to the tree
-    for command in cog.get_app_commands():
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
+    # Sync commands to all guilds
+    for guild in bot.guilds:
+        try:
+            bot.tree.copy_global_to(guild=guild)
+            await bot.tree.sync(guild=guild)
+            print(f"✅ Synced Roles commands to {guild.name}")
+        except Exception as e:
+            print(f"❌ Failed to sync Roles commands to {guild.name}: {e}")
     
     print(f"👥 Successfully loaded Roles cog with {len(cog.get_app_commands())} commands")

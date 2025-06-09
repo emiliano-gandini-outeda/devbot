@@ -147,11 +147,11 @@ class HelpDropdown(discord.ui.Select):
         )
         
         user_commands = [
-            "`/ticket-create <title> <description> [priority]` - Create a new support ticket",
-            "`/ticket-join` - Request to join current ticket",
-            "`/ticket-private` - Make ticket private (assigned users only)",
-            "`/ticket-public` - Make ticket public (everyone can read)",
-            "`/list-tickets [status] [user]` - List tickets"
+            "`/ticket create <title> <description> [priority]` - Create a new support ticket",
+            "`/ticket join` - Request to join current ticket",
+            "`/ticket private` - Make ticket private (assigned users only)",
+            "`/ticket public` - Make ticket public (everyone can read)",
+            "`/ticket list [status] [user]` - List tickets"
         ]
         
         embed.add_field(
@@ -163,7 +163,7 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             admin_commands = [
                 "`/ticket-system-setup <category> <transcript_channel>` - Setup ticket system",
-                "`/assign-ticket <ticket_id> <assignee>` - Assign ticket to user"
+                "`/ticket assign <ticket_id> <assignee>` - Assign ticket to user"
             ]
             
             embed.add_field(
@@ -246,10 +246,7 @@ class HelpDropdown(discord.ui.Select):
         commands = [
             "`/add-keyword <keyword>` - Add keyword to monitor",
             "`/remove-keyword <keyword>` - Remove keyword from monitoring",
-            "`/list-keywords` - List your monitored keywords",
-            "`/mute-thread` - Mute notifications from current thread",
-            "`/unmute-thread` - Unmute notifications from current thread",
-            "`/notification-settings` - View your notification settings"
+            "`/list-keywords` - List your monitored keywords"
         ]
         
         embed.add_field(
@@ -260,7 +257,7 @@ class HelpDropdown(discord.ui.Select):
         
         embed.add_field(
             name="How It Works",
-            value="• Get notified when your keywords are mentioned\n• Notifications sent via DM or channel mention\n• Mute specific threads to avoid spam",
+            value="• Get notified when your keywords are mentioned\n• Notifications sent via DM\n• Keywords are case-insensitive",
             inline=False
         )
         
@@ -275,18 +272,17 @@ class HelpDropdown(discord.ui.Select):
         
         google_commands = [
             "`/google-connect` - Connect your Google account",
-            "`/calendar-events [count]` - Show upcoming calendar events",
-            "`/create-event <title> <date> <time> [duration]` - Create calendar event"
+            "`/calendar-events [count]` - Show upcoming calendar events"
         ]
         
         notion_commands = [
             "`/notion-databases` - List your Notion databases",
-            "`/create-note <title> <content> [database_id]` - Create Notion note"
+            "`/create-note <title> <content>` - Create Notion note"
         ]
         
         trello_commands = [
             "`/trello-boards` - List your Trello boards",
-            "`/create-task <board_id> <list_name> <task_name> [description]` - Create Trello task"
+            "`/create-task <board_id> <list_name> <task_name>` - Create Trello task"
         ]
         
         embed.add_field(name="📅 Google Calendar", value="\n".join(google_commands), inline=False)
@@ -332,7 +328,8 @@ class HelpDropdown(discord.ui.Select):
         
         commands = [
             "`/user-permissions [user]` - Show user permissions",
-            "`/role-info <role>` - Show role information"
+            "`/role-info <role>` - Show role information",
+            "`/see-user [user]` - View user information"
         ]
         
         embed.add_field(
@@ -365,7 +362,8 @@ class HelpDropdown(discord.ui.Select):
         commands = [
             "`/export-data` - Request export of your personal data",
             "`/delete-data` - Request deletion of your personal data",
-            "`/privacy-policy` - View the bot's privacy policy"
+            "`/privacy-policy` - View the bot's privacy policy",
+            "`/get-data` - View summary of your stored data"
         ]
         
         embed.add_field(
@@ -393,12 +391,14 @@ class HelpDropdown(discord.ui.Select):
             "`/add-admin-role <role>` - Add role to admin list",
             "`/remove-admin-role <role>` - Remove role from admin list",
             "`/list-admin-roles` - List all admin roles",
+            "`/admin-panel` - View bot status and configuration",
             "`/ticket-system-setup <category> <transcript_channel>` - Setup tickets",
             "`/server-logs-setup <log_channel>` - Setup server logging",
-            "`/assign-ticket <ticket_id> <assignee>` - Assign ticket",
+            "`/ticket assign <ticket_id> <assignee>` - Assign ticket",
             "`/archive-thread` - Archive current thread",
             "`/assign-role <user> <role>` - Assign role to user",
-            "`/remove-role <user> <role>` - Remove role from user"
+            "`/remove-role <user> <role>` - Remove role from user",
+            "`/get-data <user>` - Get user data (Admin only)"
         ]
         
         embed.add_field(
@@ -528,7 +528,7 @@ class Help(commands.Cog):
         
         embed.add_field(
             name="🚀 Popular Commands",
-            value="• `/ticket-create` - Get support\n"
+            value="• `/ticket create` - Get support\n"
                   "• `/remind` - Set reminders\n"
                   "• `/summarize` - AI summaries",
             inline=True
@@ -543,8 +543,13 @@ async def setup(bot):
     cog = Help(bot)
     await bot.add_cog(cog)
     
-    # Manually add command to the tree to ensure registration
-    if cog.help_command not in bot.tree.get_commands():
-        bot.tree.add_command(cog.help_command)
+    # Sync commands to all guilds
+    for guild in bot.guilds:
+        try:
+            bot.tree.copy_global_to(guild=guild)
+            await bot.tree.sync(guild=guild)
+            print(f"❓ Synced Help commands to {guild.name}")
+        except Exception as e:
+            print(f"❌ Failed to sync Help commands to {guild.name}: {e}")
     
     print(f"❓ Successfully loaded Help cog with 1 command")

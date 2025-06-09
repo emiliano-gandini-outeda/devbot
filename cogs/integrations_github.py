@@ -654,9 +654,21 @@ async def setup(bot):
     github_cog = GitHubIntegrations(bot)
     await bot.add_cog(github_cog)
     
-    # Ensure commands are added to the tree
-    for command in github_cog.__cog_app_commands__:
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
+    # Sync commands to all guilds
+    for guild in bot.guilds:
+        try:
+            # Copy global commands to guild
+            bot.tree.copy_global_to(guild=guild)
+            
+            # Add cog commands to guild
+            for command in github_cog.get_app_commands():
+                if command not in bot.tree.get_commands(guild=guild):
+                    bot.tree.add_command(command, guild=guild)
+            
+            # Sync to guild
+            await bot.tree.sync(guild=guild)
+            print(f"✅ Synced GitHub Integrations commands to {guild.name}")
+        except Exception as e:
+            print(f"❌ Failed to sync GitHub Integrations commands to {guild.name}: {e}")
     
     logger.info(f"🐙 Successfully loaded GitHub Integrations cog with {len(github_cog.get_app_commands())} commands")
