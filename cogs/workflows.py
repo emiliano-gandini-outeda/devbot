@@ -4,6 +4,7 @@ from discord import app_commands
 import json
 from utils.helpers import EmbedBuilder
 from config.constants import WorkflowStatus
+import traceback
 
 class Workflows(commands.Cog):
     """Automation workflows similar to Slack workflows"""
@@ -336,4 +337,12 @@ class Workflows(commands.Cog):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot):
-    await bot.add_cog(Workflows(bot))
+    try:
+        cog = Workflows(bot)
+        await bot.add_cog(cog)
+        # List all commands from this cog for debugging
+        commands = [c.name for c in cog.get_app_commands()]
+        print(f"🔄 Successfully loaded {len(commands)} workflow commands: {', '.join(commands)}")
+    except Exception as e:
+        print(f"❌ Failed to load Workflows cog: {e}")
+        traceback.print_exc()

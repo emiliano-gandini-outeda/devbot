@@ -65,7 +65,7 @@ class SlackBot(commands.Bot):
                 'cogs.integrations_google',
                 'cogs.integrations_notion',
                 'cogs.integrations_trello',
-                'cogs.integrations_github',  # New GitHub integration
+                'cogs.integrations_github',
                 'cogs.workflows',
                 'cogs.tickets',
                 'cogs.roles',
@@ -76,7 +76,7 @@ class SlackBot(commands.Bot):
                 'cogs.admin',
                 'cogs.help',
                 'cogs.logging',
-                'cogs.meetings'  # New meetings cog
+                'cogs.meetings'
             ]
 
             loaded_cogs = []
@@ -86,34 +86,52 @@ class SlackBot(commands.Bot):
                     loaded_cogs.append(cog)
                     logger.info(f"✅ Loaded cog: {cog}")
                 except Exception as e:
-                    logger.error(f"❌ Failed to load cog {cog}: {e}")
+                    logger.error(f"❌ Failed to load cog {cog}: {e}", exc_info=True)
 
             logger.info(f"Loaded {len(loaded_cogs)}/{len(cogs)} cogs successfully")
 
-            # Force sync slash commands
+            # Force sync slash commands with FULL_SYNC
             try:
-                logger.info("Syncing slash commands...")
-                synced = await self.tree.sync()
-                logger.info(f"✅ Synced {len(synced)} slash commands")
+                logger.info("Syncing slash commands globally...")
+                # Force a full sync to ensure all commands are registered
+                synced = await self.tree.sync(guild=None)  # None for global commands
+                logger.info(f"✅ Synced {len(synced)} global commands")
                 
                 # List all synced commands for debugging
                 for cmd in synced:
                     logger.info(f"  - /{cmd.name}: {cmd.description}")
-                    
+                
+                # Also sync to each guild the bot is in (for faster updating)
+                for guild in self.guilds:
+                    try:
+                        guild_synced = await self.tree.sync(guild=guild)
+                        logger.info(f"✅ Synced {len(guild_synced)} commands to guild: {guild.name}")
+                    except Exception as e:
+                        logger.error(f"Failed to sync commands to guild {guild.name}: {e}")
+                        
             except Exception as e:
-                logger.error(f"❌ Failed to sync commands: {e}")
+                logger.error(f"❌ Failed to sync commands: {e}", exc_info=True)
                 
         except Exception as e:
-            logger.error(f"Error in setup_hook: {e}")
+            logger.error(f"Error in setup_hook: {e}", exc_info=True)
     
     async def on_ready(self):
         logger.info(f'{self.user} has connected to Discord!')
         logger.info(f'Bot is in {len(self.guilds)} guilds')
         
         # List all loaded commands for debugging
+        all_commands = self.tree.get_commands()
+        logger.info(f"Total registered slash commands: {len(all_commands)}")
         logger.info("Loaded slash commands:")
-        for command in self.tree.get_commands():
+        for command in all_commands:
             logger.info(f"  - /{command.name}: {command.description}")
+            
+        # Check for specific commands that should be available
+        command_names = [cmd.name for cmd in all_commands]
+        logger.info(f"Command check - create-workflow: {'create-workflow' in command_names}")
+        logger.info(f"Command check - list-workflows: {'list-workflows' in command_names}")
+        logger.info(f"Command check - edit-reminder: {'edit-reminder' in command_names}")
+        logger.info(f"Command check - remind: {'remind' in command_names}")
         
         logger.info(f'Bot deployment successful! 🚀')
 
@@ -123,15 +141,32 @@ class SlackBot(commands.Bot):
     async def sync_commands(self, ctx):
         """Manually sync slash commands (Owner only)"""
         try:
+            await ctx.send("Starting command sync process...")
+            
+            # First sync globally
             synced = await self.tree.sync()
-            await ctx.send(f'Synced {len(synced)} commands.')
+            await ctx.send(f'Synced {len(synced)} global commands.')
+            
+            # Then sync to current guild for faster updates
+            guild_synced = await self.tree.sync(guild=ctx.guild)
+            await ctx.send(f'Synced {len(guild_synced)} commands to current guild.')
             
             # List synced commands
-            command_list = "\n".join([f"- /{cmd.name}" for cmd in synced])
-            if len(command_list) < 2000:
-                await ctx.send(f"\`\`\`\nSynced commands:\n{command_list}\n\`\`\`")
+            command_list = "\n".join([f"- /{cmd.name}" for cmd in guild_synced])
+            if len(command_list) < 1900:  # Stay under Discord's limit with buffer
+                await ctx.send(f"\`\`\`\nSynced commands to {ctx.guild.name}:\n{command_list}\n\`\`\`")
+                
+            # Check which commands are registered in the bot's command tree
+            all_commands = self.tree.get_commands()
+            all_cmd_list = "\n".join([f"- /{cmd.name}" for cmd in all_commands])
+            if len(all_cmd_list) < 1900:
+                await ctx.send(f"\`\`\`\nAll registered commands:\n{all_cmd_list}\n\`\`\`")
+            else:
+                await ctx.send(f"Total registered commands: {len(all_commands)}")
+                
         except Exception as e:
             await ctx.send(f'Failed to sync commands: {e}')
+            logger.error("Command sync failed", exc_info=True)
     
     async def on_error(self, event, *args, **kwargs):
         logger.error(f'An error occurred in {event}', exc_info=True)
