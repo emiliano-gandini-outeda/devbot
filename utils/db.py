@@ -64,6 +64,26 @@ class DatabaseManager:
     
     async def _create_postgresql_tables(self):
         """Create tables for PostgreSQL (Railway)"""
+        
+        # First check if tables already exist
+        try:
+            existing_tables = await self.connection.fetch(
+                "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+            )
+            existing_table_names = [row['table_name'] for row in existing_tables]
+            logger.info(f"Found {len(existing_table_names)} existing tables: {', '.join(existing_table_names)}")
+            
+            # If we have most tables, skip creation
+            required_tables = ['users', 'admin_roles', 'tickets', 'reminders', 'github_tracked_repos', 'github_subscriptions']
+            existing_required = [table for table in required_tables if table in existing_table_names]
+            
+            if len(existing_required) >= len(required_tables) - 1:  # Allow 1 missing table
+                logger.info("✅ Most required tables already exist, skipping table creation")
+                return
+                
+        except Exception as e:
+            logger.warning(f"Could not check existing tables: {e}, proceeding with creation")
+        
         # Create tables in smaller batches to avoid timeouts
         essential_tables = [
             # Users table
@@ -424,8 +444,7 @@ class DatabaseManager:
                 attendees TEXT DEFAULT '[]',
                 status TEXT DEFAULT 'scheduled',
                 meeting_link TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
             

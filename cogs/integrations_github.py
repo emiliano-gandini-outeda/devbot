@@ -8,6 +8,9 @@ from utils.helpers import EmbedBuilder
 import asyncio
 from typing import List
 from discord.ui import Select, View
+import logging
+
+logger = logging.getLogger(__name__)
 
 class GitHubIntegrations(commands.Cog):
     """GitHub repository tracking and integration"""
@@ -650,4 +653,19 @@ class RepoSelect(Select):
 async def setup(bot):
     github_cog = GitHubIntegrations(bot)
     await bot.add_cog(github_cog)
-    print(f"🐙 Successfully loaded GitHub Integrations cog with {len(github_cog.get_app_commands())} commands")
+    
+    # Explicitly register commands to the tree
+    commands_to_register = [
+        github_cog.track_repo,
+        github_cog.untrack_repo,
+        github_cog.list_repos,
+        github_cog.subscribe_repo
+    ]
+    
+    for command in commands_to_register:
+        if command not in bot.tree.get_commands():
+            bot.tree.add_command(command)
+            logger.info(f"Registered GitHub command: {command.name}")
+    
+    logger.info(f"🐙 Successfully loaded GitHub Integrations cog with {len(github_cog.get_app_commands())} commands")
+    logger.info(f"GitHub commands registered: {[cmd.name for cmd in commands_to_register]}")
