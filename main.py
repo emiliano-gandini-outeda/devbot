@@ -45,6 +45,7 @@ class SlackBot(commands.Bot):
         self.logging_manager = None
         self.workflow_manager = None
         self._ready_fired = False
+        self._synced = False  # Track if we've already synced
     
     async def setup_hook(self):
         """Setup database and load cogs"""
@@ -115,11 +116,14 @@ class SlackBot(commands.Bot):
         logger.info(f'{self.user} has connected to Discord!')
         logger.info(f'Bot is in {len(self.guilds)} guilds')
         
-        # Wait a moment for all cogs to fully initialize
-        await asyncio.sleep(2)
-        
-        # Sync commands to guilds asynchronously (non-blocking)
-        asyncio.create_task(self.sync_commands_to_guilds())
+        # Only sync once when the bot first starts
+        if not self._synced:
+            # Wait a moment for all cogs to fully initialize
+            await asyncio.sleep(2)
+            
+            # Sync commands once
+            await self.sync_commands_once()
+            self._synced = True
         
         logger.info(f'Bot deployment successful! 🚄')
 
@@ -153,132 +157,54 @@ class SlackBot(commands.Bot):
         if self.workflow_manager:
             await self.workflow_manager.check_thread_create_triggers(thread)
 
-    async def sync_commands_to_guilds(self):
-        """Sync commands to all guilds asynchronously"""
+    async def sync_commands_once(self):
+        """Sync commands only once to avoid duplicates"""
         try:
-            logger.info("Starting command sync to guilds...")
+            logger.info("Starting one-time command sync...")
             
-            # First, ensure all cog commands are properly added to the tree
-            await self.register_cog_commands()
-            
-            # Get the current command count
+            # Get all commands from the tree
             all_commands = self.tree.get_commands()
+            logger.info(f"Found {len(all_commands)} commands to sync")
+            
             if not all_commands:
-                logger.warning("No commands in command tree to sync! Attempting to force register commands...")
-                
-                # Force register commands from all cogs
-                for cog_name, cog in self.cogs.items():
-                    if hasattr(cog, 'get_commands'):
-                        for command in cog.get_commands():
-                            if isinstance(command, app_commands.Command):
-                                self.tree.add_command(command)
-                                logger.info(f"Force added command /{command.name} from {cog_name}")
-                
-                # Check again
-                all_commands = self.tree.get_commands()
-                if not all_commands:
-                    logger.error("Still no commands to sync after force registration!")
-                    return
-                else:
-                    logger.info(f"Force registered {len(all_commands)} commands")
+                logger.warning("No commands found to sync!")
+                return
             
-            synced_count = 0
-            failed_guilds = []
-            
-            # IMPORTANT: Only sync globally OR to guilds, not both
-            # For development, sync to specific guilds for faster updates
-            # For production, use global sync
-            
-            if len(self.guilds) <= 5:  # Development mode - sync to specific guilds
-                logger.info("Development mode: Syncing to specific guilds")
-                
-                for guild in self.guilds:
-                    try:
-                        # Clear guild commands first to avoid conflicts
-                        self.tree.clear_commands(guild=guild)
-                        
-                        # Copy all global commands to this guild
-                        for command in all_commands:
-                            self.tree.add_command(command, guild=guild)
-                        
-                        # Sync to guild
-                        synced = await self.tree.sync(guild=guild)
-                        synced_count += len(synced)
-                        logger.info(f"✅ Synced {len(synced)} commands to guild: {guild.name} ({guild.id})")
-                        
-                        # Delay to avoid rate limits
-                        await asyncio.sleep(1.0)
-                        
-                    except Exception as e:
-                        logger.error(f"❌ Failed to sync commands to guild {guild.name}: {e}")
-                        failed_guilds.append(guild.name)
-                        
-            else:  # Production mode - sync globally
+            # Choose sync strategy based on environment
+            if len(self.guilds) <= 3:  # Development mode
+                logger.info("Development mode: Syncing globally for faster updates")
+                try:
+                    synced = await self.tree.sync()
+                    logger.info(f"✅ Synced {len(synced)} commands globally")
+                except Exception as e:
+                    logger.error(f"❌ Failed to sync globally: {e}")
+            else:  # Production mode
                 logger.info("Production mode: Syncing globally")
                 try:
-                    global_synced = await self.tree.sync()
-                    logger.info(f"✅ Synced {len(global_synced)} commands globally")
-                    synced_count = len(global_synced)
+                    synced = await self.tree.sync()
+                    logger.info(f"✅ Synced {len(synced)} commands globally")
                 except Exception as e:
-                    logger.error(f"❌ Failed to sync commands globally: {e}")
+                    logger.error(f"❌ Failed to sync globally: {e}")
             
-            logger.info(f"✅ Command sync completed! Total: {synced_count} commands")
-            if failed_guilds:
-                logger.warning(f"Failed to sync to {len(failed_guilds)} guilds: {', '.join(failed_guilds)}")
-                
+            # List synced commands for debugging
+            command_names = [cmd.name for cmd in all_commands]
+            logger.info(f"Synced commands: {', '.join(sorted(command_names))}")
+            
         except Exception as e:
             logger.error(f"❌ Failed to sync commands: {e}", exc_info=True)
 
-    async def register_cog_commands(self):
-        """Ensure all cog commands are properly registered to the command tree"""
-        try:
-            logger.info("Registering cog commands to command tree...")
-            
-            # Clear ALL existing commands to avoid duplicates
-            self.tree.clear_commands(guild=None)
-            
-            # Collect all unique commands from cogs
-            unique_commands = {}
-            
-            for cog_name, cog in self.cogs.items():
-                logger.info(f"Processing cog: {cog_name}")
-                
-                # Get commands from the cog's __cog_app_commands__ attribute
-                if hasattr(cog, '__cog_app_commands__'):
-                    for command in cog.__cog_app_commands__:
-                        if command.name not in unique_commands:
-                            unique_commands[command.name] = command
-                            logger.info(f"Found command /{command.name} from {cog_name}")
-                        else:
-                            logger.warning(f"Duplicate command /{command.name} found in {cog_name}, skipping")
-            
-            # Add all unique commands to the tree
-            for command_name, command in unique_commands.items():
-                self.tree.add_command(command)
-                logger.info(f"Added command /{command_name} to command tree")
-            
-            total_commands = len(self.tree.get_commands())
-            logger.info(f"✅ Registered {total_commands} unique commands to command tree")
-            
-            # List all commands for debugging
-            command_names = list(unique_commands.keys())
-            logger.info(f"Command tree contains: {', '.join(sorted(command_names)) if command_names else 'No commands'}")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to register cog commands: {e}", exc_info=True)
-
-    # Add a sync command for debugging
+    # Manual sync commands for debugging (owner only)
     @commands.command(name='sync')
     @commands.is_owner()
     async def sync_commands(self, ctx):
         """Manually sync slash commands to current guild (Owner only)"""
         try:
-            await ctx.send("Starting guild command sync process...")
+            await ctx.send("Starting manual guild sync...")
             
-            # Clear guild commands first
+            # Clear existing guild commands first
             self.tree.clear_commands(guild=ctx.guild)
             
-            # Add all global commands to this guild
+            # Copy global commands to guild
             global_commands = self.tree.get_commands()
             for command in global_commands:
                 self.tree.add_command(command, guild=ctx.guild)
@@ -287,95 +213,90 @@ class SlackBot(commands.Bot):
             synced = await self.tree.sync(guild=ctx.guild)
             await ctx.send(f'✅ Synced {len(synced)} commands to {ctx.guild.name}.')
             
-            # List synced commands
-            command_list = "\n".join([f"- /{cmd.name}" for cmd in synced])
-            if command_list and len(command_list) < 1900:
-                await ctx.send(f"\`\`\`\nSynced commands:\n{command_list}\n\`\`\`")
-            elif not command_list:
-                await ctx.send("No commands were synced.")
-            
         except Exception as e:
             await ctx.send(f'❌ Failed to sync commands: {e}')
-            logger.error("Command sync failed", exc_info=True)
+            logger.error("Manual sync failed", exc_info=True)
 
     @commands.command(name='sync_global')
     @commands.is_owner()
     async def sync_global(self, ctx):
         """Manually sync slash commands globally (Owner only)"""
         try:
-            await ctx.send("Starting global command sync...")
-            
-            # Sync globally
+            await ctx.send("Starting manual global sync...")
             synced = await self.tree.sync()
             await ctx.send(f'✅ Synced {len(synced)} commands globally.')
-            
-            # List synced commands
-            command_list = "\n".join([f"- /{cmd.name}" for cmd in synced])
-            if command_list and len(command_list) < 1900:
-                await ctx.send(f"\`\`\`\nSynced commands:\n{command_list}\n\`\`\`")
-            
         except Exception as e:
             await ctx.send(f'❌ Failed to sync commands globally: {e}')
             logger.error("Global sync failed", exc_info=True)
 
-    @commands.command(name='clear_commands')
+    @commands.command(name='clear_guild')
     @commands.is_owner()
-    async def clear_commands(self, ctx):
-        """Clear all commands from current guild (Owner only)"""
+    async def clear_guild_commands(self, ctx):
+        """Clear all guild-specific commands (Owner only)"""
         try:
             await ctx.send("Clearing guild commands...")
-            
-            # Clear guild commands
             self.tree.clear_commands(guild=ctx.guild)
             synced = await self.tree.sync(guild=ctx.guild)
-            
-            await ctx.send(f'✅ Cleared commands from {ctx.guild.name}. {len(synced)} commands remain.')
-            
+            await ctx.send(f'✅ Cleared guild commands. {len(synced)} commands remain.')
         except Exception as e:
-            await ctx.send(f'❌ Failed to clear commands: {e}')
-            logger.error("Clear commands failed", exc_info=True)
+            await ctx.send(f'❌ Failed to clear guild commands: {e}')
+
+    @commands.command(name='clear_global')
+    @commands.is_owner()
+    async def clear_global_commands(self, ctx):
+        """Clear all global commands (Owner only)"""
+        try:
+            await ctx.send("⚠️ Clearing ALL global commands...")
+            self.tree.clear_commands(guild=None)
+            synced = await self.tree.sync()
+            await ctx.send(f'✅ Cleared all global commands. {len(synced)} commands remain.')
+        except Exception as e:
+            await ctx.send(f'❌ Failed to clear global commands: {e}')
 
     @commands.command(name='list_commands')
     @commands.is_owner()
     async def list_commands_cmd(self, ctx):
-        """List all commands and their registration status"""
+        """List all registered commands"""
         all_commands = self.tree.get_commands()
         
         if not all_commands:
-            await ctx.send("No commands are currently registered in the command tree.")
+            await ctx.send("No commands are currently registered.")
             return
-            
+        
         # Group by cog
         cog_commands = {}
         for cmd in all_commands:
-            cog_name = getattr(cmd, "_cog_name", "Unknown")
+            cog_name = getattr(cmd.callback, '__qualname__', 'Unknown').split('.')[0]
             if cog_name not in cog_commands:
                 cog_commands[cog_name] = []
-            cog_commands[cog_name].append(cmd)
+            cog_commands[cog_name].append(cmd.name)
         
-        for cog_name, cmds in cog_commands.items():
-            commands_text = "\n".join([f"- /{cmd.name}" for cmd in cmds])
-            await ctx.send(f"**{cog_name} Commands**:\n\`\`\`\n{commands_text}\n\`\`\`")
+        message = f"**Total Commands: {len(all_commands)}**\n\n"
+        for cog_name, cmd_names in cog_commands.items():
+            message += f"**{cog_name}:** {', '.join(sorted(cmd_names))}\n"
         
-        await ctx.send(f"Total commands: {len(all_commands)}")
+        if len(message) > 2000:
+            # Split into multiple messages if too long
+            parts = message.split('\n')
+            current = ""
+            for part in parts:
+                if len(current + part + '\n') > 1900:
+                    await ctx.send(current)
+                    current = part + '\n'
+                else:
+                    current += part + '\n'
+            if current:
+                await ctx.send(current)
+        else:
+            await ctx.send(message)
     
     async def on_error(self, event, *args, **kwargs):
         logger.error(f'An error occurred in {event}', exc_info=True)
 
     async def on_guild_join(self, guild):
-        """Sync commands when bot joins a new guild"""
-        try:
-            logger.info(f"Bot joined new guild: {guild.name} ({guild.id})")
-            
-            # Copy all global commands to this guild
-            global_commands = self.tree.get_commands()
-            for command in global_commands:
-                self.tree.add_command(command, guild=guild)
-            
-            synced = await self.tree.sync(guild=guild)
-            logger.info(f"✅ Synced {len(synced)} commands to new guild: {guild.name}")
-        except Exception as e:
-            logger.error(f"❌ Failed to sync commands to new guild {guild.name}: {e}")
+        """Don't auto-sync when joining new guilds to avoid duplicates"""
+        logger.info(f"Bot joined new guild: {guild.name} ({guild.id})")
+        logger.info("Use manual sync commands if needed for this guild")
 
     async def close(self):
         """Clean shutdown"""
