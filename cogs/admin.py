@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder
+from datetime import datetime
 
 class Admin(commands.Cog):
     """Admin management commands"""
@@ -137,6 +138,213 @@ class Admin(commands.Cog):
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to setup ticket system: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="bot-status", description="Check bot status and loaded features (Admin only)")
+    async def bot_status(self, interaction: discord.Interaction):
+        if not self.bot.admin_manager.is_admin(interaction.user):
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can check bot status")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        embed = discord.Embed(
+            title="🤖 Bot Status",
+            color=0x5865F2
+        )
+        
+        # Loaded cogs
+        loaded_cogs = list(self.bot.cogs.keys())
+        embed.add_field(
+            name=f"📦 Loaded Cogs ({len(loaded_cogs)})",
+            value="\n".join([f"✅ {cog}" for cog in loaded_cogs]) if loaded_cogs else "None",
+            inline=False
+        )
+        
+        # Slash commands
+        commands = self.bot.tree.get_commands()
+        embed.add_field(
+            name=f"⚡ Slash Commands ({len(commands)})",
+            value=f"Total registered: {len(commands)}\nUse `/help` to see all commands",
+            inline=True
+        )
+        
+        # Database status
+        db_status = "✅ Connected" if self.bot.db and self.bot.db.connection else "❌ Disconnected"
+        embed.add_field(
+            name="🗄️ Database",
+            value=db_status,
+            inline=True
+        )
+        
+        # Managers status
+        managers = {
+            "Admin Manager": "✅" if self.bot.admin_manager else "❌",
+            "Ticket Manager": "✅" if self.bot.ticket_manager else "❌",
+            "Logging Manager": "✅" if self.bot.logging_manager else "❌",
+            "Workflow Manager": "✅" if self.bot.workflow_manager else "❌"
+        }
+        
+        embed.add_field(
+            name="🔧 Managers",
+            value="\n".join([f"{status} {name}" for name, status in managers.items()]),
+            inline=False
+        )
+        
+        # Guild configs
+        guild_id = str(interaction.guild.id)
+        configs = {
+            "Ticket System": "✅" if self.bot.ticket_manager.get_ticket_config(guild_id) else "❌",
+            "Logging System": "✅" if self.bot.logging_manager.get_log_config(guild_id) else "❌",
+            "Admin Roles": "✅" if self.bot.admin_manager.get_admin_roles(guild_id) else "❌"
+        }
+        
+        embed.add_field(
+            name="⚙️ Server Configuration",
+            value="\n".join([f"{status} {name}" for name, status in configs.items()]),
+            inline=False
+        )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="get-data", description="Get all data for a user (Admin only)")
+    @app_commands.describe(user="User to get data for")
+    async def get_data(self, interaction: discord.Interaction, user: discord.Member):
+        if not self.bot.admin_manager.is_admin(interaction.user):
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can use this command")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            user_id = str(user.id)
+            data = {}
+            
+            # Get user profile data
+            data["profile"] = {
+                "discord_id": user_id,
+                "username": user.name,
+                "display_name": user.display_name,
+                "joined_at": user.joined_at.isoformat() if user.joined_at else None,
+                "created_at": user.created_at.isoformat(),
+                "roles": [role.name for role in user.roles[1:]],  # Skip @everyone
+                "avatar_url": str(user.display_avatar.url)
+            }
+            
+            # Get tickets created by user
+            if self.bot.db.is_postgresql:
+                tickets = await self.bot.db.connection.fetch(
+                    "SELECT * FROM tickets WHERE user_id = $1 AND guild_id = $2", 
+                    user_id, str(interaction.guild.id)
+                )
+                
+                data["tickets"] = []
+                for ticket in tickets:
+                    data["tickets"].append({
+                        "ticket_id": ticket['ticket_id'],
+                        "title": ticket['title'],
+                        "description": ticket['description'],
+                        "status": ticket['status'],
+                        "priority": ticket['priority'],
+                        "created_at": str(ticket['created_at'])
+                    })
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM tickets WHERE user_id = ? AND guild_id = ?", 
+                    (user_id, str(interaction.guild.id))
+                )
+                tickets = await cursor.fetchall()
+                
+                data["tickets"] = []
+                for ticket in tickets:
+                    data["tickets"].append({
+                        "ticket_id": ticket[1],
+                        "title": ticket[5],
+                        "description": ticket[6],
+                        "status": ticket[7],
+                        "priority": ticket[8],
+                        "created_at": ticket[10]
+                    })
+            
+            # Get reminders
+            if self.bot.db.is_postgresql:
+                reminders = await self.bot.db.connection.fetch(
+                    "SELECT * FROM reminders WHERE user_id = $1", user_id
+                )
+                
+                data["reminders"] = []
+                for reminder in reminders:
+                    data["reminders"].append({
+                        "message": reminder['message'],
+                        "remind_at": str(reminder['remind_at']),
+                        "type": reminder['type'],
+                        "created_at": str(reminder['created_at'])
+                    })
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM reminders WHERE user_id = ?", (user_id,)
+                )
+                reminders = await cursor.fetchall()
+                
+                data["reminders"] = []
+                for reminder in reminders:
+                    data["reminders"].append({
+                        "message": reminder[4],
+                        "remind_at": reminder[5],
+                        "type": reminder[6],
+                        "created_at": reminder[8]
+                    })
+            
+            # Get workflows created by user
+            if self.bot.db.is_postgresql:
+                workflows = await self.bot.db.connection.fetch(
+                    "SELECT * FROM workflows WHERE creator_id = $1 AND guild_id = $2", 
+                    user_id, str(interaction.guild.id)
+                )
+                
+                data["workflows"] = []
+                for workflow in workflows:
+                    data["workflows"].append({
+                        "name": workflow['name'],
+                        "trigger_type": workflow['trigger_type'],
+                        "status": workflow['status'],
+                        "created_at": str(workflow['created_at'])
+                    })
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM workflows WHERE creator_id = ? AND guild_id = ?", 
+                    (user_id, str(interaction.guild.id))
+                )
+                workflows = await cursor.fetchall()
+                
+                data["workflows"] = []
+                for workflow in workflows:
+                    data["workflows"].append({
+                        "name": workflow[1],
+                        "trigger_type": workflow[4],
+                        "status": workflow[7],
+                        "created_at": workflow[8]
+                    })
+            
+            # Create and send file with data
+            import io
+            import json
+            
+            file_content = json.dumps(data, indent=2)
+            file = discord.File(
+                io.BytesIO(file_content.encode('utf-8')),
+                filename=f"user_data_{user.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            )
+            
+            embed = EmbedBuilder.success(
+                "User Data Retrieved",
+                f"Data for {user.mention} has been retrieved and is attached as a JSON file."
+            )
+            
+            await interaction.followup.send(embed=embed, file=file, ephemeral=True)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to retrieve user data: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(Admin(bot))

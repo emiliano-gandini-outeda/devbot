@@ -65,6 +65,7 @@ class SlackBot(commands.Bot):
                 'cogs.integrations_google',
                 'cogs.integrations_notion',
                 'cogs.integrations_trello',
+                'cogs.integrations_github',  # New GitHub integration
                 'cogs.workflows',
                 'cogs.tickets',
                 'cogs.roles',
@@ -74,7 +75,8 @@ class SlackBot(commands.Bot):
                 'cogs.intelligence',
                 'cogs.admin',
                 'cogs.help',
-                'cogs.logging'
+                'cogs.logging',
+                'cogs.meetings'  # New meetings cog
             ]
 
             loaded_cogs = []

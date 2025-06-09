@@ -73,6 +73,24 @@ class TimeParser:
                 total_seconds += amount * 86400
         
         return timedelta(seconds=total_seconds)
+    
+    @staticmethod
+    def format_timedelta(td):
+        """Format timedelta to human readable string"""
+        total_seconds = int(td.total_seconds())
+        days = total_seconds // 86400
+        hours = (total_seconds % 86400) // 3600
+        minutes = (total_seconds % 3600) // 60
+        
+        parts = []
+        if days > 0:
+            parts.append(f"{days}d")
+        if hours > 0:
+            parts.append(f"{hours}h")
+        if minutes > 0:
+            parts.append(f"{minutes}m")
+        
+        return " ".join(parts) if parts else "< 1m"
 
 class RailwayUtils:
     @staticmethod

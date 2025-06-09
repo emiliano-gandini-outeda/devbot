@@ -271,15 +271,49 @@ class Tickets(commands.Cog):
         await interaction.response.send_message(embed=embed)
     
     @app_commands.command(name="ticket-join", description="Request to join a ticket")
-    async def ticket_join(self, interaction: discord.Interaction):
-        # Check if this is a ticket channel
-        if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
-            embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels")
+    @app_commands.describe(ticket_id="ID of the ticket to join (optional, not needed if in ticket channel)")
+    async def ticket_join(self, interaction: discord.Interaction, ticket_id: str = None):
+        # If no ticket ID provided, check if we're in a ticket channel
+        if not ticket_id:
+            if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
+                embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels or with a ticket ID")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            # Extract ticket ID from channel topic
+            ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket:", "").strip()
+        
+        # Get ticket information
+        if self.bot.db.is_postgresql:
+            ticket = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+            )
+        else:
+            cursor = await self.bot.db.connection.execute(
+                "SELECT * FROM tickets WHERE ticket_id = ?", (ticket_id,)
+            )
+            ticket = await cursor.fetchone()
+        
+        if not ticket:
+            embed = EmbedBuilder.error("Not Found", f"Ticket with ID {ticket_id} not found")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Get ticket channel
+        channel_id = ticket['channel_id'] if self.bot.db.is_postgresql else ticket[9]
+        if not channel_id:
+            embed = EmbedBuilder.error("Channel Not Found", "The ticket channel no longer exists")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        channel = interaction.guild.get_channel(int(channel_id))
+        if not channel:
+            embed = EmbedBuilder.error("Channel Not Found", "The ticket channel no longer exists")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
         # Check if user already has access
-        permissions = interaction.channel.permissions_for(interaction.user)
+        permissions = channel.permissions_for(interaction.user)
         if permissions.send_messages:
             embed = EmbedBuilder.warning("Already Joined", "You already have access to this ticket")
             await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -295,9 +329,17 @@ class Tickets(commands.Cog):
         embed.add_field(name="Requested", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         
-        view = TicketJoinRequestView(self.bot, interaction.user, interaction.channel)
+        view = TicketJoinRequestView(self.bot, interaction.user, channel)
         
-        await interaction.response.send_message(embed=embed, view=view)
+        # Send request to ticket channel
+        await channel.send(embed=embed, view=view)
+        
+        # Notify user
+        response_embed = EmbedBuilder.success(
+            "Request Sent",
+            f"Your request to join ticket {ticket_id} has been sent. You'll be notified if it's accepted."
+        )
+        await interaction.response.send_message(embed=response_embed, ephemeral=True)
     
     @app_commands.command(name="list-tickets", description="List all tickets")
     @app_commands.describe(
