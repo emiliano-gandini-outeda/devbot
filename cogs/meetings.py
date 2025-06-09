@@ -370,9 +370,16 @@ class Meetings(commands.Cog):
         view = MeetingView(self.bot, meeting_id)
         self.bot.meeting_manager.active_views[meeting_id] = view
         
-        # Send announcement with mention
-        mention = "@here" if mention_type == "here" else "@everyone"
-        await interaction.response.send_message(f"{mention} **Server Meeting Announcement**", embed=embed, view=view)
+        # Send announcement with proper mention
+        mention_text = "@here" if mention_type == "here" else "@everyone"
+        allowed_mentions = discord.AllowedMentions(everyone=(mention_type == "everyone"), here=(mention_type == "here"))
+
+        await interaction.response.send_message(
+            f"{mention_text} **Server Meeting Announcement**", 
+            embed=embed, 
+            view=view,
+            allowed_mentions=allowed_mentions
+        )
     
     @app_commands.command(name="join-meeting", description="Join a scheduled meeting")
     @app_commands.describe(meeting_id="ID of the meeting to join")
