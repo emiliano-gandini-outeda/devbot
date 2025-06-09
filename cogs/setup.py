@@ -143,7 +143,7 @@ class Setup(commands.Cog):
     
     @app_commands.command(name="setup-meetings", description="Setup meeting system (Admin only)")
     @app_commands.describe(
-        announcement_channel="Channel where meetings will be announced",
+        announcement_channel="Channel where ALL meetings will be automatically announced",
         voice_channel="Default voice channel for meetings"
     )
     async def setup_meetings(self, interaction: discord.Interaction, announcement_channel: discord.TextChannel, voice_channel: discord.VoiceChannel):
@@ -183,7 +183,8 @@ class Setup(commands.Cog):
                 f"Meeting system has been configured!\n\n"
                 f"**Announcement Channel:** {announcement_channel.mention}\n"
                 f"**Default Voice Channel:** {voice_channel.mention}\n\n"
-                f"Users can now create meetings using `/create-meeting`\n"
+                f"✅ **All meetings will now be automatically announced in {announcement_channel.mention}**\n\n"
+                f"Users can create meetings using `/create-meeting`\n"
                 f"Admins can create server-wide meetings using `/admin-meeting`"
             )
             

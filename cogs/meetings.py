@@ -310,33 +310,69 @@ class Meetings(commands.Cog):
                 str(voice_channel.id)
             )
             
+            # Get meeting config to check for announcement channel
+            announcement_channel = None
+            try:
+                if self.bot.db.is_postgresql:
+                    config_row = await self.bot.db.connection.fetchrow(
+                        "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                        str(interaction.guild.id), 'meeting_config'
+                    )
+                    if config_row:
+                        config = json.loads(config_row['data_content'])
+                        announcement_channel = interaction.guild.get_channel(int(config['announcement_channel_id']))
+                else:
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT data_content FROM user_data WHERE user_id = ? AND data_type = ?",
+                        (str(interaction.guild.id), 'meeting_config')
+                    )
+                    row = await cursor.fetchone()
+                    if row:
+                        config = json.loads(row[0])
+                        announcement_channel = interaction.guild.get_channel(int(config['announcement_channel_id']))
+            except Exception as e:
+                print(f"Error getting meeting config: {e}")
+
             # Create meeting announcement embed
             embed = discord.Embed(
-                title=f"📅 Meeting Scheduled: {name}",
+                title=f"📅 New Meeting: {name}",
                 description=description,
                 color=0x5865F2
             )
-            
+
             embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
             embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
             embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
-            
+
             # Format start time
             time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
             time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
             embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
-            
+
             embed.add_field(
                 name="How to Join",
                 value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
                 inline=False
             )
-            
+
             # Create view with join button
             view = MeetingView(self.bot, meeting_id)
             self.bot.meeting_manager.active_views[meeting_id] = view
-            
-            await interaction.followup.send(embed=embed, view=view)
+
+            # Send to announcement channel if configured, otherwise to current channel
+            if announcement_channel:
+                await announcement_channel.send(embed=embed, view=view)
+                # Confirm to user
+                confirm_embed = EmbedBuilder.success(
+                    "Meeting Created",
+                    f"Meeting **{name}** has been created and announced in {announcement_channel.mention}!\n\n"
+                    f"**Meeting ID:** {meeting_id}\n"
+                    f"**Start Time:** {time_str} (in {time_until})"
+                )
+                await interaction.followup.send(embed=confirm_embed, ephemeral=True)
+            else:
+                # No announcement channel configured, send to current channel
+                await interaction.followup.send(embed=embed, view=view)
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to create meeting: {str(e)}")
@@ -386,45 +422,86 @@ class Meetings(commands.Cog):
                 str(voice_channel.id)
             )
             
+            # Get meeting config to check for announcement channel
+            announcement_channel = None
+            try:
+                if self.bot.db.is_postgresql:
+                    config_row = await self.bot.db.connection.fetchrow(
+                        "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                        str(interaction.guild.id), 'meeting_config'
+                    )
+                    if config_row:
+                        config = json.loads(config_row['data_content'])
+                        announcement_channel = interaction.guild.get_channel(int(config['announcement_channel_id']))
+                else:
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT data_content FROM user_data WHERE user_id = ? AND data_type = ?",
+                        (str(interaction.guild.id), 'meeting_config')
+                    )
+                    row = await cursor.fetchone()
+                    if row:
+                        config = json.loads(row[0])
+                        announcement_channel = interaction.guild.get_channel(int(config['announcement_channel_id']))
+            except Exception as e:
+                print(f"Error getting meeting config: {e}")
+
             # Create meeting announcement embed
             embed = discord.Embed(
                 title=f"📅 Server Meeting: {name}",
                 description=description,
                 color=0x5865F2
             )
-            
+
             embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
             embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
             embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
-            
+
             # Format start time
             time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
             time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
             embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
-            
+
             embed.add_field(
                 name="How to Join",
                 value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
                 inline=False
             )
-            
+
             # Create view with join button
             view = MeetingView(self.bot, meeting_id)
             self.bot.meeting_manager.active_views[meeting_id] = view
-            
-            # Send announcement with proper mention - fix AllowedMentions
+
+            # Send announcement with proper mention
             mention_text = "@here" if mention_type == "here" else "@everyone"
             if mention_type == "everyone":
                 allowed_mentions = discord.AllowedMentions(everyone=True)
             else:
                 allowed_mentions = discord.AllowedMentions(everyone=False)
 
-            await interaction.followup.send(
-                f"{mention_text} **Server Meeting Announcement**", 
-                embed=embed, 
-                view=view,
-                allowed_mentions=allowed_mentions
-            )
+            # Send to announcement channel if configured, otherwise to current channel
+            if announcement_channel:
+                await announcement_channel.send(
+                    f"{mention_text} **Server Meeting Announcement**", 
+                    embed=embed, 
+                    view=view,
+                    allowed_mentions=allowed_mentions
+                )
+                # Confirm to admin
+                confirm_embed = EmbedBuilder.success(
+                    "Server Meeting Created",
+                    f"Server meeting **{name}** has been created and announced in {announcement_channel.mention}!\n\n"
+                    f"**Meeting ID:** {meeting_id}\n"
+                    f"**Start Time:** {time_str} (in {time_until})"
+                )
+                await interaction.followup.send(embed=confirm_embed, ephemeral=True)
+            else:
+                # No announcement channel configured, send to current channel
+                await interaction.followup.send(
+                    f"{mention_text} **Server Meeting Announcement**", 
+                    embed=embed, 
+                    view=view,
+                    allowed_mentions=allowed_mentions
+                )
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to create meeting: {str(e)}")
