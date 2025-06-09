@@ -164,15 +164,20 @@ class SlackBot(commands.Bot):
             logger.info(f"✅ Total commands registered to {guild.name}: {total_registered}")
             
             # Now sync to this guild
-            synced = await self.tree.sync(guild=guild)
-            logger.info(f"🚀 Synced {len(synced)} commands to {guild.name}")
-            
-            if synced:
-                synced_names = [cmd['name'] for cmd in synced]
-                logger.info(f"✅ Successfully synced to {guild.name}: {', '.join(sorted(synced_names))}")
-                return True
-            else:
-                logger.error(f"❌ 0 commands synced to {guild.name}!")
+            try:
+                synced = await self.tree.sync(guild=guild)
+                logger.info(f"🚀 Synced {len(synced)} commands to {guild.name}")
+                
+                if synced:
+                    # The synced commands are dictionaries, not AppCommand objects
+                    synced_names = [cmd.get('name', 'unknown') for cmd in synced]
+                    logger.info(f"✅ Successfully synced to {guild.name}: {', '.join(sorted(synced_names))}")
+                    return True
+                else:
+                    logger.error(f"❌ 0 commands synced to {guild.name}!")
+                    return False
+            except Exception as e:
+                logger.error(f"❌ Failed to sync commands to {guild.name}: {e}", exc_info=True)
                 return False
             
         except Exception as e:
@@ -192,6 +197,11 @@ class SlackBot(commands.Bot):
                 await interaction.response.defer(ephemeral=True)
                 
                 try:
+                    # First, clear global commands to remove duplicates
+                    self.tree.clear_commands(guild=None)
+                    await self.tree.sync()
+                    await interaction.followup.send("✅ Cleared global commands")
+                    
                     # Register and sync all commands to this guild
                     success = await self.register_all_commands_to_guild(interaction.guild)
                     
@@ -335,8 +345,34 @@ class SlackBot(commands.Bot):
                 except Exception as e:
                     await interaction.followup.send(f"❌ Database test failed: {e}")
 
+            # Define clear global commands command
+            @app_commands.command(name="admin_clear_global", description="Clear all global commands (Owner only)")
+            async def clear_global_slash(interaction: discord.Interaction):
+                if not await self.is_owner(interaction.user):
+                    await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
+                    return
+                
+                await interaction.response.defer(ephemeral=True)
+                
+                try:
+                    # Clear global commands
+                    self.tree.clear_commands(guild=None)
+                    await self.tree.sync()
+                    
+                    # Check if global commands were cleared
+                    global_commands = self.tree.get_commands(guild=None)
+                    
+                    if not global_commands:
+                        await interaction.followup.send("✅ Successfully cleared all global commands!")
+                    else:
+                        await interaction.followup.send(f"⚠️ Some global commands remain: {len(global_commands)}")
+                    
+                except Exception as e:
+                    await interaction.followup.send(f"❌ Failed to clear global commands: {e}")
+                    logger.error(f"Failed to clear global commands: {e}", exc_info=True)
+
             # Store references to admin commands
-            self.admin_commands = [sync_slash, debug_slash, reload_slash, db_test_slash]
+            self.admin_commands = [sync_slash, debug_slash, reload_slash, db_test_slash, clear_global_slash]
             
             logger.info(f"✅ Created {len(self.admin_commands)} admin slash commands")
             
