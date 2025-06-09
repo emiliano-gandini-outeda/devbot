@@ -191,7 +191,7 @@ class DatabaseManager:
                 data_content JSONB DEFAULT '{}',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(user_id, data_type)
+                CONSTRAINT unique_user_data UNIQUE(user_id, data_type)
             )
             """,
         

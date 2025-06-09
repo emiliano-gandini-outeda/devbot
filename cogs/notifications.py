@@ -40,12 +40,13 @@ class Notifications(commands.Cog):
         try:
             keywords = self.user_keywords.get(user_id, [])
             data = {"keywords": keywords}
-            
+        
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
                     """INSERT INTO user_data (user_id, data_type, data_content)
                        VALUES ($1, $2, $3)
-                       ON CONFLICT (user_id, data_type) DO UPDATE SET data_content = $3""",
+                       ON CONFLICT ON CONSTRAINT unique_user_data DO UPDATE SET 
+                       data_content = $3, updated_at = CURRENT_TIMESTAMP""",
                     user_id, 'keywords', json.dumps(data)
                 )
             else:

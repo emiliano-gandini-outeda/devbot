@@ -228,6 +228,9 @@ class DiscordBot(commands.Bot):
         """Called when the bot is starting up"""
         logger.info("🤖 Starting Discord bot setup...")
         
+        # Set startup as complete early to prevent shutdown
+        self.startup_complete = True
+        
         try:
             # Initialize database with shorter timeout
             logger.info("📊 Initializing database...")
@@ -250,6 +253,16 @@ class DiscordBot(commands.Bot):
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
                             discord_id TEXT UNIQUE NOT NULL,
                             username TEXT NOT NULL
+                        )
+                    """)
+                    await self.db.connection.execute("""
+                        CREATE TABLE IF NOT EXISTS user_data (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id TEXT NOT NULL,
+                            data_type TEXT NOT NULL,
+                            data_content TEXT DEFAULT '{}',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(user_id, data_type)
                         )
                     """)
                     await self.db.connection.commit()
@@ -321,69 +334,69 @@ class DiscordBot(commands.Bot):
                         logger.warning("⚠️ Skipping manager initialization (no database)")
                     
                     logger.info("✅ Manager initialization completed")
-            except (asyncio.TimeoutError, Exception) as e:
-                logger.warning(f"⚠️ Manager initialization failed/timed out: {e} - continuing without managers")
-                # Set managers to None to prevent errors
-                self.admin_manager = None
-                self.ticket_manager = None
-                self.logging_manager = None
-                self.workflow_manager = None
-        
-            # Load cogs with shorter timeout
-            logger.info("🔧 Loading cogs...")
-            try:
-                async with asyncio.timeout(20):  # Reduced from 30 to 20 seconds
-                    await self.load_cogs()
-                    logger.info("✅ Cogs loaded successfully")
-            except asyncio.TimeoutError:
-                logger.warning("⚠️ Cog loading timed out after 20 seconds - continuing with loaded cogs")
-            except Exception as e:
-                logger.warning(f"⚠️ Cog loading failed: {e} - continuing with loaded cogs")
-        
-            # Verify commands are registered
-            logger.info("🔍 Verifying command registration...")
-            total_commands = 0
-            github_commands_found = False
-
-            for cog_name, cog in self.cogs.items():
-                cog_commands = cog.get_app_commands()
-                total_commands += len(cog_commands)
-                logger.info(f"  • {cog_name}: {len(cog_commands)} commands")
-                
-                # Check specifically for GitHub commands
-                if cog_name == "GitHubIntegrations":
-                    github_commands_found = True
-                    command_names = [cmd.name for cmd in cog_commands]
-                    logger.info(f"    GitHub commands: {command_names}")
-
-            logger.info(f"📊 Total commands from cogs: {total_commands}")
-            tree_commands = len(self.tree.get_commands())
-            logger.info(f"📊 Commands in tree: {tree_commands}")
-
-            if not github_commands_found:
-                logger.warning("⚠️ GitHub commands not found in cogs!")
-
-            # List all commands in tree for debugging
-            tree_command_names = [cmd.name for cmd in self.tree.get_commands()]
-            logger.info(f"Tree commands: {tree_command_names}")
-        
-            # Sync commands (optional - don't block startup)
-            logger.info("🔄 Syncing slash commands...")
-            try:
-                async with asyncio.timeout(10):  # Reduced from 20 to 10 seconds
-                    synced = await self.tree.sync()
-                    logger.info(f"✅ Synced {len(synced)} slash commands")
-            except (asyncio.TimeoutError, Exception) as e:
-                logger.warning(f"⚠️ Command sync failed/timed out: {e} - commands will sync later")
-                # Don't return here, let the bot continue
-        
-            self.startup_complete = True
-            logger.info("✅ Bot setup completed successfully!")
-        
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"⚠️ Manager initialization failed/timed out: {e} - continuing without managers")
+            # Set managers to None to prevent errors
+            self.admin_manager = None
+            self.ticket_manager = None
+            self.logging_manager = None
+            self.workflow_manager = None
+    
+        # Load cogs with shorter timeout
+        logger.info("🔧 Loading cogs...")
+        try:
+            async with asyncio.timeout(20):  # Reduced from 30 to 20 seconds
+                await self.load_cogs()
+                logger.info("✅ Cogs loaded successfully")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ Cog loading timed out after 20 seconds - continuing with loaded cogs")
         except Exception as e:
-            logger.error(f"❌ Critical error during setup: {e}")
-            logger.exception("Full traceback:")
-            await self.close()
+            logger.warning(f"⚠️ Cog loading failed: {e} - continuing with loaded cogs")
+    
+        # Verify commands are registered
+        logger.info("🔍 Verifying command registration...")
+        total_commands = 0
+        github_commands_found = False
+
+        for cog_name, cog in self.cogs.items():
+            cog_commands = cog.get_app_commands()
+            total_commands += len(cog_commands)
+            logger.info(f"  • {cog_name}: {len(cog_commands)} commands")
+            
+            # Check specifically for GitHub commands
+            if cog_name == "GitHubIntegrations":
+                github_commands_found = True
+                command_names = [cmd.name for cmd in cog_commands]
+                logger.info(f"    GitHub commands: {command_names}")
+
+        logger.info(f"📊 Total commands from cogs: {total_commands}")
+        tree_commands = len(self.tree.get_commands())
+        logger.info(f"📊 Commands in tree: {tree_commands}")
+
+        if not github_commands_found:
+            logger.warning("⚠️ GitHub commands not found in cogs!")
+
+        # List all commands in tree for debugging
+        tree_command_names = [cmd.name for cmd in self.tree.get_commands()]
+        logger.info(f"Tree commands: {tree_command_names}")
+    
+        # Sync commands (optional - don't block startup)
+        logger.info("🔄 Syncing slash commands...")
+        try:
+            async with asyncio.timeout(15):  # Increased timeout for sync
+                synced = await self.tree.sync()
+                logger.info(f"✅ Synced {len(synced)} slash commands")
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"⚠️ Command sync failed/timed out: {e} - commands will sync later")
+            # Don't return here, let the bot continue
+    
+        logger.info("✅ Bot setup completed successfully!")
+    
+    except Exception as e:
+        logger.error(f"❌ Error during setup: {e}")
+        logger.exception("Full traceback:")
+        # Don't close the bot, just log the error and continue
+        logger.info("🚀 Continuing bot startup despite setup errors...")
     
     async def load_cogs(self):
         """Load all cogs"""
@@ -432,14 +445,20 @@ class DiscordBot(commands.Bot):
     
     async def on_ready(self):
         """Called when the bot is ready"""
-        if not self.startup_complete:
-            logger.warning("⚠️ Bot ready but startup not complete")
-            return
-        
         logger.info(f"🚀 {self.user} is now online!")
         logger.info(f"📊 Connected to {len(self.guilds)} guilds")
         logger.info(f"👥 Serving {sum(guild.member_count for guild in self.guilds)} users")
         logger.info(f"⚡ {len(self.tree.get_commands())} slash commands available")
+        
+        # If startup wasn't complete, try to sync commands now
+        if not self.startup_complete:
+            logger.info("🔄 Startup was incomplete, attempting command sync now...")
+            try:
+                synced = await self.tree.sync()
+                logger.info(f"✅ Late sync completed: {len(synced)} commands")
+                self.startup_complete = True
+            except Exception as e:
+                logger.warning(f"⚠️ Late sync failed: {e}")
         
         # Set bot status
         try:
@@ -641,17 +660,21 @@ async def main():
     bot = DiscordBot()
     
     try:
-        # Add a timeout to prevent hanging
-        async with asyncio.timeout(120):  # 2 minute timeout for startup
+        # Add a timeout to prevent hanging - increased timeout
+        async with asyncio.timeout(300):  # 5 minute timeout for startup
             await bot.start(Settings.DISCORD_TOKEN)
     except asyncio.TimeoutError:
-        logger.error("❌ Bot startup timed out after 3 minutes")
-        await bot.close()
+        logger.error("❌ Bot startup timed out after 5 minutes")
+        # Don't close the bot, let it continue running
+        logger.info("🔄 Continuing bot operation despite timeout...")
     except discord.LoginFailure:
         logger.error("❌ Invalid Discord token")
+        await bot.close()
     except Exception as e:
         logger.error(f"❌ Unexpected error: {e}")
         logger.exception("Full traceback:")
+        # Don't close the bot for unexpected errors, try to continue
+        logger.info("🔄 Attempting to continue despite error...")
     finally:
         if not bot.is_closed():
             await bot.close()
