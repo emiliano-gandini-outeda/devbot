@@ -1,551 +1,568 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
-import json
 import asyncio
-from datetime import datetime, timedelta
-import random
-import string
-from utils.helpers import EmbedBuilder, TimeParser
-from typing import Dict, Any
+import logging
+import os
+import sys
+from pathlib import Path
 
-class MeetingView(discord.ui.View):
-    def __init__(self, bot, meeting_id: str):
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.meeting_id = meeting_id
-        self.participants = set()
-    
-    @discord.ui.button(label="Join Meeting", style=discord.ButtonStyle.primary, emoji="📅")
-    async def join_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Add user to participants
-        self.participants.add(interaction.user.id)
-        
-        # Get meeting data
-        meeting = await self.bot.meeting_manager.get_meeting(self.meeting_id)
-        if not meeting:
-            await interaction.response.send_message("This meeting no longer exists.", ephemeral=True)
-            return
-        
-        await interaction.response.send_message(f"You've joined the meeting: **{meeting['name']}**", ephemeral=True)
+# Add the project root to the Python path
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
 
-class MeetingManager:
-    def __init__(self, bot):
-        self.bot = bot
-        self.meetings = {}  # meeting_id -> meeting_data
-        self.active_views = {}  # meeting_id -> MeetingView
-        self.scheduled_tasks = {}  # meeting_id -> task
+from config.settings import Settings
+from utils.db import DatabaseManager
+from utils.admin import AdminManager
+from utils.ticket_manager import TicketManager
+from utils.logging_manager import LoggingManager
+from utils.workflow_manager import WorkflowManager
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('bot.log')
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+class DiscordBot(commands.Bot):
+    def __init__(self):
+        # Configure intents
+        intents = discord.Intents.default()
+        intents.message_content = True
+        intents.members = True
+        intents.guilds = True
+        intents.reactions = True
+        intents.voice_states = True
+        
+        super().__init__(
+            command_prefix=Settings.PREFIX,
+            intents=intents,
+            help_command=None,
+            case_insensitive=True
+        )
+        
+        # Initialize managers
+        self.db = None
+        self.admin_manager = None
+        self.ticket_manager = None
+        self.logging_manager = None
+        self.workflow_manager = None
+        self.meeting_manager = None
+        self.startup_complete = False
+        
+        # Add admin commands
+        self.add_admin_commands()
     
-    async def load_meetings(self):
-        """Load meetings from database"""
-        try:
-            if self.bot.db.is_postgresql:
-                rows = await self.bot.db.connection.fetch(
-                    "SELECT * FROM meetings WHERE status = 'scheduled'"
-                )
-                for row in rows:
-                    meeting_id = row['meeting_id']
-                    meeting = {
-                        'id': meeting_id,
-                        'name': row['title'],
-                        'description': row['description'],
-                        'start_time': row['scheduled_time'].isoformat(),
-                        'guild_id': row['guild_id'],
-                        'creator_id': row['creator_id'],
-                        'channel_id': None,  # Will be set when creating
-                        'voice_channel_id': None,  # Will be set when creating
-                        'status': row['status'],
-                        'created_at': row['created_at'].isoformat()
-                    }
-                    self.meetings[meeting_id] = meeting
-                    
-                    # Schedule meeting if it's in the future
-                    if row['scheduled_time'] > datetime.utcnow():
-                        self.schedule_meeting(meeting_id, meeting)
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM meetings WHERE status = 'scheduled'"
-                )
-                rows = await cursor.fetchall()
-                for row in rows:
-                    meeting_id = row[1]  # meeting_id column
-                    meeting = {
-                        'id': meeting_id,
-                        'name': row[4],  # title
-                        'description': row[5],  # description
-                        'start_time': row[6],  # scheduled_time
-                        'guild_id': row[2],  # guild_id
-                        'creator_id': row[3],  # creator_id
-                        'channel_id': None,
-                        'voice_channel_id': None,
-                        'status': row[9],  # status
-                        'created_at': row[11]  # created_at
-                    }
-                    self.meetings[meeting_id] = meeting
-                    
-                    # Schedule meeting if it's in the future
-                    start_time = datetime.fromisoformat(row[6]) if isinstance(row[6], str) else row[6]
-                    if start_time > datetime.utcnow():
-                        self.schedule_meeting(meeting_id, meeting)
-        except Exception as e:
-            print(f"Error loading meetings: {e}")
-    
-    async def save_meeting(self, meeting: Dict[str, Any]):
-        """Save meeting to database"""
-        try:
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    """INSERT INTO meetings (meeting_id, guild_id, creator_id, title, description, scheduled_time, status)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7)
-                       ON CONFLICT (meeting_id) DO UPDATE SET
-                       title = $4, description = $5, scheduled_time = $6, status = $7, updated_at = CURRENT_TIMESTAMP""",
-                    meeting['id'], meeting['guild_id'], meeting['creator_id'],
-                    meeting['name'], meeting['description'], 
-                    datetime.fromisoformat(meeting['start_time']), meeting['status']
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO meetings (meeting_id, guild_id, creator_id, title, description, scheduled_time, status)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (meeting['id'], meeting['guild_id'], meeting['creator_id'],
-                     meeting['name'], meeting['description'], meeting['start_time'], meeting['status'])
-                )
-                await self.bot.db.connection.commit()
-        except Exception as e:
-            print(f"Error saving meeting: {e}")
-    
-    async def delete_meeting(self, meeting_id: str):
-        """Delete meeting from database"""
-        try:
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "DELETE FROM meetings WHERE meeting_id = $1", meeting_id
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    "DELETE FROM meetings WHERE meeting_id = ?", (meeting_id,)
-                )
-                await self.bot.db.connection.commit()
-        except Exception as e:
-            print(f"Error deleting meeting: {e}")
-    
-    def generate_meeting_id(self) -> str:
-        """Generate a unique meeting ID"""
-        chars = string.ascii_uppercase + string.digits
-        while True:
-            # Generate a 6-character meeting ID
-            meeting_id = ''.join(random.choice(chars) for _ in range(6))
-            if meeting_id not in self.meetings:
-                return meeting_id
-    
-    def schedule_meeting(self, meeting_id: str, meeting: dict):
-        """Schedule a meeting to start at the specified time"""
-        try:
-            start_time = datetime.fromisoformat(meeting['start_time'])
-            now = datetime.utcnow()
-            
-            if start_time > now:
-                # Calculate seconds until meeting starts
-                seconds = (start_time - now).total_seconds()
+    def add_admin_commands(self):
+        """Add admin-only commands"""
+        
+        @self.command(name='admin_sync')
+        @commands.is_owner()
+        async def admin_sync(ctx):
+            """Sync slash commands (Owner only)"""
+            try:
+                synced = await self.tree.sync()
+                await ctx.send(f"✅ Synced {len(synced)} commands")
+                logger.info(f"Admin sync: {len(synced)} commands synced")
+            except Exception as e:
+                await ctx.send(f"❌ Sync failed: {e}")
+                logger.error(f"Admin sync failed: {e}")
+        
+        @self.command(name='admin_force_register')
+        @commands.is_owner()
+        async def admin_force_register(ctx):
+            """Force register all commands from all cogs (Owner only)"""
+            try:
+                # Clear existing commands
+                self.tree.clear_commands()
                 
-                # Schedule the task
-                task = asyncio.create_task(self.start_meeting_at(meeting_id, seconds))
-                self.scheduled_tasks[meeting_id] = task
-        except Exception as e:
-            print(f"Error scheduling meeting {meeting_id}: {e}")
+                # Re-add commands from all cogs
+                for cog_name, cog in self.cogs.items():
+                    for command in cog.get_app_commands():
+                        if command not in self.tree.get_commands():
+                            self.tree.add_command(command)
+                
+                # Sync commands
+                synced = await self.tree.sync()
+                await ctx.send(f"✅ Force registered and synced {len(synced)} commands from {len(self.cogs)} cogs")
+                logger.info(f"Force register: {len(synced)} commands from {len(self.cogs)} cogs")
+            except Exception as e:
+                await ctx.send(f"❌ Force register failed: {e}")
+                logger.error(f"Force register failed: {e}")
+        
+        @self.command(name='admin_debug')
+        @commands.is_owner()
+        async def admin_debug(ctx):
+            """Debug bot status (Owner only)"""
+            try:
+                embed = discord.Embed(title="🔧 Bot Debug Info", color=0x5865F2)
+                
+                # Basic info
+                embed.add_field(name="Guilds", value=len(self.guilds), inline=True)
+                embed.add_field(name="Users", value=sum(g.member_count for g in self.guilds), inline=True)
+                embed.add_field(name="Cogs", value=len(self.cogs), inline=True)
+                
+                # Commands
+                slash_commands = len(self.tree.get_commands())
+                embed.add_field(name="Slash Commands", value=slash_commands, inline=True)
+                
+                # Database
+                db_status = "✅ Connected" if self.db and self.db.connection else "❌ Disconnected"
+                embed.add_field(name="Database", value=db_status, inline=True)
+                
+                # Managers
+                managers_status = []
+                managers_status.append(f"Admin: {'✅' if self.admin_manager else '❌'}")
+                managers_status.append(f"Ticket: {'✅' if self.ticket_manager else '❌'}")
+                managers_status.append(f"Logging: {'✅' if self.logging_manager else '❌'}")
+                managers_status.append(f"Workflow: {'✅' if self.workflow_manager else '❌'}")
+                managers_status.append(f"Meeting: {'✅' if self.meeting_manager else '❌'}")
+                
+                embed.add_field(name="Managers", value="\n".join(managers_status), inline=False)
+                
+                # Cog list
+                cog_list = "\n".join([f"• {name}" for name in self.cogs.keys()])
+                if len(cog_list) > 1024:
+                    cog_list = cog_list[:1021] + "..."
+                embed.add_field(name="Loaded Cogs", value=cog_list or "None", inline=False)
+                
+                await ctx.send(embed=embed)
+                
+            except Exception as e:
+                await ctx.send(f"❌ Debug failed: {e}")
+                logger.error(f"Debug command failed: {e}")
+        
+        @self.command(name='admin_db_test')
+        @commands.is_owner()
+        async def admin_db_test(ctx):
+            """Test database connection (Owner only)"""
+            try:
+                if not self.db:
+                    await ctx.send("❌ Database manager not initialized")
+                    return
+                
+                # Test connection
+                success = await self.db.test_connection()
+                
+                if success:
+                    # Test table verification
+                    tables_ok = await self.db.verify_tables()
+                    
+                    embed = discord.Embed(title="🗄️ Database Test Results", color=0x57F287)
+                    embed.add_field(name="Connection", value="✅ Success", inline=True)
+                    embed.add_field(name="Tables", value="✅ Verified" if tables_ok else "❌ Issues", inline=True)
+                    embed.add_field(name="Type", value="PostgreSQL" if self.db.is_postgresql else "SQLite", inline=True)
+                    
+                    await ctx.send(embed=embed)
+                else:
+                    await ctx.send("❌ Database connection test failed")
+                    
+            except Exception as e:
+                await ctx.send(f"❌ Database test failed: {e}")
+                logger.error(f"Database test failed: {e}")
+        
+        @self.command(name='admin_clear_global')
+        @commands.is_owner()
+        async def admin_clear_global(ctx):
+            """Clear all global slash commands (Owner only)"""
+            try:
+                self.tree.clear_commands()
+                synced = await self.tree.sync()
+                await ctx.send(f"✅ Cleared all global commands. {len(synced)} commands remaining.")
+                logger.info("Admin cleared all global commands")
+            except Exception as e:
+                await ctx.send(f"❌ Clear failed: {e}")
+                logger.error(f"Clear global commands failed: {e}")
+        
+        @self.command(name='emergency_sync')
+        @commands.is_owner()
+        async def emergency_sync(ctx):
+            """Emergency command sync with detailed output (Owner only)"""
+            try:
+                await ctx.send("🔄 Starting emergency sync...")
+                
+                # Get current commands
+                current_commands = self.tree.get_commands()
+                await ctx.send(f"📊 Current commands in tree: {len(current_commands)}")
+                
+                # List cogs and their commands
+                cog_info = []
+                total_cog_commands = 0
+                
+                for cog_name, cog in self.cogs.items():
+                    cog_commands = cog.get_app_commands()
+                    total_cog_commands += len(cog_commands)
+                    cog_info.append(f"• {cog_name}: {len(cog_commands)} commands")
+                
+                if cog_info:
+                    cog_text = "\n".join(cog_info)
+                    if len(cog_text) > 1900:
+                        cog_text = cog_text[:1900] + "..."
+                    await ctx.send(f"📦 Cog commands:\n\`\`\`\n{cog_text}\n\`\`\`")
+                
+                await ctx.send(f"🔢 Total commands from cogs: {total_cog_commands}")
+                
+                # Sync
+                synced = await self.tree.sync()
+                await ctx.send(f"✅ Emergency sync complete: {len(synced)} commands synced")
+                
+                # List synced commands
+                if synced:
+                    synced_names = [cmd.name for cmd in synced]
+                    synced_text = ", ".join(synced_names)
+                    if len(synced_text) > 1900:
+                        synced_text = synced_text[:1900] + "..."
+                    await ctx.send(f"📋 Synced commands:\n\`\`\`\n{synced_text}\n\`\`\`")
+                
+            except Exception as e:
+                await ctx.send(f"❌ Emergency sync failed: {e}")
+                logger.error(f"Emergency sync failed: {e}")
     
-    async def start_meeting_at(self, meeting_id: str, seconds: float):
-        """Start a meeting after the specified delay"""
+    async def setup_hook(self):
+        """Called when the bot is starting up"""
+        logger.info("🤖 Starting Discord bot setup...")
+        
         try:
-            # Wait until meeting time
-            await asyncio.sleep(seconds)
+            # Initialize database
+            logger.info("📊 Initializing database...")
+            self.db = DatabaseManager()
+            await self.db.init_database()
             
-            # Get meeting data
-            meeting = self.meetings.get(meeting_id)
-            if not meeting:
+            # Verify database tables
+            tables_ok = await self.db.verify_tables()
+            if not tables_ok:
+                logger.error("❌ Database tables verification failed")
                 return
             
-            # Get guild and channel
-            guild = self.bot.get_guild(int(meeting['guild_id']))
-            if not guild:
+            # Test database connection
+            connection_ok = await self.db.test_connection()
+            if not connection_ok:
+                logger.error("❌ Database connection test failed")
                 return
             
-            channel = guild.get_channel(int(meeting['channel_id']))
-            if not channel:
-                return
+            # Initialize managers
+            logger.info("🛡️ Initializing managers...")
             
-            # Get voice channel
-            voice_channel = guild.get_channel(int(meeting['voice_channel_id']))
+            # Admin manager
+            self.admin_manager = AdminManager(self)
+            await self.admin_manager.load_admin_roles()
             
-            # Get participants
-            view = self.active_views.get(meeting_id)
-            participants = []
-            if view:
-                for user_id in view.participants:
-                    user = guild.get_member(user_id)
-                    if user:
-                        participants.append(user)
+            # Ticket manager
+            self.ticket_manager = TicketManager(self)
+            await self.ticket_manager.load_ticket_configs()
             
-            # Create meeting start embed
-            embed = discord.Embed(
-                title=f"🔔 Meeting Starting: {meeting['name']}",
-                description=meeting['description'],
-                color=0x57F287
-            )
+            # Logging manager
+            self.logging_manager = LoggingManager(self)
+            await self.logging_manager.load_log_configs()
             
-            embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
+            # Workflow manager
+            self.workflow_manager = WorkflowManager(self)
+            await self.workflow_manager.load_workflows()
             
-            if voice_channel:
-                embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
+            logger.info("✅ All managers initialized successfully")
             
-            if participants:
-                mentions = " ".join([user.mention for user in participants])
-                await channel.send(f"Meeting participants: {mentions}", embed=embed)
-            else:
-                await channel.send(embed=embed)
+            # Load cogs
+            logger.info("🔧 Loading cogs...")
+            await self.load_cogs()
             
-            # Mark meeting as started
-            meeting['status'] = 'started'
-            await self.save_meetings(meeting['guild_id'])
+            # Sync commands
+            logger.info("🔄 Syncing slash commands...")
+            try:
+                synced = await self.tree.sync()
+                logger.info(f"✅ Synced {len(synced)} slash commands")
+            except Exception as e:
+                logger.error(f"❌ Failed to sync commands: {e}")
             
-        except asyncio.CancelledError:
-            # Task was cancelled
-            pass
+            self.startup_complete = True
+            logger.info("✅ Bot setup completed successfully!")
+            
         except Exception as e:
-            print(f"Error starting meeting {meeting_id}: {e}")
+            logger.error(f"❌ Critical error during setup: {e}")
+            logger.exception("Full traceback:")
+            await self.close()
     
-    async def get_meeting(self, meeting_id: str) -> dict:
-        """Get meeting data by ID"""
-        return self.meetings.get(meeting_id)
+    async def load_cogs(self):
+        """Load all cogs"""
+        cogs = [
+            'cogs.admin',
+            'cogs.help',
+            'cogs.setup',
+            'cogs.tickets',
+            'cogs.reminders',
+            'cogs.workflows',
+            'cogs.roles',
+            'cogs.meetings',
+            'cogs.notifications',
+            'cogs.logging',
+            'cogs.privacy',
+            'cogs.conversations',
+            'cogs.intelligence',
+            'cogs.integrations_google',
+            'cogs.integrations_notion',
+            'cogs.integrations_trello',
+            'cogs.integrations_github'
+        ]
+        
+        loaded_count = 0
+        failed_count = 0
+        
+        for cog in cogs:
+            try:
+                await self.load_extension(cog)
+                loaded_count += 1
+                logger.info(f"✅ Loaded {cog}")
+            except Exception as e:
+                failed_count += 1
+                logger.error(f"❌ Failed to load {cog}: {e}")
+                logger.exception(f"Full traceback for {cog}:")
+        
+        logger.info(f"📦 Loaded {loaded_count}/{len(cogs)} cogs successfully")
+        if failed_count > 0:
+            logger.warning(f"⚠️ {failed_count} cogs failed to load")
     
-    async def create_meeting(self, guild_id: str, creator_id: str, name: str, description: str, 
-                           start_time: datetime, channel_id: str, voice_channel_id: str) -> str:
-        """Create a new meeting"""
-        meeting_id = self.generate_meeting_id()
-        
-        meeting = {
-            'id': meeting_id,
-            'name': name,
-            'description': description,
-            'start_time': start_time.isoformat(),
-            'guild_id': guild_id,
-            'creator_id': creator_id,
-            'channel_id': channel_id,
-            'voice_channel_id': voice_channel_id,
-            'status': 'scheduled',
-            'created_at': datetime.utcnow().isoformat()
-        }
-        
-        self.meetings[meeting_id] = meeting
-        await self.save_meetings(guild_id)
-        
-        # Schedule the meeting
-        self.schedule_meeting(meeting_id, meeting)
-        
-        return meeting_id
-    
-    async def cancel_meeting(self, meeting_id: str) -> bool:
-        """Cancel a scheduled meeting"""
-        meeting = self.meetings.get(meeting_id)
-        if not meeting:
-            return False
-        
-        # Cancel scheduled task if exists
-        task = self.scheduled_tasks.get(meeting_id)
-        if task:
-            task.cancel()
-            del self.scheduled_tasks[meeting_id]
-        
-        # Remove meeting
-        del self.meetings[meeting_id]
-        await self.save_meetings(meeting['guild_id'])
-        
-        return True
-
-class Meetings(commands.Cog):
-    """Meeting scheduling and management"""
-    
-    def __init__(self, bot):
-        self.bot = bot
-        self.bot.meeting_manager = MeetingManager(bot)
-    
-    @commands.Cog.listener()
     async def on_ready(self):
-        await self.bot.meeting_manager.load_meetings()
-    
-    @app_commands.command(name="create-meeting", description="Schedule a new meeting")
-    @app_commands.describe(
-        name="Meeting name",
-        time="When to start the meeting (e.g., '1h', '30m', '2d')",
-        description="Meeting description",
-        voice_channel="Voice channel for the meeting"
-    )
-    async def create_meeting(self, interaction: discord.Interaction, name: str, time: str, 
-                           description: str, voice_channel: discord.VoiceChannel):
-        # Parse time
-        duration = TimeParser.parse_duration(time)
-        if not duration:
-            embed = EmbedBuilder.error(
-                "Invalid Time Format",
-                "Please use format like: `1h`, `30m`, `2d`, `1h30m`"
+        """Called when the bot is ready"""
+        if not self.startup_complete:
+            logger.warning("⚠️ Bot ready but startup not complete")
+            return
+        
+        logger.info(f"🚀 {self.user} is now online!")
+        logger.info(f"📊 Connected to {len(self.guilds)} guilds")
+        logger.info(f"👥 Serving {sum(guild.member_count for guild in self.guilds)} users")
+        logger.info(f"⚡ {len(self.tree.get_commands())} slash commands available")
+        
+        # Set bot status
+        try:
+            activity = discord.Activity(
+                type=discord.ActivityType.watching,
+                name=f"{len(self.guilds)} servers | /help"
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        start_time = datetime.utcnow() + duration
-        
-        # Create meeting
-        meeting_id = await self.bot.meeting_manager.create_meeting(
-            str(interaction.guild.id),
-            str(interaction.user.id),
-            name,
-            description,
-            start_time,
-            str(interaction.channel.id),
-            str(voice_channel.id)
-        )
-        
-        # Create meeting announcement embed
-        embed = discord.Embed(
-            title=f"📅 Meeting Scheduled: {name}",
-            description=description,
-            color=0x5865F2
-        )
-        
-        embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
-        embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
-        
-        # Format start time
-        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
-        time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-        embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
-        
-        embed.add_field(
-            name="How to Join",
-            value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
-            inline=False
-        )
-        
-        # Create view with join button
-        view = MeetingView(self.bot, meeting_id)
-        self.bot.meeting_manager.active_views[meeting_id] = view
-        
-        await interaction.response.send_message(embed=embed, view=view)
-
-    @app_commands.command(name="admin-meeting", description="Create a server-wide meeting announcement (Admin only)")
-    @app_commands.describe(
-        name="Meeting name",
-        time="When to start the meeting (e.g., '1h', '30m', '2d')",
-        description="Meeting description",
-        voice_channel="Voice channel for the meeting",
-        mention_type="Who to mention (here or everyone)"
-    )
-    async def admin_meeting(self, interaction: discord.Interaction, name: str, time: str, 
-                           description: str, voice_channel: discord.VoiceChannel, mention_type: str = "here"):
-        if not self.bot.admin_manager.is_admin(interaction.user):
-            embed = EmbedBuilder.error("Permission Denied", "Only administrators can create server-wide meetings")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        if mention_type not in ["here", "everyone"]:
-            mention_type = "here"
-        
-        # Parse time
-        duration = TimeParser.parse_duration(time)
-        if not duration:
-            embed = EmbedBuilder.error(
-                "Invalid Time Format",
-                "Please use format like: `1h`, `30m`, `2d`, `1h30m`"
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        start_time = datetime.utcnow() + duration
-        
-        # Create meeting
-        meeting_id = await self.bot.meeting_manager.create_meeting(
-            str(interaction.guild.id),
-            str(interaction.user.id),
-            name,
-            description,
-            start_time,
-            str(interaction.channel.id),
-            str(voice_channel.id)
-        )
-        
-        # Create meeting announcement embed
-        embed = discord.Embed(
-            title=f"📅 Server Meeting: {name}",
-            description=description,
-            color=0x5865F2
-        )
-        
-        embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
-        embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
-        
-        # Format start time
-        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
-        time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-        embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
-        
-        embed.add_field(
-            name="How to Join",
-            value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
-            inline=False
-        )
-        
-        # Create view with join button
-        view = MeetingView(self.bot, meeting_id)
-        self.bot.meeting_manager.active_views[meeting_id] = view
-        
-        # Send announcement with proper mention - fix AllowedMentions
-        mention_text = "@here" if mention_type == "here" else "@everyone"
-        if mention_type == "everyone":
-            allowed_mentions = discord.AllowedMentions(everyone=True)
-        else:
-            allowed_mentions = discord.AllowedMentions(everyone=False)
-
-        await interaction.response.send_message(
-            f"{mention_text} **Server Meeting Announcement**", 
-            embed=embed, 
-            view=view,
-            allowed_mentions=allowed_mentions
-        )
+            await self.change_presence(activity=activity, status=discord.Status.online)
+        except Exception as e:
+            logger.error(f"Failed to set bot status: {e}")
     
-    @app_commands.command(name="join-meeting", description="Join a scheduled meeting")
-    @app_commands.describe(meeting_id="ID of the meeting to join")
-    async def join_meeting(self, interaction: discord.Interaction, meeting_id: str):
-        # Check if meeting exists
-        meeting = await self.bot.meeting_manager.get_meeting(meeting_id)
-        if not meeting:
-            embed = EmbedBuilder.error("Not Found", f"Meeting with ID {meeting_id} not found")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
+    async def on_guild_join(self, guild):
+        """Called when the bot joins a new guild"""
+        logger.info(f"📥 Joined new guild: {guild.name} (ID: {guild.id}) with {guild.member_count} members")
         
-        # Add user to participants
-        view = self.bot.meeting_manager.active_views.get(meeting_id)
-        if view:
-            view.participants.add(interaction.user.id)
-        
-        # Get voice channel
-        guild = interaction.guild
-        voice_channel = guild.get_channel(int(meeting['voice_channel_id']))
-        
-        embed = discord.Embed(
-            title=f"✅ Joined Meeting: {meeting['name']}",
-            description=meeting['description'],
-            color=0x57F287
-        )
-        
-        embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
-        
-        if voice_channel:
-            embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
-        
-        # Format start time
-        start_time = datetime.fromisoformat(meeting['start_time'])
-        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
-        
-        if start_time > datetime.utcnow():
-            time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-            embed.add_field(name="Starts", value=f"{time_str}\n(in {time_until})", inline=False)
-        else:
-            embed.add_field(name="Started", value=time_str, inline=False)
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    @app_commands.command(name="cancel-meeting", description="Cancel a scheduled meeting")
-    @app_commands.describe(meeting_id="ID of the meeting to cancel")
-    async def cancel_meeting(self, interaction: discord.Interaction, meeting_id: str):
-        # Check if meeting exists
-        meeting = await self.bot.meeting_manager.get_meeting(meeting_id)
-        if not meeting:
-            embed = EmbedBuilder.error("Not Found", f"Meeting with ID {meeting_id} not found")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        # Check if user is the creator or admin
-        if meeting['creator_id'] != str(interaction.user.id) and not self.bot.admin_manager.is_admin(interaction.user):
-            embed = EmbedBuilder.error(
-                "Permission Denied", 
-                "Only the meeting creator or administrators can cancel meetings"
+        # Update status
+        try:
+            activity = discord.Activity(
+                type=discord.ActivityType.watching,
+                name=f"{len(self.guilds)} servers | /help"
             )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
+            await self.change_presence(activity=activity)
+        except Exception as e:
+            logger.error(f"Failed to update status: {e}")
         
-        # Cancel the meeting
-        success = await self.bot.meeting_manager.cancel_meeting(meeting_id)
-        
-        if success:
-            embed = EmbedBuilder.success(
-                "Meeting Cancelled",
-                f"Meeting **{meeting['name']}** has been cancelled"
-            )
-            await interaction.response.send_message(embed=embed)
-        else:
-            embed = EmbedBuilder.error("Error", "Failed to cancel meeting")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+        # Send welcome message if possible
+        try:
+            if guild.system_channel and guild.system_channel.permissions_for(guild.me).send_messages:
+                embed = discord.Embed(
+                    title="👋 Thanks for adding me!",
+                    description="I'm a powerful Discord bot with many features to help manage your server.",
+                    color=0x5865F2
+                )
+                embed.add_field(
+                    name="🚀 Getting Started",
+                    value="Use `/help` to see all available commands\nUse `/ticket-setup` to configure the ticket system",
+                    inline=False
+                )
+                embed.add_field(
+                    name="🔧 Admin Setup",
+                    value="Use `/add-admin-role` to give roles admin access to bot commands",
+                    inline=False
+                )
+                embed.set_footer(text="Powered by Railway 🚄")
+                
+                await guild.system_channel.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Failed to send welcome message to {guild.name}: {e}")
     
-    @app_commands.command(name="list-meetings", description="List all scheduled meetings")
-    async def list_meetings(self, interaction: discord.Interaction):
-        # Filter meetings for this guild
-        guild_id = str(interaction.guild.id)
-        guild_meetings = []
+    async def on_guild_remove(self, guild):
+        """Called when the bot leaves a guild"""
+        logger.info(f"📤 Left guild: {guild.name} (ID: {guild.id})")
         
-        for meeting_id, meeting in self.bot.meeting_manager.meetings.items():
-            if meeting['guild_id'] == guild_id and meeting['status'] == 'scheduled':
-                guild_meetings.append(meeting)
-        
-        if not guild_meetings:
-            embed = EmbedBuilder.info("No Meetings", "No meetings are currently scheduled")
-            await interaction.response.send_message(embed=embed)
+        # Update status
+        try:
+            activity = discord.Activity(
+                type=discord.ActivityType.watching,
+                name=f"{len(self.guilds)} servers | /help"
+            )
+            await self.change_presence(activity=activity)
+        except Exception as e:
+            logger.error(f"Failed to update status: {e}")
+    
+    async def on_message(self, message):
+        """Handle incoming messages"""
+        # Ignore bot messages
+        if message.author.bot:
             return
         
-        # Sort meetings by start time
-        guild_meetings.sort(key=lambda m: m['start_time'])
+        # Process workflow triggers
+        if self.workflow_manager and message.guild:
+            try:
+                await self.workflow_manager.process_message_triggers(message)
+            except Exception as e:
+                logger.error(f"Error processing workflow triggers: {e}")
         
-        embed = discord.Embed(
-            title="📅 Scheduled Meetings",
-            description=f"There are {len(guild_meetings)} upcoming meetings",
-            color=0x5865F2
-        )
+        # Process commands
+        await self.process_commands(message)
+    
+    async def on_member_join(self, member):
+        """Handle member join events"""
+        logger.info(f"👤 {member} joined {member.guild.name}")
         
-        for meeting in guild_meetings[:10]:  # Show up to 10 meetings
-            start_time = datetime.fromisoformat(meeting['start_time'])
-            time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+        # Process workflow triggers
+        if self.workflow_manager:
+            try:
+                await self.workflow_manager.process_member_join_triggers(member)
+            except Exception as e:
+                logger.error(f"Error processing member join workflow triggers: {e}")
+        
+        # Log the event
+        if self.logging_manager:
+            try:
+                await self.logging_manager.log_member_join(member)
+            except Exception as e:
+                logger.error(f"Error logging member join: {e}")
+    
+    async def on_member_remove(self, member):
+        """Handle member leave events"""
+        logger.info(f"👤 {member} left {member.guild.name}")
+        
+        # Log the event
+        if self.logging_manager:
+            try:
+                await self.logging_manager.log_member_leave(member)
+            except Exception as e:
+                logger.error(f"Error logging member leave: {e}")
+    
+    async def on_thread_create(self, thread):
+        """Handle thread creation events"""
+        logger.info(f"🧵 Thread created: {thread.name} in {thread.guild.name}")
+        
+        # Process workflow triggers
+        if self.workflow_manager:
+            try:
+                await self.workflow_manager.process_thread_create_triggers(thread)
+            except Exception as e:
+                logger.error(f"Error processing thread create workflow triggers: {e}")
+    
+    async def on_guild_channel_create(self, channel):
+        """Handle channel creation events"""
+        logger.info(f"📝 Channel created: {channel.name} in {channel.guild.name}")
+        
+        # Process workflow triggers
+        if self.workflow_manager:
+            try:
+                await self.workflow_manager.process_channel_create_triggers(channel)
+            except Exception as e:
+                logger.error(f"Error processing channel create workflow triggers: {e}")
+    
+    async def on_command_error(self, ctx, error):
+        """Global error handler for prefix commands"""
+        if isinstance(error, commands.CommandNotFound):
+            return  # Ignore unknown commands
+        
+        if isinstance(error, commands.NotOwner):
+            await ctx.send("❌ This command is restricted to the bot owner.")
+            return
+        
+        if isinstance(error, commands.MissingPermissions):
+            await ctx.send("❌ You don't have permission to use this command.")
+            return
+        
+        logger.error(f"Command error in {ctx.command}: {error}")
+        
+        try:
+            embed = discord.Embed(
+                title="❌ Command Error",
+                description=f"An error occurred: {str(error)}",
+                color=0xFF0000
+            )
+            await ctx.send(embed=embed)
+        except:
+            pass  # Ignore if we can't send the error message
+    
+    async def on_app_command_error(self, interaction: discord.Interaction, error):
+        """Global error handler for slash commands"""
+        logger.error(f"Slash command error in {interaction.command}: {error}")
+        
+        try:
+            embed = discord.Embed(
+                title="❌ Command Error",
+                description=f"An error occurred: {str(error)}",
+                color=0xFF0000
+            )
             
-            if start_time > datetime.utcnow():
-                time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-                time_field = f"{time_str}\n(in {time_until})"
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
             else:
-                time_field = f"{time_str}\n(starting now)"
-            
-            creator = interaction.guild.get_member(int(meeting['creator_id']))
-            creator_name = creator.display_name if creator else "Unknown"
-            
-            voice_channel = interaction.guild.get_channel(int(meeting['voice_channel_id']))
-            voice_name = voice_channel.name if voice_channel else "Unknown Channel"
-            
-            embed.add_field(
-                name=f"{meeting['name']} (ID: {meeting['id']})",
-                value=f"**Time:** {time_field}\n**Voice:** {voice_name}\n**Organizer:** {creator_name}",
-                inline=False
-            )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception as e:
+            logger.error(f"Failed to send error message: {e}")
+    
+    async def close(self):
+        """Clean shutdown"""
+        logger.info("🔄 Shutting down bot...")
         
-        if len(guild_meetings) > 10:
-            embed.set_footer(text=f"Showing 10 of {len(guild_meetings)} meetings")
+        # Close database connection
+        if self.db:
+            await self.db.close()
         
-        await interaction.response.send_message(embed=embed)
+        # Close the bot
+        await super().close()
+        logger.info("✅ Bot shutdown complete")
 
-async def setup(bot):
-    cog = Meetings(bot)
-    await bot.add_cog(cog)
+async def main():
+    """Main function to run the bot"""
+    logger.info("🚀 Starting Discord Bot...")
     
-    # Ensure commands are added to the tree
-    for command in cog.__cog_app_commands__:
-        if command not in bot.tree.get_commands():
-            bot.tree.add_command(command)
+    # Validate environment variables
+    try:
+        Settings.validate_required_env_vars()
+        logger.info("✅ Environment variables validated")
+    except ValueError as e:
+        logger.error(f"❌ Environment validation failed: {e}")
+        return
     
-    print(f"📅 Successfully loaded Meetings cog with {len(cog.get_app_commands())} commands")
+    # Create and run bot
+    bot = DiscordBot()
+    
+    try:
+        # Add a timeout to prevent hanging
+        async with asyncio.timeout(120):  # 2 minute timeout for startup
+            await bot.start(Settings.DISCORD_TOKEN)
+    except asyncio.TimeoutError:
+        logger.error("❌ Bot startup timed out after 2 minutes")
+        await bot.close()
+    except discord.LoginFailure:
+        logger.error("❌ Invalid Discord token")
+    except Exception as e:
+        logger.error(f"❌ Unexpected error: {e}")
+        logger.exception("Full traceback:")
+    finally:
+        if not bot.is_closed():
+            await bot.close()
+
+if __name__ == "__main__":
+    try:
+        # Check Python version
+        if sys.version_info < (3, 8):
+            logger.error("❌ Python 3.8 or higher is required")
+            sys.exit(1)
+        
+        # Run the bot
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 Bot stopped by user")
+    except Exception as e:
+        logger.error(f"❌ Fatal error: {e}")
+        logger.exception("Full traceback:")
+        sys.exit(1)

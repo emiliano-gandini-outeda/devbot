@@ -44,11 +44,17 @@ class Settings:
         missing_vars = []
         
         for var in required_vars:
-            if not getattr(cls, var):
+            value = getattr(cls, var)
+            if not value or value.strip() == '':
                 missing_vars.append(var)
         
         if missing_vars:
             raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+        
+        # Validate Discord token format
+        if not cls.DISCORD_TOKEN.startswith(('Bot ', 'MTk', 'MTA', 'MTI', 'MTE', 'MTM', 'MTQ', 'MTU', 'MTY', 'MTc', 'MTg')):
+            # Most Discord bot tokens start with these patterns
+            print("⚠️ Warning: Discord token format may be invalid")
     
     @classmethod
     def is_railway_production(cls) -> bool:
@@ -58,10 +64,11 @@ class Settings:
     @classmethod
     def get_database_url(cls) -> str:
         """Get appropriate database URL for Railway"""
-        # Use the hardcoded Railway URL for now
-        railway_url = "postgresql://postgres:QQCQuMDiLYyUhMLffEyUxizpDyYMxNxf@postgres.railway.internal:5432/railway"
+        # Use environment variable if available, otherwise fallback to hardcoded
+        db_url = os.getenv('DATABASE_URL')
+        if db_url:
+            return db_url
         
-        if railway_url.startswith('postgresql://'):
-            # Convert to asyncpg format
-            return railway_url.replace('postgresql://', 'postgresql://')
+        # Fallback to hardcoded Railway URL
+        railway_url = "postgresql://postgres:QQCQuMDiLYyUhMLffEyUxizpDyYMxNxf@postgres.railway.internal:5432/railway"
         return railway_url
