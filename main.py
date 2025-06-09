@@ -31,7 +31,7 @@ class SlackBot(commands.Bot):
         intents.guilds = True
         
         super().__init__(
-            command_prefix=Settings.PREFIX,
+            command_prefix='!',  # Set explicit prefix
             intents=intents,
             help_command=None,
             # Add connection resilience settings
@@ -46,6 +46,7 @@ class SlackBot(commands.Bot):
         self.workflow_manager = None
         self._ready_fired = False
         self._synced = False  # Track if we've already synced
+        self._guild_synced = set()  # Track which guilds have been synced
     
     async def setup_hook(self):
         """Setup database and load cogs"""
@@ -115,14 +116,15 @@ class SlackBot(commands.Bot):
         self._ready_fired = True
         logger.info(f'{self.user} has connected to Discord!')
         logger.info(f'Bot is in {len(self.guilds)} guilds')
+        logger.info(f'Command prefix: {self.command_prefix}')
         
         # Only sync once when the bot first starts
         if not self._synced:
             # Wait a moment for all cogs to fully initialize
             await asyncio.sleep(2)
             
-            # Sync commands once
-            await self.sync_commands_once()
+            # Sync commands once with automatic global clearing
+            await self.sync_commands_with_auto_clear()
             self._synced = True
         
         logger.info(f'Bot deployment successful! 🚄')
@@ -157,10 +159,10 @@ class SlackBot(commands.Bot):
         if self.workflow_manager:
             await self.workflow_manager.check_thread_create_triggers(thread)
 
-    async def sync_commands_once(self):
-        """Sync commands only once to avoid duplicates"""
+    async def sync_commands_with_auto_clear(self):
+        """Sync commands with automatic global command clearing to prevent duplicates"""
         try:
-            logger.info("Starting one-time command sync...")
+            logger.info("Starting command sync with automatic global clearing...")
             
             # Get all commands from the tree
             all_commands = self.tree.get_commands()
@@ -170,38 +172,33 @@ class SlackBot(commands.Bot):
                 logger.warning("No commands found to sync!")
                 return
             
-            # Choose sync strategy based on environment
-            if len(self.guilds) <= 3:  # Development mode
-                logger.info("Development mode: Syncing to individual guilds")
-                for guild in self.guilds:
-                    try:
-                        # Clear existing guild commands first
-                        self.tree.clear_commands(guild=guild)
-                        
-                        # Copy global commands to guild
-                        for command in all_commands:
-                            self.tree.add_command(command, guild=guild)
-                        
-                        # Sync to guild
-                        guild_synced = await self.tree.sync(guild=guild)
-                        logger.info(f"✅ Synced {len(guild_synced)} commands to {guild.name}")
-                    except Exception as e:
-                        logger.error(f"❌ Failed to sync to guild {guild.name}: {e}")
-                
-                # Clear global commands to prevent duplicates
+            # Always sync to individual guilds and clear global commands
+            logger.info("Syncing to individual guilds and clearing global commands...")
+            
+            for guild in self.guilds:
                 try:
-                    self.tree.clear_commands(guild=None)
-                    await self.tree.sync()
-                    logger.info("✅ Cleared global commands to prevent duplicates")
+                    # Clear existing guild commands first
+                    self.tree.clear_commands(guild=guild)
+                    
+                    # Copy global commands to guild
+                    for command in all_commands:
+                        self.tree.add_command(command, guild=guild)
+                    
+                    # Sync to guild
+                    guild_synced = await self.tree.sync(guild=guild)
+                    logger.info(f"✅ Synced {len(guild_synced)} commands to {guild.name}")
+                    self._guild_synced.add(guild.id)
+                    
                 except Exception as e:
-                    logger.error(f"❌ Failed to clear global commands: {e}")
-            else:  # Production mode
-                logger.info("Production mode: Syncing globally")
-                try:
-                    synced = await self.tree.sync()
-                    logger.info(f"✅ Synced {len(synced)} commands globally")
-                except Exception as e:
-                    logger.error(f"❌ Failed to sync globally: {e}")
+                    logger.error(f"❌ Failed to sync to guild {guild.name}: {e}")
+            
+            # Clear global commands to prevent duplicates
+            try:
+                self.tree.clear_commands(guild=None)
+                global_synced = await self.tree.sync()
+                logger.info(f"✅ Cleared global commands. {len(global_synced)} global commands remain.")
+            except Exception as e:
+                logger.error(f"❌ Failed to clear global commands: {e}")
             
             # List synced commands for debugging
             command_names = [cmd.name for cmd in all_commands]
@@ -221,24 +218,32 @@ class SlackBot(commands.Bot):
             # Clear existing guild commands first
             self.tree.clear_commands(guild=ctx.guild)
             
-            # Copy global commands to guild
-            global_commands = self.tree.get_commands()
-            for command in global_commands:
+            # Get all commands and copy to guild
+            all_commands = self.tree.get_commands()
+            if not all_commands:
+                # If no commands in tree, reload them
+                await ctx.send("No commands found in tree, reloading...")
+                for cog_name in list(self.cogs.keys()):
+                    try:
+                        await self.reload_extension(f'cogs.{cog_name.lower()}')
+                    except:
+                        pass
+                all_commands = self.tree.get_commands()
+            
+            for command in all_commands:
                 self.tree.add_command(command, guild=ctx.guild)
             
             # Sync to current guild
             synced = await self.tree.sync(guild=ctx.guild)
             await ctx.send(f'✅ Synced {len(synced)} commands to {ctx.guild.name}.')
             
-            # Clear global commands for this guild to prevent duplicates
-            await ctx.send("Clearing global commands for this guild...")
-            
-            # We need to keep the global commands in the tree for other guilds
-            # but remove them from Discord's API for this specific guild
+            # Clear global commands automatically
+            await ctx.send("Automatically clearing global commands...")
             try:
-                # This will remove the global commands from showing in this guild
-                await self.tree.sync(guild=discord.Object(id=ctx.guild.id))
-                await ctx.send(f'✅ Cleared global commands for {ctx.guild.name}.')
+                self.tree.clear_commands(guild=None)
+                global_synced = await self.tree.sync()
+                await ctx.send(f'✅ Cleared global commands. {len(global_synced)} global commands remain.')
+                self._guild_synced.add(ctx.guild.id)
             except Exception as e:
                 await ctx.send(f'❌ Failed to clear global commands: {e}')
             
@@ -319,21 +324,6 @@ class SlackBot(commands.Bot):
         else:
             await ctx.send(message)
     
-    async def on_error(self, event, *args, **kwargs):
-        logger.error(f'An error occurred in {event}', exc_info=True)
-
-    async def on_guild_join(self, guild):
-        """Don't auto-sync when joining new guilds to avoid duplicates"""
-        logger.info(f"Bot joined new guild: {guild.name} ({guild.id})")
-        logger.info("Use manual sync commands if needed for this guild")
-
-    async def close(self):
-        """Clean shutdown"""
-        logger.info("Bot is shutting down...")
-        if self.db:
-            await self.db.close()
-        await super().close()
-
     @commands.command(name='fix_duplicates')
     @commands.is_owner()
     async def fix_duplicates(self, ctx):
@@ -342,29 +332,118 @@ class SlackBot(commands.Bot):
             await ctx.send("🔧 Fixing duplicate commands...")
             
             # Step 1: Get all global commands
-            global_commands = self.tree.get_commands()
+            all_commands = self.tree.get_commands()
+            if not all_commands:
+                await ctx.send("❌ No commands found in command tree!")
+                return
             
             # Step 2: Clear existing guild commands
             self.tree.clear_commands(guild=ctx.guild)
             
             # Step 3: Add global commands to guild
-            for command in global_commands:
+            for command in all_commands:
                 self.tree.add_command(command, guild=ctx.guild)
             
             # Step 4: Sync to guild
             guild_synced = await self.tree.sync(guild=ctx.guild)
             await ctx.send(f"✅ Synced {len(guild_synced)} commands to {ctx.guild.name}")
             
-            # Step 5: Clear global commands
+            # Step 5: Automatically clear global commands
             self.tree.clear_commands(guild=None)
             global_synced = await self.tree.sync()
-            await ctx.send(f"✅ Cleared global commands. {len(global_synced)} global commands remain.")
+            await ctx.send(f"✅ Automatically cleared global commands. {len(global_synced)} global commands remain.")
             
+            self._guild_synced.add(ctx.guild.id)
             await ctx.send("✅ Duplicate commands fixed! You should now see only one set of commands.")
             
         except Exception as e:
             await ctx.send(f"❌ Failed to fix duplicate commands: {e}")
             logger.error("Failed to fix duplicate commands", exc_info=True)
+
+    @commands.command(name='status')
+    @commands.is_owner()
+    async def bot_status(self, ctx):
+        """Show bot status and sync information (Owner only)"""
+        try:
+            embed = discord.Embed(
+                title="🤖 Bot Status",
+                color=0x5865F2
+            )
+            
+            # Basic info
+            embed.add_field(
+                name="📊 Basic Info",
+                value=f"Guilds: {len(self.guilds)}\nPrefix: `{self.command_prefix}`\nLatency: {round(self.latency * 1000)}ms",
+                inline=True
+            )
+            
+            # Command info
+            all_commands = self.tree.get_commands()
+            embed.add_field(
+                name="⚡ Commands",
+                value=f"Slash Commands: {len(all_commands)}\nPrefix Commands: {len(self.commands)}",
+                inline=True
+            )
+            
+            # Sync status
+            synced_guilds = len(self._guild_synced)
+            embed.add_field(
+                name="🔄 Sync Status",
+                value=f"Synced Guilds: {synced_guilds}/{len(self.guilds)}\nAuto-sync: ✅ Enabled",
+                inline=True
+            )
+            
+            # Loaded cogs
+            loaded_cogs = list(self.cogs.keys())
+            embed.add_field(
+                name=f"📦 Loaded Cogs ({len(loaded_cogs)})",
+                value=", ".join(loaded_cogs) if loaded_cogs else "None",
+                inline=False
+            )
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            await ctx.send(f"❌ Failed to get bot status: {e}")
+
+    async def on_error(self, event, *args, **kwargs):
+        logger.error(f'An error occurred in {event}', exc_info=True)
+
+    async def on_guild_join(self, guild):
+        """Automatically sync commands when joining a new guild"""
+        logger.info(f"Bot joined new guild: {guild.name} ({guild.id})")
+        
+        try:
+            # Auto-sync to new guild
+            all_commands = self.tree.get_commands()
+            if all_commands:
+                # Clear existing guild commands
+                self.tree.clear_commands(guild=guild)
+                
+                # Add commands to guild
+                for command in all_commands:
+                    self.tree.add_command(command, guild=guild)
+                
+                # Sync to guild
+                synced = await self.tree.sync(guild=guild)
+                logger.info(f"✅ Auto-synced {len(synced)} commands to new guild: {guild.name}")
+                self._guild_synced.add(guild.id)
+                
+                # Clear global commands if this is the first guild sync
+                if len(self._guild_synced) == 1:
+                    self.tree.clear_commands(guild=None)
+                    await self.tree.sync()
+                    logger.info("✅ Cleared global commands after first guild sync")
+                    
+        except Exception as e:
+            logger.error(f"Failed to auto-sync to new guild {guild.name}: {e}")
+
+    async def close(self):
+        """Clean shutdown"""
+        logger.info("Bot is shutting down...")
+        if self.db:
+            await self.db.close()
+        await super().close()
 
 async def main():
     """Main function with improved error handling"""
