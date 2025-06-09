@@ -146,51 +146,68 @@ class DiscordBot(commands.Bot):
         logger.info(f"📊 Connected to {len(self.guilds)} guilds")
         logger.info(f"👥 Serving {sum(guild.member_count for guild in self.guilds)} users")
         
-        # Wait a moment for all cogs to be fully loaded
+        # Wait a moment for all cogs to fully initialize
         await asyncio.sleep(2)
         
-        # Clear global commands first
-        logger.info("🧹 Clearing global commands...")
-        try:
-            self.tree.clear_commands(guild=None)
-            await self.tree.sync()
-            logger.info("✅ Global commands cleared")
-        except Exception as e:
-            logger.error(f"❌ Failed to clear global commands: {e}")
+        # Check available commands
+        global_commands = self.tree.get_commands()
+        logger.info(f"📋 Found {len(global_commands)} global commands available")
         
-        # Log available commands before syncing
-        all_commands = self.tree.get_commands()
-        logger.info(f"📋 Found {len(all_commands)} commands to sync")
-        for cmd in all_commands:
-            logger.info(f"  • {cmd.name}: {cmd.description}")
+        if len(global_commands) > 0:
+            logger.info("📝 Available commands:")
+            for cmd in global_commands[:10]:  # Show first 10 commands
+                logger.info(f"  • {cmd.name}: {cmd.description}")
+            if len(global_commands) > 10:
+                logger.info(f"  ... and {len(global_commands) - 10} more commands")
+        else:
+            logger.warning("⚠️ No commands found! This might indicate a problem with cog loading.")
         
-        # Sync commands to all guilds
+        # Sync commands to all guilds first
         logger.info("🔄 Syncing commands to all guilds...")
         synced_guilds = 0
         failed_guilds = 0
+        total_commands_synced = 0
         
         for guild in self.guilds:
             try:
-                # Clear guild commands first
-                self.tree.clear_commands(guild=guild)
-                
-                # Copy all global commands to this guild
+                # Copy global commands to guild
                 self.tree.copy_global_to(guild=guild)
                 
                 # Sync to guild
                 synced = await self.tree.sync(guild=guild)
                 synced_guilds += 1
+                total_commands_synced += len(synced)
                 logger.info(f"✅ Synced {len(synced)} commands to {guild.name}")
                 
-                # Log synced commands
-                for cmd in synced:
-                    logger.info(f"  • {cmd.name}")
+                # Log some command names for verification
+                if len(synced) > 0:
+                    sample_commands = [cmd.name for cmd in synced[:5]]
+                    logger.info(f"  Sample commands: {', '.join(sample_commands)}")
                     
             except Exception as e:
                 failed_guilds += 1
                 logger.error(f"❌ Failed to sync commands to {guild.name}: {e}")
         
+        # Only clear global commands if guild syncing was successful
+        if synced_guilds > 0 and total_commands_synced > 0:
+            logger.info("🧹 Clearing global commands (guild sync successful)...")
+            try:
+                self.tree.clear_commands(guild=None)
+                await self.tree.sync()
+                logger.info("✅ Global commands cleared successfully")
+            except Exception as e:
+                logger.error(f"❌ Failed to clear global commands: {e}")
+        else:
+            logger.warning("⚠️ Keeping global commands as fallback (guild sync failed)")
+            try:
+                # Sync globally as fallback
+                synced_global = await self.tree.sync()
+                logger.info(f"🌐 Synced {len(synced_global)} commands globally as fallback")
+            except Exception as e:
+                logger.error(f"❌ Failed to sync global commands as fallback: {e}")
+        
         logger.info(f"🎉 Command sync complete! {synced_guilds} guilds synced, {failed_guilds} failed")
+        logger.info(f"📊 Total commands synced: {total_commands_synced}")
         
         # Set bot status
         try:
