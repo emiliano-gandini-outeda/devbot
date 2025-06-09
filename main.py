@@ -33,6 +33,8 @@ class SlackBot(commands.Bot):
         self.db = None
         self.admin_manager = None
         self.ticket_manager = None
+        self.logging_manager = None
+        self.workflow_manager = None
     
     async def setup_hook(self):
         """Setup database and load cogs"""
@@ -45,10 +47,17 @@ class SlackBot(commands.Bot):
             # Initialize managers
             from utils.admin import AdminManager
             from utils.ticket_manager import TicketManager
+            from utils.logging_manager import LoggingManager
+            from utils.workflow_manager import WorkflowManager
+            
             self.admin_manager = AdminManager(self)
             self.ticket_manager = TicketManager(self)
+            self.logging_manager = LoggingManager(self)
+            self.workflow_manager = WorkflowManager(self)
+            
             await self.admin_manager.load_admin_roles()
             await self.ticket_manager.load_ticket_configs()
+            await self.logging_manager.load_log_configs()
             
             # Load all cogs
             cogs = [
@@ -64,7 +73,8 @@ class SlackBot(commands.Bot):
                 'cogs.notifications',
                 'cogs.intelligence',
                 'cogs.admin',
-                'cogs.help'
+                'cogs.help',
+                'cogs.logging'
             ]
             
             for cog in cogs:
@@ -87,7 +97,7 @@ class SlackBot(commands.Bot):
     async def on_ready(self):
         logger.info(f'{self.user} has connected to Discord!')
         logger.info(f'Bot is in {len(self.guilds)} guilds')
-        logger.info(f'Railway deployment successful! 🚄')
+        logger.info(f'Bot deployment successful! 🚀')
     
     async def on_error(self, event, *args, **kwargs):
         logger.error(f'An error occurred in {event}', exc_info=True)
@@ -107,7 +117,7 @@ async def main():
         await bot.close()
 
 if __name__ == "__main__":
-    # Railway compatibility
+    # Deployment compatibility
     port = int(os.environ.get("PORT", 8080))
-    logger.info(f"Starting bot on Railway (port {port})")
+    logger.info(f"Starting bot (port {port})")
     asyncio.run(main())

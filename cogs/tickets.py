@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime
 from utils.helpers import EmbedBuilder
 from config.constants import TicketStatus
+from utils.ticket_manager import TicketJoinRequestView
 import asyncio
 
 class TicketView(discord.ui.View):
@@ -118,7 +119,7 @@ class Tickets(commands.Cog):
         if priority not in valid_priorities:
             priority = "medium"
         
-        ticket_id = f"TICKET-{str(uuid.uuid4())[:8].upper()}"
+        ticket_id = self.bot.ticket_manager.generate_ticket_id()
         
         await interaction.response.defer()
         
@@ -179,6 +180,124 @@ class Tickets(commands.Cog):
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to create ticket: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="ticket-private", description="Make ticket private (only assigned users can read)")
+    async def ticket_private(self, interaction: discord.Interaction):
+        # Check if this is a ticket channel
+        if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
+            embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Check permissions
+        if not self.bot.admin_manager.is_admin(interaction.user):
+            # Check if user is ticket creator or assignee
+            ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket: ", "").strip()
+            
+            if self.bot.db.is_postgresql:
+                ticket = await self.bot.db.connection.fetchrow(
+                    "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM tickets WHERE ticket_id = ?", (ticket_id,)
+                )
+                ticket = await cursor.fetchone()
+            
+            if not ticket:
+                embed = EmbedBuilder.error("Error", "Ticket not found")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            user_id = ticket['user_id'] if self.bot.db.is_postgresql else ticket[3]
+            assignee_id = ticket['assignee_id'] if self.bot.db.is_postgresql else ticket[4]
+            
+            if str(interaction.user.id) not in [user_id, assignee_id]:
+                embed = EmbedBuilder.error("Permission Denied", "Only ticket creator, assignee, or admins can change visibility")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+        
+        success = await self.bot.ticket_manager.set_ticket_visibility(interaction.channel, private=True)
+        
+        if success:
+            embed = EmbedBuilder.success("Ticket Set to Private", "This ticket is now private - only assigned users and admins can read it")
+        else:
+            embed = EmbedBuilder.error("Error", "Failed to set ticket visibility")
+        
+        await interaction.response.send_message(embed=embed)
+    
+    @app_commands.command(name="ticket-public", description="Make ticket public (everyone can read)")
+    async def ticket_public(self, interaction: discord.Interaction):
+        # Check if this is a ticket channel
+        if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
+            embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Check permissions (same as ticket-private)
+        if not self.bot.admin_manager.is_admin(interaction.user):
+            ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket: ", "").strip()
+            
+            if self.bot.db.is_postgresql:
+                ticket = await self.bot.db.connection.fetchrow(
+                    "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM tickets WHERE ticket_id = ?", (ticket_id,)
+                )
+                ticket = await cursor.fetchone()
+            
+            if not ticket:
+                embed = EmbedBuilder.error("Error", "Ticket not found")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            user_id = ticket['user_id'] if self.bot.db.is_postgresql else ticket[3]
+            assignee_id = ticket['assignee_id'] if self.bot.db.is_postgresql else ticket[4]
+            
+            if str(interaction.user.id) not in [user_id, assignee_id]:
+                embed = EmbedBuilder.error("Permission Denied", "Only ticket creator, assignee, or admins can change visibility")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+        
+        success = await self.bot.ticket_manager.set_ticket_visibility(interaction.channel, private=False)
+        
+        if success:
+            embed = EmbedBuilder.success("Ticket Set to Public", "This ticket is now public - everyone can read it (but only assigned users can write)")
+        else:
+            embed = EmbedBuilder.error("Error", "Failed to set ticket visibility")
+        
+        await interaction.response.send_message(embed=embed)
+    
+    @app_commands.command(name="ticket-join", description="Request to join a ticket")
+    async def ticket_join(self, interaction: discord.Interaction):
+        # Check if this is a ticket channel
+        if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
+            embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Check if user already has access
+        permissions = interaction.channel.permissions_for(interaction.user)
+        if permissions.send_messages:
+            embed = EmbedBuilder.warning("Already Joined", "You already have access to this ticket")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Create join request embed
+        embed = discord.Embed(
+            title="🎫 Ticket Join Request",
+            description=f"{interaction.user.mention} wants to join this ticket",
+            color=0xFEE75C
+        )
+        embed.add_field(name="User", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+        embed.add_field(name="Requested", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+        embed.set_thumbnail(url=interaction.user.display_avatar.url)
+        
+        view = TicketJoinRequestView(self.bot, interaction.user, interaction.channel)
+        
+        await interaction.response.send_message(embed=embed, view=view)
     
     @app_commands.command(name="list-tickets", description="List all tickets")
     @app_commands.describe(
@@ -261,7 +380,7 @@ class Tickets(commands.Cog):
                 if channel_id:
                     channel = interaction.guild.get_channel(int(channel_id))
                     if channel:
-                        channel_link = channel.mention
+                        channel_link = f"[#{channel.name}]({channel.jump_url})"
                 
                 embed.add_field(
                     name=f"{status_emoji} {ticket_id}",
@@ -309,6 +428,23 @@ class Tickets(commands.Cog):
                 embed = EmbedBuilder.error("Not Found", f"Ticket {ticket_id} not found")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
+            
+            # Add assignee to ticket channel permissions
+            if self.bot.db.is_postgresql:
+                ticket = await self.bot.db.connection.fetchrow(
+                    "SELECT channel_id FROM tickets WHERE ticket_id = $1", ticket_id
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT channel_id FROM tickets WHERE ticket_id = ?", (ticket_id,)
+                )
+                ticket = await cursor.fetchone()
+            
+            if ticket:
+                channel_id = ticket['channel_id'] if self.bot.db.is_postgresql else ticket[0]
+                channel = interaction.guild.get_channel(int(channel_id))
+                if channel:
+                    await channel.set_permissions(assignee, read_messages=True, send_messages=True)
             
             embed = EmbedBuilder.success(
                 "Ticket Assigned",

@@ -4,30 +4,144 @@ import json
 from datetime import datetime
 from typing import Optional, Dict, Any
 import asyncio
+import random
+import string
+
+class TicketJoinRequestView(discord.ui.View):
+    def __init__(self, bot, requester: discord.Member, ticket_channel: discord.TextChannel):
+        super().__init__(timeout=300)  # 5 minutes timeout
+        self.bot = bot
+        self.requester = requester
+        self.ticket_channel = ticket_channel
+    
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success, emoji="✅")
+    async def accept_request(self, interaction: discord.Interaction, button: discord.ui.Button):
+        try:
+            # Add user to ticket channel permissions
+            await self.ticket_channel.set_permissions(
+                self.requester,
+                read_messages=True,
+                send_messages=True
+            )
+            
+            # Update ticket in database to add assignee
+            ticket_id = self.ticket_channel.topic.split("|")[0].replace("Support ticket: ", "").strip()
+            
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "UPDATE tickets SET assignee_id = $1 WHERE channel_id = $2",
+                    str(self.requester.id), str(self.ticket_channel.id)
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "UPDATE tickets SET assignee_id = ? WHERE channel_id = ?",
+                    (str(self.requester.id), str(self.ticket_channel.id))
+                )
+                await self.bot.db.connection.commit()
+            
+            embed = discord.Embed(
+                title="✅ Request Accepted",
+                description=f"{self.requester.mention} has been added to this ticket by {interaction.user.mention}",
+                color=0x57F287
+            )
+            
+            await interaction.response.send_message(embed=embed)
+            
+            # Disable buttons
+            for item in self.children:
+                item.disabled = True
+            await interaction.edit_original_response(view=self)
+            
+        except Exception as e:
+            embed = discord.Embed(
+                title="❌ Error",
+                description=f"Failed to add user to ticket: {str(e)}",
+                color=0xED4245
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, emoji="❌")
+    async def reject_request(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = RejectReasonModal(self.bot, self.requester, interaction.user)
+        await interaction.response.send_modal(modal)
+        
+        # Disable buttons
+        for item in self.children:
+            item.disabled = True
+        await interaction.edit_original_response(view=self)
+
+class RejectReasonModal(discord.ui.Modal):
+    def __init__(self, bot, requester: discord.Member, rejector: discord.Member):
+        super().__init__(title="Rejection Reason")
+        self.bot = bot
+        self.requester = requester
+        self.rejector = rejector
+        
+        self.reason_input = discord.ui.TextInput(
+            label="Reason for rejection",
+            placeholder="Please provide a reason for rejecting this request...",
+            style=discord.TextStyle.paragraph,
+            required=True,
+            max_length=500
+        )
+        self.add_item(self.reason_input)
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            # Send DM to requester
+            embed = discord.Embed(
+                title="❌ Ticket Join Request Rejected",
+                description=f"Your request to join the ticket in **{interaction.guild.name}** was rejected.",
+                color=0xED4245
+            )
+            embed.add_field(name="Rejected by", value=self.rejector.display_name, inline=True)
+            embed.add_field(name="Reason", value=self.reason_input.value, inline=False)
+            
+            try:
+                await self.requester.send(embed=embed)
+                response_msg = f"Request rejected and {self.requester.mention} has been notified."
+            except discord.Forbidden:
+                response_msg = f"Request rejected but couldn't send DM to {self.requester.mention}."
+            
+            embed_response = discord.Embed(
+                title="❌ Request Rejected",
+                description=response_msg,
+                color=0xED4245
+            )
+            
+            await interaction.response.send_message(embed=embed_response)
+            
+        except Exception as e:
+            await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
 
 class TicketManager:
     def __init__(self, bot):
         self.bot = bot
         self.ticket_configs = {}  # guild_id -> config
     
+    def generate_ticket_id(self) -> str:
+        """Generate a 12-character random ticket ID"""
+        characters = string.ascii_letters + string.digits
+        return ''.join(random.choice(characters) for _ in range(12))
+    
     async def load_ticket_configs(self):
         """Load ticket configurations from database"""
         try:
             if self.bot.db.is_postgresql:
                 rows = await self.bot.db.connection.fetch(
-                    "SELECT guild_id, data_content FROM user_data WHERE data_type = 'ticket_config'"
+                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'ticket_config'"
                 )
                 for row in rows:
-                    guild_id = row['guild_id']
+                    guild_id = row['user_id']  # user_id field stores guild_id for configs
                     config = row['data_content']
                     self.ticket_configs[guild_id] = config
             else:
                 cursor = await self.bot.db.connection.execute(
-                    "SELECT guild_id, data_content FROM user_data WHERE data_type = 'ticket_config'"
+                    "SELECT user_id, data_content FROM user_data WHERE data_type = 'ticket_config'"
                 )
                 rows = await cursor.fetchall()
                 for row in rows:
-                    guild_id = row[1]
+                    guild_id = row[0]  # user_id field stores guild_id for configs
                     config = json.loads(row[2])
                     self.ticket_configs[guild_id] = config
         except Exception as e:
@@ -70,24 +184,56 @@ class TicketManager:
             if not category or not isinstance(category, discord.CategoryChannel):
                 return None
             
-            # Create channel with specific permissions
+            # Create channel with specific permissions - read-only for everyone except creator and bot
             overwrites = {
-                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
                 user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True)
+                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True, manage_channels=True)
             }
             
-            channel_name = f"ticket-{ticket_id.split('-')[1].lower()}"
+            # Add admin roles to overwrites
+            admin_role_ids = self.bot.admin_manager.get_admin_roles(str(guild.id))
+            for role_id in admin_role_ids:
+                role = guild.get_role(int(role_id))
+                if role:
+                    overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            
+            channel_name = f"ticket-{ticket_id.lower()}"
             channel = await category.create_text_channel(
                 name=channel_name,
                 overwrites=overwrites,
-                topic=f"Support ticket: {title} | Created by {user.display_name}"
+                topic=f"Support ticket: {ticket_id} | {title} | Created by {user.display_name}"
             )
             
             return channel
         except Exception as e:
             print(f"Error creating ticket channel: {e}")
             return None
+    
+    async def set_ticket_visibility(self, channel: discord.TextChannel, private: bool) -> bool:
+        """Set ticket visibility (private = only assigned users, public = everyone can read)"""
+        try:
+            guild = channel.guild
+            
+            if private:
+                # Private: Only assigned users and admins can read
+                await channel.set_permissions(
+                    guild.default_role,
+                    read_messages=False,
+                    send_messages=False
+                )
+            else:
+                # Public: Everyone can read, but only assigned users can write
+                await channel.set_permissions(
+                    guild.default_role,
+                    read_messages=True,
+                    send_messages=False
+                )
+            
+            return True
+        except Exception as e:
+            print(f"Error setting ticket visibility: {e}")
+            return False
     
     async def create_transcript(self, channel: discord.TextChannel) -> str:
         """Create a text transcript of the ticket channel"""
