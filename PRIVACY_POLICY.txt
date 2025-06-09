@@ -1,0 +1,147 @@
+DEVBOT - PRIVACY POLICY
+
+Last Updated: January 9, 2025
+
+1. INTRODUCTION
+This Privacy Policy describes how devBot ("we," "us," or "the Bot") collects, uses, and protects your information when you use our Discord bot services.
+
+2. INFORMATION WE COLLECT
+
+2.1 Automatically Collected Information:
+- Discord User IDs and usernames
+- Discord Server (Guild) IDs and names
+- Channel IDs and names
+- Message content when directly interacting with the Bot
+- Command usage data and timestamps
+- Bot configuration settings per server
+
+2.2 Information You Provide:
+- Reminder content and scheduling information
+- Workflow configurations and triggers
+- Meeting details and participant lists
+- Ticket descriptions and assignments
+- Integration credentials (stored securely)
+- Custom keywords and responses
+
+2.3 Third-Party Integration Data:
+- GitHub repository information and commit data
+- Notion page and database information
+- Trello board and card data
+- Google Calendar events and meeting details
+- OAuth tokens for authenticated services
+
+3. HOW WE USE YOUR INFORMATION
+
+We use collected information to:
+- Provide Bot functionality and features
+- Process commands and execute workflows
+- Send reminders and notifications
+- Manage tickets and assignments
+- Sync data with integrated third-party services
+- Maintain Bot configuration and settings
+- Improve Bot performance and features
+- Provide user support and troubleshooting
+
+4. DATA STORAGE AND SECURITY
+
+4.1 Storage:
+- Data is stored in secure databases with encryption
+- Integration tokens are encrypted at rest
+- Message content is only stored when necessary for functionality
+- Configuration data is retained to maintain Bot settings
+
+4.2 Security Measures:
+- Industry-standard encryption for data transmission
+- Secure authentication for third-party integrations
+- Regular security updates and monitoring
+- Limited access to data by authorized personnel only
+- Secure backup and recovery procedures
+
+5. DATA SHARING AND DISCLOSURE
+
+We do NOT sell, trade, or rent your personal information to third parties.
+
+We may share information only in these circumstances:
+- With third-party services you've explicitly integrated (GitHub, Notion, etc.)
+- When required by law or legal process
+- To protect our rights, property, or safety
+- With your explicit consent
+- In anonymized, aggregated form for analytics
+
+6. DATA RETENTION
+
+- Active configuration data is retained while the Bot is in use
+- Reminder data is deleted after execution or manual removal
+- Workflow logs are retained for 30 days unless configured otherwise
+- Ticket data is retained until manually deleted
+- Integration tokens are retained until revoked
+- Inactive server data may be purged after 90 days of inactivity
+
+7. YOUR RIGHTS AND CHOICES
+
+You have the right to:
+- Access your data stored by the Bot
+- Request correction of inaccurate data
+- Request deletion of your data
+- Revoke third-party integration permissions
+- Opt-out of certain data collection
+- Export your configuration data
+
+To exercise these rights, contact us through our official channels.
+
+8. THIRD-PARTY SERVICES
+
+When you use integrations, you're also subject to their privacy policies:
+- Discord: https://discord.com/privacy
+- GitHub: https://docs.github.com/en/site-policy/privacy-policies
+- Notion: https://www.notion.so/Privacy-Policy
+- Trello: https://www.atlassian.com/legal/privacy-policy
+- Google: https://policies.google.com/privacy
+
+9. CHILDREN'S PRIVACY
+
+The Bot is not intended for users under 13 years of age. We do not knowingly collect personal information from children under 13. If we become aware of such collection, we will delete the information immediately.
+
+10. INTERNATIONAL DATA TRANSFERS
+
+Your data may be transferred to and processed in countries other than your own. We ensure appropriate safeguards are in place for such transfers.
+
+11. COOKIES AND TRACKING
+
+The Bot does not use cookies or tracking technologies in the traditional web sense, but may collect usage analytics for improvement purposes.
+
+12. DATA BREACH NOTIFICATION
+
+In the event of a data breach that may affect your personal information, we will notify affected users and relevant authorities as required by applicable law.
+
+13. CHANGES TO THIS POLICY
+
+We may update this Privacy Policy from time to time. We will notify users of significant changes through:
+- Bot announcements
+- Discord server notifications
+- Updated policy posting
+
+Continued use after changes constitutes acceptance of the updated policy.
+
+14. CONTACT INFORMATION
+
+For privacy-related questions, concerns, or requests:
+- Contact us through our official Discord server
+- Submit issues through our GitHub repository
+- Use the Bot's built-in support commands
+
+15. COMPLIANCE
+
+This Privacy Policy is designed to comply with:
+- General Data Protection Regulation (GDPR)
+- California Consumer Privacy Act (CCPA)
+- Discord's Developer Terms of Service
+- Other applicable privacy laws
+
+16. DATA CONTROLLER
+
+devBot developers act as the data controller for the information collected through the Bot.
+
+By using devBot, you acknowledge that you have read and understood this Privacy Policy and consent to the collection and use of your information as described herein.
+
+Last reviewed and updated: January 9, 2025

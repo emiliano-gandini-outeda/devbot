@@ -1,0 +1,86 @@
+DEVBOT - TERMS OF SERVICE
+
+Last Updated: January 9, 2025
+
+1. ACCEPTANCE OF TERMS
+By using devBot ("the Bot"), you agree to be bound by these Terms of Service ("Terms"). If you do not agree to these Terms, do not use the Bot.
+
+2. DESCRIPTION OF SERVICE
+devBot is a Discord bot that provides productivity and workflow management features including:
+- Task and project management
+- Meeting scheduling and management
+- Reminder systems
+- Workflow automation
+- Integration with third-party services (GitHub, Notion, Trello, Google services)
+- Ticket management systems
+- Thread archiving and logging
+
+3. USER ACCOUNTS AND REGISTRATION
+- You must have a valid Discord account to use the Bot
+- You are responsible for maintaining the security of your account
+- You must provide accurate information when configuring the Bot
+- You are responsible for all activities that occur under your account
+
+4. ACCEPTABLE USE
+You agree NOT to use the Bot to:
+- Violate any applicable laws or regulations
+- Harass, abuse, or harm other users
+- Spam or send unsolicited messages
+- Attempt to gain unauthorized access to the Bot or its systems
+- Interfere with or disrupt the Bot's functionality
+- Use the Bot for commercial purposes without permission
+- Share inappropriate, offensive, or illegal content
+- Attempt to reverse engineer or modify the Bot
+
+5. THIRD-PARTY INTEGRATIONS
+- The Bot integrates with third-party services (GitHub, Notion, Trello, Google)
+- Your use of these integrations is subject to their respective terms of service
+- We are not responsible for the availability or functionality of third-party services
+- You are responsible for maintaining valid credentials for integrated services
+
+6. DATA AND PRIVACY
+- We collect and process data as described in our Privacy Policy
+- You retain ownership of your content and data
+- We may store messages, user IDs, and configuration data necessary for Bot functionality
+- We implement reasonable security measures to protect your data
+
+7. AVAILABILITY AND MODIFICATIONS
+- We strive to maintain Bot availability but do not guarantee 100% uptime
+- We may modify, suspend, or discontinue the Bot at any time
+- We may update these Terms at any time with notice
+- Continued use after changes constitutes acceptance of new Terms
+
+8. INTELLECTUAL PROPERTY
+- The Bot and its original content are owned by devBot developers
+- You retain rights to your content but grant us license to process it for Bot functionality
+- You may not copy, modify, or distribute the Bot without permission
+
+9. LIMITATION OF LIABILITY
+- The Bot is provided "as is" without warranties
+- We are not liable for any damages arising from Bot use
+- Our liability is limited to the maximum extent permitted by law
+- We are not responsible for data loss or service interruptions
+
+10. TERMINATION
+- You may stop using the Bot at any time
+- We may terminate your access for Terms violations
+- Upon termination, your right to use the Bot ceases immediately
+- Certain provisions of these Terms survive termination
+
+11. SUPPORT AND CONTACT
+- Support is provided on a best-effort basis
+- Contact us through our official Discord server or GitHub repository
+- We do not guarantee response times for support requests
+
+12. GOVERNING LAW
+These Terms are governed by the laws of the jurisdiction where the Bot operators are located, without regard to conflict of law principles.
+
+13. SEVERABILITY
+If any provision of these Terms is found unenforceable, the remaining provisions will remain in full force and effect.
+
+14. ENTIRE AGREEMENT
+These Terms, along with our Privacy Policy, constitute the entire agreement between you and devBot regarding the use of the Bot.
+
+By using devBot, you acknowledge that you have read, understood, and agree to be bound by these Terms of Service.
+
+For questions about these Terms, please contact us through our official channels.
