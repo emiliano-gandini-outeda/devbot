@@ -130,6 +130,7 @@ class WorkflowManager:
             if 'message_link' in trigger_data:
                 embed.add_field(name="Message", value=f"[Jump to message]({trigger_data['message_link']})", inline=False)
             
+            embed.set_footer(text="devBot")
             await log_channel.send(embed=embed)
             
         except Exception as e:
@@ -144,12 +145,12 @@ class WorkflowManager:
             # Get workflows for this guild
             if self.bot.db.is_postgresql:
                 workflows = await self.bot.db.connection.fetch(
-                    "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type = 'message'",
+                    "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type LIKE 'message%'",
                     str(message.guild.id)
                 )
             else:
                 cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type = 'message'",
+                    "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type LIKE 'message%'",
                     (str(message.guild.id),)
                 )
                 workflows = await cursor.fetchall()
@@ -157,10 +158,18 @@ class WorkflowManager:
             for workflow in workflows:
                 # Check if workflow conditions are met
                 trigger_data_raw = workflow['trigger_data'] if self.bot.db.is_postgresql else workflow[5]
+                trigger_type = workflow['trigger_type'] if self.bot.db.is_postgresql else workflow[4]
+                
                 if isinstance(trigger_data_raw, str):
                     trigger_conditions = json.loads(trigger_data_raw)
                 else:
                     trigger_conditions = trigger_data_raw
+                
+                # Check if it's a message trigger with specific text
+                if trigger_type.startswith('message:'):
+                    trigger_text = trigger_type.split(':', 1)[1].lower()
+                    if trigger_text not in message.content.lower():
+                        continue
                 
                 # Check channel condition
                 if 'channel_id' in trigger_conditions:

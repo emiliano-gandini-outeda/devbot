@@ -1,97 +1,76 @@
 import discord
 from datetime import datetime, timedelta
-from typing import Optional, List
 import re
-import asyncio
-import os
+from typing import Optional
 
 class EmbedBuilder:
+    """Helper class for creating consistent embeds"""
+    
     @staticmethod
-    def success(title: str, description: str = None) -> discord.Embed:
-        embed = discord.Embed(
-            title=f"✅ {title}",
-            description=description,
-            color=0x57F287
-        )
-        embed.timestamp = datetime.utcnow()
+    def success(title: str, description: str) -> discord.Embed:
+        embed = discord.Embed(title=f"✅ {title}", description=description, color=0x57F287)
         embed.set_footer(text="devBot")
         return embed
     
     @staticmethod
-    def error(title: str, description: str = None) -> discord.Embed:
-        embed = discord.Embed(
-            title=f"❌ {title}",
-            description=description,
-            color=0xED4245
-        )
-        embed.timestamp = datetime.utcnow()
+    def error(title: str, description: str) -> discord.Embed:
+        embed = discord.Embed(title=f"❌ {title}", description=description, color=0xED4245)
         embed.set_footer(text="devBot")
         return embed
     
     @staticmethod
-    def info(title: str, description: str = None) -> discord.Embed:
-        embed = discord.Embed(
-            title=f"ℹ️ {title}",
-            description=description,
-            color=0x5865F2
-        )
-        embed.timestamp = datetime.utcnow()
+    def warning(title: str, description: str) -> discord.Embed:
+        embed = discord.Embed(title=f"⚠️ {title}", description=description, color=0xFEE75C)
         embed.set_footer(text="devBot")
         return embed
     
     @staticmethod
-    def warning(title: str, description: str = None) -> discord.Embed:
-        embed = discord.Embed(
-            title=f"⚠️ {title}",
-            description=description,
-            color=0xFEE75C
-        )
-        embed.timestamp = datetime.utcnow()
-        embed.set_footer(text="devBot")
-        return embed
-    
-    @staticmethod
-    def railway_info(title: str, description: str = None) -> discord.Embed:
-        embed = discord.Embed(
-            title=f"🚄 {title}",
-            description=description,
-            color=0x0B0D0E
-        )
-        embed.timestamp = datetime.utcnow()
+    def info(title: str, description: str) -> discord.Embed:
+        embed = discord.Embed(title=f"ℹ️ {title}", description=description, color=0x5865F2)
         embed.set_footer(text="devBot")
         return embed
 
 class TimeParser:
-    @staticmethod
-    def parse_duration(duration_str: str) -> Optional[timedelta]:
-        """Parse duration string like '1h', '30m', '2d' into timedelta"""
-        pattern = r'(\d+)([smhd])'
-        matches = re.findall(pattern, duration_str.lower())
-        
-        if not matches:
-            return None
-        
-        total_seconds = 0
-        for amount, unit in matches:
-            amount = int(amount)
-            if unit == 's':
-                total_seconds += amount
-            elif unit == 'm':
-                total_seconds += amount * 60
-            elif unit == 'h':
-                total_seconds += amount * 3600
-            elif unit == 'd':
-                total_seconds += amount * 86400
-        
-        return timedelta(seconds=total_seconds)
+    """Helper class for parsing time durations"""
     
     @staticmethod
-    def format_timedelta(td):
+    def parse_duration(time_str: str) -> Optional[timedelta]:
+        """Parse duration string like '1h30m', '2d', '45s' into timedelta"""
+        if not time_str:
+            return None
+        
+        # Remove spaces and convert to lowercase
+        time_str = time_str.replace(' ', '').lower()
+        
+        # Pattern to match time components
+        pattern = r'(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?'
+        match = re.match(pattern, time_str)
+        
+        if not match:
+            return None
+        
+        days, hours, minutes, seconds = match.groups()
+        
+        # Convert to integers, defaulting to 0
+        days = int(days) if days else 0
+        hours = int(hours) if hours else 0
+        minutes = int(minutes) if minutes else 0
+        seconds = int(seconds) if seconds else 0
+        
+        # Check if at least one component was provided
+        if days == 0 and hours == 0 and minutes == 0 and seconds == 0:
+            return None
+        
+        return timedelta(days=days, hours=hours, minutes=minutes, seconds=seconds)
+    
+    @staticmethod
+    def format_timedelta(td: timedelta) -> str:
         """Format timedelta to human readable string"""
         total_seconds = int(td.total_seconds())
         days = total_seconds // 86400
         hours = (total_seconds % 86400) // 3600
         minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
         
         parts = []
         if days > 0:
@@ -100,59 +79,7 @@ class TimeParser:
             parts.append(f"{hours}h")
         if minutes > 0:
             parts.append(f"{minutes}m")
+        if seconds > 0:
+            parts.append(f"{seconds}s")
         
-        return " ".join(parts) if parts else "< 1m"
-
-class RailwayUtils:
-    @staticmethod
-    def get_deployment_info() -> dict:
-        """Get Railway deployment information"""
-        return {
-            "environment": os.getenv('RAILWAY_ENVIRONMENT', 'unknown'),
-            "service_id": os.getenv('RAILWAY_SERVICE_ID', 'unknown'),
-            "deployment_id": os.getenv('RAILWAY_DEPLOYMENT_ID', 'unknown'),
-            "project_id": os.getenv('RAILWAY_PROJECT_ID', 'unknown'),
-            "region": os.getenv('RAILWAY_REGION', 'unknown'),
-            "replica_id": os.getenv('RAILWAY_REPLICA_ID', 'unknown')
-        }
-    
-    @staticmethod
-    def is_production() -> bool:
-        """Check if running in Railway production"""
-        return os.getenv('RAILWAY_ENVIRONMENT') == 'production'
-
-class Pagination:
-    def __init__(self, entries: List, per_page: int = 10):
-        self.entries = entries
-        self.per_page = per_page
-        self.pages = [entries[i:i + per_page] for i in range(0, len(entries), per_page)]
-        self.current_page = 0
-    
-    def get_page(self, page_num: int = None) -> List:
-        if page_num is not None:
-            self.current_page = max(0, min(page_num, len(self.pages) - 1))
-        return self.pages[self.current_page] if self.pages else []
-    
-    def next_page(self) -> List:
-        if self.current_page < len(self.pages) - 1:
-            self.current_page += 1
-        return self.get_page()
-    
-    def prev_page(self) -> List:
-        if self.current_page > 0:
-            self.current_page -= 1
-        return self.get_page()
-    
-    @property
-    def page_info(self) -> str:
-        if not self.pages:
-            return "No entries"
-        return f"Page {self.current_page + 1}/{len(self.pages)} ({len(self.entries)} total)"
-
-async def safe_send(channel, content=None, embed=None, view=None):
-    """Safely send message to channel with error handling"""
-    try:
-        return await channel.send(content=content, embed=embed, view=view)
-    except discord.HTTPException as e:
-        print(f"Failed to send message: {e}")
-        return None
+        return " ".join(parts) if parts else "0s"

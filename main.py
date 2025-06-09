@@ -75,19 +75,13 @@ class SlackBot(commands.Bot):
             # Load all cogs
             cogs = [
                 'cogs.setup',
-                'cogs.tickets',
-                'cogs.workflows',
-                'cogs.reminders',
-                'cogs.conversations',
-                'cogs.integrations',
-                'cogs.notifications',
-                'cogs.intelligence',
-                'cogs.roles',
-                'cogs.privacy',
+                'cogs.ticket',
+                'cogs.workflow',
+                'cogs.reminder',
+                'cogs.meeting',
+                'cogs.integration',
                 'cogs.admin',
-                'cogs.help',
-                'cogs.logging',
-                'cogs.meetings'
+                'cogs.help'
             ]
 
             loaded_cogs = []
@@ -119,31 +113,6 @@ class SlackBot(commands.Bot):
         # Wait a moment for all cogs to fully initialize
         await asyncio.sleep(2)
         
-        # List all loaded commands for debugging
-        all_commands = self.tree.get_commands()
-        logger.info(f"Total registered slash commands before sync: {len(all_commands)}")
-        
-        # Check for specific commands that should be available
-        command_names = [cmd.name for cmd in all_commands]
-        logger.info(f"Available commands before sync: {', '.join(sorted(command_names)) if command_names else 'None'}")
-        
-        # Force register commands from all cogs
-        for cog_name, cog in self.cogs.items():
-            logger.info(f"Checking cog {cog_name} for commands...")
-            if hasattr(cog, 'get_app_commands'):
-                cog_commands = cog.get_app_commands()
-                for command in cog_commands:
-                    try:
-                        # Check if command already exists to avoid duplicates
-                        existing_commands = [cmd.name for cmd in self.tree.get_commands()]
-                        if command.name not in existing_commands:
-                            self.tree.add_command(command)
-                            logger.info(f"Added command /{command.name} from {cog_name}")
-                        else:
-                            logger.info(f"Command /{command.name} already exists, skipping")
-                    except Exception as e:
-                        logger.warning(f"Could not add command /{command.name}: {e}")
-        
         # Sync commands to guilds asynchronously (non-blocking)
         asyncio.create_task(self.sync_commands_to_guilds())
         
@@ -156,6 +125,28 @@ class SlackBot(commands.Bot):
     async def on_resumed(self):
         """Called when bot resumes connection"""
         logger.info("Bot resumed connection to Discord")
+
+    async def on_message(self, message):
+        """Handle message events for workflow triggers"""
+        if message.author.bot:
+            return
+        
+        # Check for workflow triggers
+        if self.workflow_manager:
+            await self.workflow_manager.check_message_triggers(message)
+        
+        # Process commands
+        await self.process_commands(message)
+
+    async def on_member_join(self, member):
+        """Handle member join events for workflow triggers"""
+        if self.workflow_manager:
+            await self.workflow_manager.check_member_join_triggers(member)
+
+    async def on_thread_create(self, thread):
+        """Handle thread creation events for workflow triggers"""
+        if self.workflow_manager:
+            await self.workflow_manager.check_thread_create_triggers(thread)
 
     async def sync_commands_to_guilds(self):
         """Sync commands to all guilds asynchronously"""
@@ -238,49 +229,35 @@ class SlackBot(commands.Bot):
         try:
             logger.info("Registering cog commands to command tree...")
             
-            # Clear existing commands to avoid duplicates
+            # Clear ALL existing commands to avoid duplicates
             self.tree.clear_commands(guild=None)
             
-            # Collect all commands from cogs
-            commands_to_add = []
-            existing_command_names = set()
+            # Collect all unique commands from cogs
+            unique_commands = {}
             
             for cog_name, cog in self.cogs.items():
                 logger.info(f"Processing cog: {cog_name}")
                 
-                # Check for app_commands in the cog
-                if hasattr(cog, 'get_app_commands'):
-                    cog_commands = cog.get_app_commands()
-                    logger.info(f"Found {len(cog_commands)} app commands in {cog_name}")
-                    
-                    for command in cog_commands:
-                        if command.name not in existing_command_names:
-                            commands_to_add.append(command)
-                            existing_command_names.add(command.name)
-                            logger.info(f"Adding command /{command.name} from {cog_name}")
-                        else:
-                            logger.warning(f"Duplicate command /{command.name} found in {cog_name}, skipping")
-                
-                # Also check __cog_app_commands__ attribute
+                # Get commands from the cog's __cog_app_commands__ attribute
                 if hasattr(cog, '__cog_app_commands__'):
                     for command in cog.__cog_app_commands__:
-                        if command.name not in existing_command_names:
-                            commands_to_add.append(command)
-                            existing_command_names.add(command.name)
-                            logger.info(f"Adding command /{command.name} from {cog_name} via __cog_app_commands__")
+                        if command.name not in unique_commands:
+                            unique_commands[command.name] = command
+                            logger.info(f"Found command /{command.name} from {cog_name}")
+                        else:
+                            logger.warning(f"Duplicate command /{command.name} found in {cog_name}, skipping")
             
-            # Add all commands to the tree
-            for command in commands_to_add:
+            # Add all unique commands to the tree
+            for command_name, command in unique_commands.items():
                 self.tree.add_command(command)
-                logger.info(f"Added command /{command.name} to command tree")
+                logger.info(f"Added command /{command_name} to command tree")
             
             total_commands = len(self.tree.get_commands())
-            logger.info(f"✅ Registered {total_commands} commands to command tree")
+            logger.info(f"✅ Registered {total_commands} unique commands to command tree")
             
             # List all commands for debugging
-            all_commands = self.tree.get_commands()
-            command_names = [cmd.name for cmd in all_commands]
-            logger.info(f"Command tree now contains: {', '.join(command_names) if command_names else 'No commands'}")
+            command_names = list(unique_commands.keys())
+            logger.info(f"Command tree contains: {', '.join(sorted(command_names)) if command_names else 'No commands'}")
             
         except Exception as e:
             logger.error(f"❌ Failed to register cog commands: {e}", exc_info=True)
