@@ -98,18 +98,10 @@ class Conversations(commands.Cog):
         
         try:
             # Get thread config
-            if self.bot.db.is_postgresql:
-                config_row = await self.bot.db.connection.fetchrow(
-                    "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
-                    str(interaction.guild.id), 'thread_config'
-                )
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT data_content FROM user_data WHERE user_id = ? AND data_type = ?",
-                    (str(interaction.guild.id), 'thread_config')
-                )
-                row = await cursor.fetchone()
-                config_row = {'data_content': row[0]} if row else None
+            config_row = await self.bot.db.connection.fetchrow(
+                "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                str(interaction.guild.id), 'thread_config'
+            )
             
             if not config_row:
                 embed = EmbedBuilder.error(
