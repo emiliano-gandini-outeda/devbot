@@ -5,6 +5,8 @@ import logging
 import os
 import sys
 from pathlib import Path
+import signal
+import traceback
 
 # Add the project root to the Python path
 project_root = Path(__file__).parent
@@ -51,33 +53,61 @@ class DiscordBot(commands.Bot):
         self.logging_manager = None
         self.ticket_manager = None
         self.startup_complete = False
+        
+        # Add error handlers
+        self._setup_error_handlers()
+    
+    def _setup_error_handlers(self):
+        """Set up global error handlers"""
+        # Set up asyncio exception handler
+        loop = asyncio.get_event_loop()
+        loop.set_exception_handler(self._handle_asyncio_exception)
+    
+    def _handle_asyncio_exception(self, loop, context):
+        """Handle uncaught exceptions in the event loop"""
+        exception = context.get('exception')
+        if exception:
+            logger.error(f"Uncaught exception in event loop: {exception}")
+            logger.error(f"Context: {context}")
+            traceback.print_exception(type(exception), exception, exception.__traceback__)
+        else:
+            logger.error(f"Asyncio error: {context.get('message')}")
+            logger.error(f"Context: {context}")
     
     async def setup_hook(self):
         """Called when the bot is starting up"""
         logger.info("🤖 Starting Discord bot setup...")
         
         try:
-            # Initialize database
+            # Initialize database with timeout
             logger.info("📊 Initializing database...")
             self.db = DatabaseManager()
-            await self.db.init_database()
-            logger.info("✅ Database initialized successfully")
+            try:
+                # Set a timeout for database initialization
+                await asyncio.wait_for(self.db.init_database(), timeout=30.0)
+                logger.info("✅ Database initialized successfully")
+            except asyncio.TimeoutError:
+                logger.error("❌ Database initialization timed out")
+                raise TimeoutError("Database initialization timed out after 30 seconds")
         
-            # Initialize managers
+            # Initialize managers with timeouts
             logger.info("🛡️ Initializing managers...")
             if self.db:
+                # Admin manager
                 self.admin_manager = AdminManager(self)
-                await self.admin_manager.load_admin_roles()
+                await asyncio.wait_for(self.admin_manager.load_admin_roles(), timeout=10.0)
                 
+                # Logging manager
                 self.logging_manager = LoggingManager(self)
-                await self.logging_manager.load_log_configs()
+                await asyncio.wait_for(self.logging_manager.load_log_configs(), timeout=10.0)
                 
+                # Ticket manager
                 self.ticket_manager = TicketManager(self)
                 logger.info("✅ Managers initialized")
 
-            # Load cogs
+            # Load cogs with timeout
             logger.info("🔧 Loading cogs...")
-            await self.load_cogs()
+            await asyncio.wait_for(self.load_cogs(), timeout=30.0)
             logger.info("✅ Cogs loaded successfully")
 
             self.startup_complete = True
@@ -86,7 +116,7 @@ class DiscordBot(commands.Bot):
         except Exception as e:
             logger.error(f"❌ Error during setup: {e}")
             logger.exception("Full traceback:")
-            raise
+            # Don't raise the exception - allow the bot to continue with partial functionality
     
     async def load_cogs(self):
         """Load all cogs"""
@@ -111,16 +141,24 @@ class DiscordBot(commands.Bot):
         ]
         
         loaded_count = 0
+        failed_cogs = []
         
         for cog in cogs:
             try:
-                await self.load_extension(cog)
+                # Set a timeout for each cog loading
+                await asyncio.wait_for(self.load_extension(cog), timeout=5.0)
                 loaded_count += 1
                 logger.info(f"  ✅ Loaded {cog}")
+            except asyncio.TimeoutError:
+                logger.error(f"  ❌ Timed out loading {cog}")
+                failed_cogs.append(cog)
             except Exception as e:
                 logger.error(f"  ❌ Failed to load {cog}: {e}")
+                failed_cogs.append(cog)
     
         logger.info(f"📦 Loaded {loaded_count}/{len(cogs)} cogs successfully")
+        if failed_cogs:
+            logger.warning(f"Failed cogs: {', '.join(failed_cogs)}")
     
     async def on_ready(self):
         """Called when the bot is ready"""
@@ -134,14 +172,17 @@ class DiscordBot(commands.Bot):
             # Clear all commands first
             self.tree.clear_commands(guild=None)
             
-            # Sync globally
-            synced = await self.tree.sync()
-            logger.info(f"✅ Synced {len(synced)} commands globally")
-            
-            # List synced commands for verification
-            if synced:
-                command_names = [cmd.name for cmd in synced]
-                logger.info(f"📋 Synced commands: {', '.join(command_names)}")
+            # Sync globally with timeout
+            try:
+                synced = await asyncio.wait_for(self.tree.sync(), timeout=15.0)
+                logger.info(f"✅ Synced {len(synced)} commands globally")
+                
+                # List synced commands for verification
+                if synced:
+                    command_names = [cmd.name for cmd in synced]
+                    logger.info(f"📋 Synced commands: {', '.join(command_names)}")
+            except asyncio.TimeoutError:
+                logger.error("❌ Command syncing timed out")
             
         except Exception as e:
             logger.error(f"❌ Failed to sync commands: {e}")
@@ -178,13 +219,23 @@ class DiscordBot(commands.Bot):
         """Clean shutdown"""
         logger.info("🔄 Shutting down bot...")
         
-        # Close database connection
+        # Close database connection with timeout
         if self.db:
-            await self.db.close()
+            try:
+                await asyncio.wait_for(self.db.close(), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.error("❌ Database close operation timed out")
+            except Exception as e:
+                logger.error(f"❌ Error closing database: {e}")
         
         # Close the bot
-        await super().close()
-        logger.info("✅ Bot shutdown complete")
+        try:
+            await asyncio.wait_for(super().close(), timeout=5.0)
+            logger.info("✅ Bot shutdown complete")
+        except asyncio.TimeoutError:
+            logger.error("❌ Bot close operation timed out")
+        except Exception as e:
+            logger.error(f"❌ Error during bot shutdown: {e}")
 
 async def main():
     """Main function to run the bot"""
@@ -201,8 +252,18 @@ async def main():
     # Create and start bot
     bot = DiscordBot()
     
+    # Set up signal handlers for graceful shutdown
+    loop = asyncio.get_running_loop()
+    
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, lambda: asyncio.create_task(handle_shutdown(bot, sig)))
+    
     try:
-        await bot.start(Settings.DISCORD_TOKEN)
+        # Start with a timeout for connection
+        connect_task = bot.start(Settings.DISCORD_TOKEN)
+        await asyncio.wait_for(shield_task(connect_task), timeout=60.0)
+    except asyncio.TimeoutError:
+        logger.error("❌ Bot connection timed out")
     except discord.LoginFailure:
         logger.error("❌ Invalid Discord token")
     except Exception as e:
@@ -212,6 +273,15 @@ async def main():
         if not bot.is_closed():
             await bot.close()
 
+async def shield_task(coro):
+    """Shield a coroutine from cancellation"""
+    return await asyncio.shield(coro)
+
+async def handle_shutdown(bot, signal):
+    """Handle shutdown signals gracefully"""
+    logger.info(f"Received signal {signal.name}, shutting down...")
+    await bot.close()
+
 if __name__ == "__main__":
     try:
         # Check Python version
@@ -219,11 +289,15 @@ if __name__ == "__main__":
             logger.error("❌ Python 3.8 or higher is required")
             sys.exit(1)
         
-        # Run the bot
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("🛑 Bot stopped by user")
+        # Run the bot with proper exception handling
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            logger.info("🛑 Bot stopped by user")
+        except Exception as e:
+            logger.error(f"❌ Fatal error: {e}")
+            logger.exception("Full traceback:")
     except Exception as e:
-        logger.error(f"❌ Fatal error: {e}")
+        logger.error(f"❌ Fatal error outside main loop: {e}")
         logger.exception("Full traceback:")
         sys.exit(1)

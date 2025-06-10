@@ -15,6 +15,8 @@ class DatabaseManager:
         self.connection = None
         self._connection_lock = asyncio.Lock()
         self.is_postgresql = self.database_url.startswith('postgresql')
+        self._connection_timeout = 10.0  # Connection timeout in seconds
+        self._query_timeout = 5.0  # Query timeout in seconds
         
         logger.info(f"Database type: {'PostgreSQL' if self.is_postgresql else 'SQLite'}")
     
@@ -23,23 +25,43 @@ class DatabaseManager:
         async with self._connection_lock:
             try:
                 if self.is_postgresql:
-                    # Connect to PostgreSQL
-                    self.connection = await asyncpg.connect(self.database_url)
-                    logger.info("✅ Connected to PostgreSQL database")
-                    
-                    # Test connection
-                    result = await self.connection.fetchval("SELECT version()")
-                    logger.info(f"PostgreSQL version: {result}")
+                    # Connect to PostgreSQL with timeout
+                    try:
+                        self.connection = await asyncio.wait_for(
+                            asyncpg.connect(self.database_url), 
+                            timeout=self._connection_timeout
+                        )
+                        logger.info("✅ Connected to PostgreSQL database")
+                        
+                        # Test connection
+                        result = await asyncio.wait_for(
+                            self.connection.fetchval("SELECT version()"),
+                            timeout=self._query_timeout
+                        )
+                        logger.info(f"PostgreSQL version: {result}")
+                    except asyncio.TimeoutError:
+                        logger.error(f"❌ PostgreSQL connection timed out after {self._connection_timeout} seconds")
+                        raise
                 else:
-                    # Connect to SQLite
+                    # Connect to SQLite with timeout
                     db_path = self.database_url.replace('sqlite:///', '')
-                    self.connection = await aiosqlite.connect(db_path)
-                    logger.info(f"✅ Connected to SQLite database: {db_path}")
-                    
-                    # Test connection
-                    cursor = await self.connection.execute("SELECT sqlite_version()")
-                    result = await cursor.fetchone()
-                    logger.info(f"SQLite version: {result[0]}")
+                    try:
+                        self.connection = await asyncio.wait_for(
+                            aiosqlite.connect(db_path),
+                            timeout=self._connection_timeout
+                        )
+                        logger.info(f"✅ Connected to SQLite database: {db_path}")
+                        
+                        # Test connection
+                        cursor = await asyncio.wait_for(
+                            self.connection.execute("SELECT sqlite_version()"),
+                            timeout=self._query_timeout
+                        )
+                        result = await cursor.fetchone()
+                        logger.info(f"SQLite version: {result[0]}")
+                    except asyncio.TimeoutError:
+                        logger.error(f"❌ SQLite connection timed out after {self._connection_timeout} seconds")
+                        raise
             
             except Exception as e:
                 logger.error(f"❌ Failed to connect to database: {e}")
@@ -185,9 +207,16 @@ class DatabaseManager:
 
         for i, table_sql in enumerate(tables, 1):
             try:
-                await self.connection.execute(table_sql)
+                # Execute with timeout
+                await asyncio.wait_for(
+                    self.connection.execute(table_sql),
+                    timeout=self._query_timeout
+                )
                 table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0]
                 logger.info(f"✅ Created table {i}/{len(tables)}: {table_name}")
+            except asyncio.TimeoutError:
+                logger.error(f"❌ Table creation timed out for table {i}")
+                raise
             except Exception as e:
                 logger.error(f"❌ Failed to create table {i}: {e}")
                 raise
@@ -207,7 +236,13 @@ class DatabaseManager:
 
         for index_sql in indexes:
             try:
-                await self.connection.execute(index_sql)
+                # Execute with timeout
+                await asyncio.wait_for(
+                    self.connection.execute(index_sql),
+                    timeout=self._query_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Index creation timed out: {index_sql}")
             except Exception as e:
                 logger.warning(f"Failed to create index: {e}")
     
@@ -337,14 +372,32 @@ class DatabaseManager:
 
         for i, table_sql in enumerate(tables, 1):
             try:
-                await self.connection.execute(table_sql)
+                # Execute with timeout
+                await asyncio.wait_for(
+                    self.connection.execute(table_sql),
+                    timeout=self._query_timeout
+                )
                 table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0]
                 logger.info(f"✅ Created table {i}/{len(tables)}: {table_name}")
+            except asyncio.TimeoutError:
+                logger.error(f"❌ Table creation timed out for table {i}")
+                raise
             except Exception as e:
                 logger.error(f"❌ Failed to create table {i}: {e}")
                 raise
 
-        await self.connection.commit()
+        # Commit changes
+        try:
+            await asyncio.wait_for(
+                self.connection.commit(),
+                timeout=self._query_timeout
+            )
+        except asyncio.TimeoutError:
+            logger.error("❌ Commit operation timed out")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Failed to commit changes: {e}")
+            raise
 
         # Create indexes
         indexes = [
@@ -361,29 +414,99 @@ class DatabaseManager:
 
         for index_sql in indexes:
             try:
-                await self.connection.execute(index_sql)
+                # Execute with timeout
+                await asyncio.wait_for(
+                    self.connection.execute(index_sql),
+                    timeout=self._query_timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"Index creation timed out: {index_sql}")
             except Exception as e:
                 logger.warning(f"Failed to create index: {e}")
         
-        await self.connection.commit()
+        # Commit changes
+        try:
+            await asyncio.wait_for(
+                self.connection.commit(),
+                timeout=self._query_timeout
+            )
+        except asyncio.TimeoutError:
+            logger.error("❌ Commit operation timed out")
+        except Exception as e:
+            logger.error(f"❌ Failed to commit changes: {e}")
+    
+    async def execute_query(self, query, params=None, fetch_type=None, timeout=None):
+        """Execute a database query with proper error handling and timeouts"""
+        if timeout is None:
+            timeout = self._query_timeout
+            
+        try:
+            if self.is_postgresql:
+                if fetch_type == 'one':
+                    return await asyncio.wait_for(
+                        self.connection.fetchrow(query, *(params or [])),
+                        timeout=timeout
+                    )
+                elif fetch_type == 'all':
+                    return await asyncio.wait_for(
+                        self.connection.fetch(query, *(params or [])),
+                        timeout=timeout
+                    )
+                elif fetch_type == 'val':
+                    return await asyncio.wait_for(
+                        self.connection.fetchval(query, *(params or [])),
+                        timeout=timeout
+                    )
+                else:
+                    return await asyncio.wait_for(
+                        self.connection.execute(query, *(params or [])),
+                        timeout=timeout
+                    )
+            else:
+                cursor = await asyncio.wait_for(
+                    self.connection.execute(query, params or ()),
+                    timeout=timeout
+                )
+                
+                if fetch_type == 'one':
+                    row = await cursor.fetchone()
+                    if row:
+                        columns = [description[0] for description in cursor.description]
+                        return dict(zip(columns, row))
+                    return None
+                elif fetch_type == 'all':
+                    rows = await cursor.fetchall()
+                    if rows:
+                        columns = [description[0] for description in cursor.description]
+                        return [dict(zip(columns, row)) for row in rows]
+                    return []
+                elif fetch_type == 'val':
+                    row = await cursor.fetchone()
+                    return row[0] if row else None
+                else:
+                    if query.strip().upper().startswith(('INSERT', 'UPDATE', 'DELETE')):
+                        await self.connection.commit()
+                    return cursor
+                    
+        except asyncio.TimeoutError:
+            logger.error(f"❌ Database query timed out after {timeout} seconds: {query}")
+            raise
+        except Exception as e:
+            logger.error(f"❌ Database query error: {e}")
+            logger.error(f"Query: {query}")
+            logger.error(f"Params: {params}")
+            raise
     
     async def get_user(self, discord_id: str) -> Optional[Dict[str, Any]]:
         """Get user from database"""
         try:
+            query = "SELECT * FROM users WHERE discord_id = ?"
+            params = (discord_id,) if not self.is_postgresql else [discord_id]
+            
             if self.is_postgresql:
-                row = await self.connection.fetchrow(
-                    "SELECT * FROM users WHERE discord_id = $1", discord_id
-                )
-                return dict(row) if row else None
-            else:
-                cursor = await self.connection.execute(
-                    "SELECT * FROM users WHERE discord_id = ?", (discord_id,)
-                )
-                row = await cursor.fetchone()
-                if row:
-                    columns = [description[0] for description in cursor.description]
-                    return dict(zip(columns, row))
-                return None
+                query = query.replace('?', '$1')
+                
+            return await self.execute_query(query, params, fetch_type='one')
         except Exception as e:
             logger.error(f"Failed to get user {discord_id}: {e}")
             return None
@@ -392,16 +515,13 @@ class DatabaseManager:
         """Create new user in database"""
         try:
             if self.is_postgresql:
-                await self.connection.execute(
-                    "INSERT INTO users (discord_id, username) VALUES ($1, $2) ON CONFLICT (discord_id) DO NOTHING",
-                    discord_id, username
-                )
+                query = "INSERT INTO users (discord_id, username) VALUES ($1, $2) ON CONFLICT (discord_id) DO NOTHING"
+                params = [discord_id, username]
             else:
-                await self.connection.execute(
-                    "INSERT OR IGNORE INTO users (discord_id, username) VALUES (?, ?)",
-                    (discord_id, username)
-                )
-                await self.connection.commit()
+                query = "INSERT OR IGNORE INTO users (discord_id, username) VALUES (?, ?)"
+                params = (discord_id, username)
+                
+            await self.execute_query(query, params)
             return True
         except Exception as e:
             logger.error(f"Failed to create user {discord_id}: {e}")
@@ -410,15 +530,17 @@ class DatabaseManager:
     async def test_connection(self):
         """Test database connection"""
         try:
+            # Test basic query
             if self.is_postgresql:
-                result = await self.connection.fetchval("SELECT 1")
-                count = await self.connection.fetchval("SELECT COUNT(*) FROM users")
+                result = await self.execute_query("SELECT 1", fetch_type='val')
             else:
-                cursor = await self.connection.execute("SELECT 1")
-                result = await cursor.fetchone()
-                cursor = await self.connection.execute("SELECT COUNT(*) FROM users")
-                count_row = await cursor.fetchone()
-                count = count_row[0] if count_row else 0
+                result = await self.execute_query("SELECT 1", fetch_type='val')
+                
+            # Test users table
+            if self.is_postgresql:
+                count = await self.execute_query("SELECT COUNT(*) FROM users", fetch_type='val')
+            else:
+                count = await self.execute_query("SELECT COUNT(*) FROM users", fetch_type='val')
             
             logger.info(f"✅ Database connection test successful")
             logger.info(f"✅ Users table accessible, contains {count} records")
@@ -432,7 +554,10 @@ class DatabaseManager:
         """Close database connection"""
         if self.connection:
             try:
-                await self.connection.close()
+                if self.is_postgresql:
+                    await self.connection.close()
+                else:
+                    await self.connection.close()
                 logger.info("✅ Database connection closed")
             except Exception as e:
                 logger.error(f"Error closing database connection: {e}")
