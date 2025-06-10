@@ -77,7 +77,7 @@ class Reminders(commands.Cog):
                 description=message,
                 color=0xFEE75C
             )
-            embed.set_footer(text=f"Reminder set for {remind_at} • Railway Bot")
+            embed.set_footer(text=f"Reminder set for {remind_at} • devBot - Powered by EGOS")
             
             if reminder_type == ReminderType.PERSONAL.value:
                 # Send DM if enabled
@@ -244,7 +244,7 @@ class Reminders(commands.Cog):
                     inline=False
                 )
             
-            embed.set_footer(text="Railway Bot")
+            embed.set_footer(text="devBot - Powered by EGOS")
             await interaction.followup.send(embed=embed, ephemeral=True)
             
         except Exception as e:

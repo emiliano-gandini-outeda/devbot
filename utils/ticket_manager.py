@@ -26,9 +26,15 @@ class TicketJoinRequestView(discord.ui.View):
         # Get ticket info to check if user is assignee
         ticket_id = self.ticket_channel.topic.split("|")[0].replace("Support ticket:", "").strip()
         
-        ticket = await self.bot.db.connection.fetchrow(
-            "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
-        )
+        if self.bot.db.is_postgresql:
+            ticket = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+            )
+        else:
+            cursor = await self.bot.db.connection.execute(
+                "SELECT * FROM tickets WHERE ticket_id = ?", (ticket_id,)
+            )
+            ticket = await cursor.fetchone()
         
         if not ticket:
             await interaction.response.send_message("Ticket not found!", ephemeral=True)
@@ -36,8 +42,10 @@ class TicketJoinRequestView(discord.ui.View):
         
         # Check if user is admin or assignee
         is_admin = self.bot.admin_manager.is_admin(interaction.user)
-        is_assignee = str(interaction.user.id) == ticket['assignee_id']
-        is_creator = str(interaction.user.id) == ticket['user_id']
+        assignee_id = ticket['assignee_id'] if self.bot.db.is_postgresql else ticket[4]
+        user_id = ticket['user_id'] if self.bot.db.is_postgresql else ticket[3]
+        is_assignee = str(interaction.user.id) == assignee_id
+        is_creator = str(interaction.user.id) == user_id
         
         if not (is_admin or is_assignee or is_creator):
             await interaction.response.send_message("Only ticket assignees, creators, or admins can accept join requests!", ephemeral=True)
@@ -94,9 +102,15 @@ class TicketJoinRequestView(discord.ui.View):
         # Get ticket info to check if user is assignee
         ticket_id = self.ticket_channel.topic.split("|")[0].replace("Support ticket:", "").strip()
         
-        ticket = await self.bot.db.connection.fetchrow(
-            "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
-        )
+        if self.bot.db.is_postgresql:
+            ticket = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+            )
+        else:
+            cursor = await self.bot.db.connection.execute(
+                "SELECT * FROM tickets WHERE ticket_id = ?", (ticket_id,)
+            )
+            ticket = await cursor.fetchone()
         
         if not ticket:
             await interaction.response.send_message("Ticket not found!", ephemeral=True)
@@ -104,8 +118,10 @@ class TicketJoinRequestView(discord.ui.View):
         
         # Check if user is admin or assignee
         is_admin = self.bot.admin_manager.is_admin(interaction.user)
-        is_assignee = str(interaction.user.id) == ticket['assignee_id']
-        is_creator = str(interaction.user.id) == ticket['user_id']
+        assignee_id = ticket['assignee_id'] if self.bot.db.is_postgresql else ticket[4]
+        user_id = ticket['user_id'] if self.bot.db.is_postgresql else ticket[3]
+        is_assignee = str(interaction.user.id) == assignee_id
+        is_creator = str(interaction.user.id) == user_id
         
         if not (is_admin or is_assignee or is_creator):
             await interaction.response.send_message("Only ticket assignees, creators, or admins can deny join requests!", ephemeral=True)
@@ -256,38 +272,61 @@ class TicketManager:
         except Exception as e:
             print(f"Error saving ticket config: {e}")
     
-    def get_ticket_config(self, guild_id: str) -> Optional[dict]:
+    async def get_ticket_config(self, guild_id: str) -> Optional[dict]:
         """Get ticket configuration for a guild"""
-        # This would typically fetch from database
-        # For now, return a mock config
-        return {
-            'category_id': '123456789',
-            'transcript_channel_id': '987654321'
-        }
+        try:
+            if self.bot.db.is_postgresql:
+                row = await self.bot.db.connection.fetchrow(
+                    "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                    guild_id, 'ticket_config'
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT data_content FROM user_data WHERE user_id = ? AND data_type = ?",
+                    (guild_id, 'ticket_config')
+                )
+                row = await cursor.fetchone()
+        
+            if row:
+                data_content = row['data_content'] if self.bot.db.is_postgresql else row[0]
+                if isinstance(data_content, str):
+                    return json.loads(data_content)
+                return data_content
+            return None
+        except Exception as e:
+            print(f"Error getting ticket config: {e}")
+            return None
     
     async def create_ticket_channel(self, guild: discord.Guild, ticket_id: str, user: discord.Member, title: str) -> Optional[discord.TextChannel]:
         """Create a ticket channel"""
         try:
             # Get ticket config
-            config = self.get_ticket_config(str(guild.id))
+            config = await self.get_ticket_config(str(guild.id))
             if not config:
+                print(f"No ticket config found for guild {guild.id}")
                 return None
             
-            category = guild.get_channel(int(config['category_id']))
+            category_id = config.get('category_id')
+            if not category_id:
+                print(f"No category_id in ticket config for guild {guild.id}")
+                return None
+            
+            category = guild.get_channel(int(category_id))
             if not category:
+                print(f"Category channel {category_id} not found in guild {guild.id}")
                 return None
             
             # Create channel
             channel_name = f"ticket-{ticket_id.lower()}"
             
-            # Set permissions
+            # Set permissions - PUBLIC AND READ-ONLY BY DEFAULT
             overwrites = {
-                guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
                 user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
                 guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
             }
             
-            # Add admin roles
+            # Add admin roles with write permissions
             if self.bot.admin_manager:
                 admin_role_ids = self.bot.admin_manager.get_admin_roles(str(guild.id))
                 for role_id in admin_role_ids:
@@ -335,19 +374,27 @@ class TicketManager:
             if channel.topic and "Support ticket:" in channel.topic:
                 ticket_id = channel.topic.split("|")[0].replace("Support ticket:", "").strip()
                 
-                ticket = await self.bot.db.connection.fetchrow(
-                    "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
-                )
+                if self.bot.db.is_postgresql:
+                    ticket = await self.bot.db.connection.fetchrow(
+                        "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+                    )
+                else:
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT * FROM tickets WHERE ticket_id = ?", (ticket_id,)
+                    )
+                    ticket = await cursor.fetchone()
                 
                 if ticket:
                     # Creator permissions
-                    creator = guild.get_member(int(ticket['user_id']))
+                    user_id = ticket['user_id'] if self.bot.db.is_postgresql else ticket[3]
+                    creator = guild.get_member(int(user_id))
                     if creator:
                         overwrites[creator] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
                     
                     # Assignee permissions
-                    if ticket['assignee_id']:
-                        assignee = guild.get_member(int(ticket['assignee_id']))
+                    assignee_id = ticket['assignee_id'] if self.bot.db.is_postgresql else ticket[4]
+                    if assignee_id:
+                        assignee = guild.get_member(int(assignee_id))
                         if assignee:
                             overwrites[assignee] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
             
@@ -389,12 +436,19 @@ class TicketManager:
     async def send_transcript(self, guild: discord.Guild, transcript: str, ticket_id: str, user: discord.Member) -> bool:
         """Send transcript to the configured channel"""
         try:
-            config = self.get_ticket_config(str(guild.id))
+            config = await self.get_ticket_config(str(guild.id))
             if not config:
+                print(f"No ticket config found for guild {guild.id}")
                 return False
             
-            transcript_channel = guild.get_channel(int(config['transcript_channel_id']))
+            transcript_channel_id = config.get('transcript_channel_id')
+            if not transcript_channel_id:
+                print(f"No transcript_channel_id in config for guild {guild.id}")
+                return False
+            
+            transcript_channel = guild.get_channel(int(transcript_channel_id))
             if not transcript_channel:
+                print(f"Transcript channel {transcript_channel_id} not found in guild {guild.id}")
                 return False
             
             # Create transcript file
@@ -412,6 +466,7 @@ class TicketManager:
             embed.set_footer(text="devBot - Powered by EGOS")
             
             await transcript_channel.send(embed=embed, file=transcript_file)
+            print(f"Transcript sent successfully for ticket {ticket_id}")
             return True
             
         except Exception as e:
