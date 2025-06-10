@@ -5,7 +5,6 @@ import logging
 import os
 import sys
 from pathlib import Path
-import signal
 
 # Add the project root to the Python path
 project_root = Path(__file__).parent
@@ -128,10 +127,22 @@ class DiscordBot(commands.Bot):
         logger.info(f"🚀 {self.user} is now online!")
         logger.info(f"📊 Connected to {len(self.guilds)} guilds")
         
-        # Sync commands
+        # Clear and sync commands properly
         try:
+            logger.info("🔄 Clearing and syncing commands...")
+            
+            # Clear all commands first
+            self.tree.clear_commands(guild=None)
+            
+            # Sync globally
             synced = await self.tree.sync()
-            logger.info(f"✅ Synced {len(synced)} commands")
+            logger.info(f"✅ Synced {len(synced)} commands globally")
+            
+            # List synced commands for verification
+            if synced:
+                command_names = [cmd.name for cmd in synced]
+                logger.info(f"📋 Synced commands: {', '.join(command_names)}")
+            
         except Exception as e:
             logger.error(f"❌ Failed to sync commands: {e}")
         

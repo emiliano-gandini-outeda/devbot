@@ -29,27 +29,54 @@ class Reminders(commands.Cog):
             if not self.bot.db or not self.bot.db.connection:
                 return
             
-            due_reminders = await self.bot.db.connection.fetch(
-                "SELECT * FROM reminders WHERE remind_at <= $1",
-                current_time
-            )
+            # Get due reminders with proper database compatibility
+            if self.bot.db.is_postgresql:
+                due_reminders = await self.bot.db.connection.fetch(
+                    "SELECT * FROM reminders WHERE remind_at <= $1",
+                    current_time
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM reminders WHERE remind_at <= ?",
+                    (current_time,)
+                )
+                rows = await cursor.fetchall()
+                
+                # Convert SQLite rows to dict format
+                due_reminders = []
+                if rows:
+                    columns = [description[0] for description in cursor.description]
+                    due_reminders = [dict(zip(columns, row)) for row in rows]
             
             for reminder in due_reminders:
                 try:
                     await self.send_reminder(reminder)
                     
                     # Delete non-recurring reminders
-                    if not reminder['recurring']:
-                        await self.bot.db.connection.execute(
-                            "DELETE FROM reminders WHERE id = $1", reminder['id']
-                        )
+                    if not reminder.get('recurring', False):
+                        if self.bot.db.is_postgresql:
+                            await self.bot.db.connection.execute(
+                                "DELETE FROM reminders WHERE id = $1", reminder['id']
+                            )
+                        else:
+                            await self.bot.db.connection.execute(
+                                "DELETE FROM reminders WHERE id = ?", (reminder['id'],)
+                            )
+                            await self.bot.db.connection.commit()
                     else:
                         # Handle recurring reminders (basic implementation)
                         next_remind = current_time + timedelta(days=1)  # Daily recurrence
-                        await self.bot.db.connection.execute(
-                            "UPDATE reminders SET remind_at = $1 WHERE id = $2",
-                            next_remind, reminder['id']
-                        )
+                        if self.bot.db.is_postgresql:
+                            await self.bot.db.connection.execute(
+                                "UPDATE reminders SET remind_at = $1 WHERE id = $2",
+                                next_remind, reminder['id']
+                            )
+                        else:
+                            await self.bot.db.connection.execute(
+                                "UPDATE reminders SET remind_at = ? WHERE id = ?",
+                                (next_remind, reminder['id'])
+                            )
+                            await self.bot.db.connection.commit()
                 except Exception as e:
                     logger.error(f"Error processing reminder {reminder['id']}: {e}")
             
@@ -65,7 +92,7 @@ class Reminders(commands.Cog):
             channel_id = reminder['channel_id']
             message = reminder['message']
             remind_at = reminder['remind_at']
-            reminder_type = reminder['type']
+            reminder_type = reminder.get('type', 'personal')
             send_dm = reminder.get('send_dm', True)
             
             user = self.bot.get_user(int(user_id))
@@ -77,7 +104,7 @@ class Reminders(commands.Cog):
                 description=message,
                 color=0xFEE75C
             )
-            embed.set_footer(text=f"Reminder set for {remind_at} • devBot - Powered by EGOS")
+            embed.set_footer(text=f"Reminder set for {remind_at} • Railway Bot")
             
             if reminder_type == ReminderType.PERSONAL.value:
                 # Send DM if enabled
@@ -141,12 +168,21 @@ class Reminders(commands.Cog):
         remind_at = datetime.utcnow() + duration
         
         try:
-            await self.bot.db.connection.execute(
-                """INSERT INTO reminders (user_id, guild_id, channel_id, message, remind_at, type, created_at, send_dm)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
-                str(interaction.user.id), str(interaction.guild.id), str(interaction.channel.id),
-                message, remind_at, ReminderType.PERSONAL.value, datetime.utcnow(), send_dm
-            )
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    """INSERT INTO reminders (user_id, guild_id, channel_id, message, remind_at, type, created_at, send_dm)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                    str(interaction.user.id), str(interaction.guild.id), str(interaction.channel.id),
+                    message, remind_at, ReminderType.PERSONAL.value, datetime.utcnow(), send_dm
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    """INSERT INTO reminders (user_id, guild_id, channel_id, message, remind_at, type, created_at, send_dm)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (str(interaction.user.id), str(interaction.guild.id), str(interaction.channel.id),
+                     message, remind_at, ReminderType.PERSONAL.value, datetime.utcnow(), send_dm)
+                )
+                await self.bot.db.connection.commit()
             
             embed = EmbedBuilder.success(
                 "Reminder Set",
@@ -187,12 +223,21 @@ class Reminders(commands.Cog):
         remind_at = datetime.utcnow() + duration
         
         try:
-            await self.bot.db.connection.execute(
-                """INSERT INTO reminders (user_id, guild_id, channel_id, message, remind_at, type, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                str(interaction.user.id), str(interaction.guild.id), str(channel.id),
-                message, remind_at, ReminderType.CHANNEL.value, datetime.utcnow()
-            )
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    """INSERT INTO reminders (user_id, guild_id, channel_id, message, remind_at, type, created_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                    str(interaction.user.id), str(interaction.guild.id), str(channel.id),
+                    message, remind_at, ReminderType.CHANNEL.value, datetime.utcnow()
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    """INSERT INTO reminders (user_id, guild_id, channel_id, message, remind_at, type, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (str(interaction.user.id), str(interaction.guild.id), str(channel.id),
+                     message, remind_at, ReminderType.CHANNEL.value, datetime.utcnow())
+                )
+                await self.bot.db.connection.commit()
             
             embed = EmbedBuilder.success(
                 "Channel Reminder Set",
@@ -211,10 +256,23 @@ class Reminders(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         
         try:
-            reminders = await self.bot.db.connection.fetch(
-                "SELECT * FROM reminders WHERE user_id = $1 ORDER BY remind_at ASC",
-                str(interaction.user.id)
-            )
+            if self.bot.db.is_postgresql:
+                reminders = await self.bot.db.connection.fetch(
+                    "SELECT * FROM reminders WHERE user_id = $1 ORDER BY remind_at ASC",
+                    str(interaction.user.id)
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM reminders WHERE user_id = ? ORDER BY remind_at ASC",
+                    (str(interaction.user.id),)
+                )
+                rows = await cursor.fetchall()
+                
+                # Convert SQLite rows to dict format
+                reminders = []
+                if rows:
+                    columns = [description[0] for description in cursor.description]
+                    reminders = [dict(zip(columns, row)) for row in rows]
             
             if not reminders:
                 embed = EmbedBuilder.info("No Reminders", "You don't have any active reminders")
@@ -231,6 +289,10 @@ class Reminders(commands.Cog):
                 remind_time = reminder['remind_at']
                 reminder_id = reminder['id']
                 
+                # Handle datetime parsing for SQLite
+                if isinstance(remind_time, str):
+                    remind_time = datetime.fromisoformat(remind_time.replace('Z', '+00:00'))
+                
                 time_left = remind_time - datetime.utcnow()
                 
                 if time_left.total_seconds() > 0:
@@ -244,7 +306,7 @@ class Reminders(commands.Cog):
                     inline=False
                 )
             
-            embed.set_footer(text="devBot - Powered by EGOS")
+            embed.set_footer(text="Railway Bot")
             await interaction.followup.send(embed=embed, ephemeral=True)
             
         except Exception as e:
@@ -255,10 +317,22 @@ class Reminders(commands.Cog):
     @app_commands.describe(reminder_number="Number of the reminder to delete (from /list-reminders)")
     async def delete_reminder(self, interaction: discord.Interaction, reminder_number: int):
         try:
-            reminder = await self.bot.db.connection.fetchrow(
-                "SELECT * FROM reminders WHERE user_id = $1 ORDER BY remind_at ASC LIMIT 1 OFFSET $2",
-                str(interaction.user.id), reminder_number - 1
-            )
+            if self.bot.db.is_postgresql:
+                reminder = await self.bot.db.connection.fetchrow(
+                    "SELECT * FROM reminders WHERE user_id = $1 ORDER BY remind_at ASC LIMIT 1 OFFSET $2",
+                    str(interaction.user.id), reminder_number - 1
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM reminders WHERE user_id = ? ORDER BY remind_at ASC LIMIT 1 OFFSET ?",
+                    (str(interaction.user.id), reminder_number - 1)
+                )
+                row = await cursor.fetchone()
+                
+                reminder = None
+                if row:
+                    columns = [description[0] for description in cursor.description]
+                    reminder = dict(zip(columns, row))
             
             if not reminder:
                 embed = EmbedBuilder.error("Not Found", f"Reminder #{reminder_number} not found")
@@ -268,9 +342,15 @@ class Reminders(commands.Cog):
             reminder_id = reminder['id']
             reminder_message = reminder['message']
             
-            await self.bot.db.connection.execute(
-                "DELETE FROM reminders WHERE id = $1", reminder_id
-            )
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM reminders WHERE id = $1", reminder_id
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM reminders WHERE id = ?", (reminder_id,)
+                )
+                await self.bot.db.connection.commit()
             
             embed = EmbedBuilder.success(
                 "Reminder Deleted",

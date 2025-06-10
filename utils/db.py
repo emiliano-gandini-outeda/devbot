@@ -106,6 +106,22 @@ class DatabaseManager:
             )
             """,
             
+            # Reminders table
+            """
+            CREATE TABLE IF NOT EXISTS reminders (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                guild_id TEXT,
+                channel_id TEXT,
+                message TEXT NOT NULL,
+                remind_at TIMESTAMP NOT NULL,
+                type TEXT DEFAULT 'personal',
+                recurring BOOLEAN DEFAULT FALSE,
+                send_dm BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            
             # GitHub channels table
             """
             CREATE TABLE IF NOT EXISTS github_channels (
@@ -151,6 +167,7 @@ class DatabaseManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
+            
             # User data table for flexible storage
             """
             CREATE TABLE IF NOT EXISTS user_data (
@@ -163,7 +180,7 @@ class DatabaseManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, guild_id, data_type)
             )
-            """,
+            """
         ]
 
         for i, table_sql in enumerate(tables, 1):
@@ -180,6 +197,7 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)",
             "CREATE INDEX IF NOT EXISTS idx_admin_roles_guild_id ON admin_roles(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_tickets_guild_id ON tickets(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_reminders_remind_at ON reminders(remind_at)",
             "CREATE INDEX IF NOT EXISTS idx_github_channels_guild ON github_channels(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_github_repos_guild ON github_repos(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_github_repo_stats_url ON github_repo_stats(repo_url)",
@@ -240,6 +258,22 @@ class DatabaseManager:
             )
             """,
             
+            # Reminders table
+            """
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                guild_id TEXT,
+                channel_id TEXT,
+                message TEXT NOT NULL,
+                remind_at TIMESTAMP NOT NULL,
+                type TEXT DEFAULT 'personal',
+                recurring BOOLEAN DEFAULT FALSE,
+                send_dm BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            
             # GitHub channels table
             """
             CREATE TABLE IF NOT EXISTS github_channels (
@@ -285,6 +319,7 @@ class DatabaseManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
+            
             # User data table for flexible storage
             """
             CREATE TABLE IF NOT EXISTS user_data (
@@ -297,7 +332,7 @@ class DatabaseManager:
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, guild_id, data_type)
             )
-            """,
+            """
         ]
 
         for i, table_sql in enumerate(tables, 1):
@@ -316,6 +351,7 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)",
             "CREATE INDEX IF NOT EXISTS idx_admin_roles_guild_id ON admin_roles(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_tickets_guild_id ON tickets(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_reminders_remind_at ON reminders(remind_at)",
             "CREATE INDEX IF NOT EXISTS idx_github_channels_guild ON github_channels(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_github_repos_guild ON github_repos(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_github_repo_stats_url ON github_repo_stats(repo_url)",
