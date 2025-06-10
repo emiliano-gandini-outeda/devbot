@@ -1,20 +1,54 @@
 import asyncio
 import asyncpg
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from config.settings import Settings
-from utils.timezone_utils import utc_now, ensure_timezone_aware, now_for_db
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Define timezone utility functions directly in this file to avoid import errors
+def utc_now():
+    """Get current UTC time as timezone-aware datetime"""
+    return datetime.now(timezone.utc)
+
+def ensure_timezone_aware(dt):
+    """Ensure datetime is timezone-aware (UTC)"""
+    if dt is None:
+        return utc_now()
+    
+    if isinstance(dt, str):
+        try:
+            # Try to parse ISO format
+            dt = datetime.fromisoformat(dt.replace('Z', '+00:00'))
+        except ValueError:
+            return utc_now()
+    
+    if not isinstance(dt, datetime):
+        return utc_now()
+    
+    if dt.tzinfo is None:
+        # Assume naive datetime is UTC and make it timezone-aware
+        return dt.replace(tzinfo=timezone.utc)
+    
+    # Convert to UTC if it has a different timezone
+    return dt.astimezone(timezone.utc)
+
+def now_for_db():
+    """Get current time formatted for database insertion"""
+    return utc_now()
+
+def format_for_database(dt):
+    """Format datetime for database insertion"""
+    return ensure_timezone_aware(dt)
 
 class DatabaseManager:
     def __init__(self):
         self.database_url = Settings.DATABASE_URL
         self.connection = None
         self._connection_lock = asyncio.Lock()
-        self.is_postgresql = True  # Add this attribute
+        self.is_postgresql = True
         
         logger.info(f"Database URL: {self.database_url[:50]}...")
     
@@ -273,8 +307,7 @@ class DatabaseManager:
             )
             if row:
                 user_data = dict(row)
-                # Ensure datetime fields are timezone-aware using the utility
-                from utils.timezone_utils import ensure_timezone_aware
+                # Ensure datetime fields are timezone-aware
                 user_data['created_at'] = ensure_timezone_aware(user_data.get('created_at'))
                 user_data['updated_at'] = ensure_timezone_aware(user_data.get('updated_at'))
                 return user_data
@@ -286,8 +319,7 @@ class DatabaseManager:
     async def create_user(self, discord_id: str, username: str) -> bool:
         """Create new user in database with timezone-aware timestamps"""
         try:
-            from utils.timezone_utils import now_for_db, format_for_database
-            created_at = format_for_database(now_for_db())
+            created_at = now_for_db()
             await self.connection.execute(
                 "INSERT INTO users (discord_id, username, created_at, updated_at) VALUES ($1, $2, $3, $4) ON CONFLICT (discord_id) DO NOTHING",
                 discord_id, username, created_at, created_at
@@ -335,8 +367,6 @@ class DatabaseManager:
                     processed_args = []
                     for arg in args:
                         if isinstance(arg, datetime):
-                            # Use the timezone utility to ensure proper formatting
-                            from utils.timezone_utils import format_for_database
                             processed_args.append(format_for_database(arg))
                         else:
                             processed_args.append(arg)
