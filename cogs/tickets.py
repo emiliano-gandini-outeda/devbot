@@ -3,6 +3,10 @@ from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder, generate_ticket_id
 from config.constants import TicketStatus, TicketPriority
+from utils.timezone_utils import (
+    utc_now, ensure_timezone_aware, parse_iso_datetime, 
+    format_for_database, now_for_db, safe_datetime_subtract
+)
 from datetime import datetime, timezone, timedelta
 import json
 import asyncio
@@ -12,35 +16,6 @@ from typing import Optional, Dict, Any, List
 import logging
 
 logger = logging.getLogger(__name__)
-
-def utc_now():
-    """Get current UTC time as timezone-aware datetime"""
-    return datetime.now(timezone.utc)
-
-def ensure_timezone_aware(dt):
-    """Ensure datetime is timezone-aware (UTC)"""
-    if dt is None:
-        return utc_now()
-    
-    if dt.tzinfo is None:
-        # Assume naive datetime is UTC and make it timezone-aware
-        return dt.replace(tzinfo=timezone.utc)
-    
-    # Convert to UTC if it has a different timezone
-    return dt.astimezone(timezone.utc)
-
-def parse_iso_datetime(iso_string):
-    """Parse ISO datetime string to timezone-aware datetime"""
-    if iso_string is None:
-        return None
-    
-    if isinstance(iso_string, str):
-        # Handle various ISO formats
-        if iso_string.endswith('Z'):
-            iso_string = iso_string[:-1] + '+00:00'
-        return datetime.fromisoformat(iso_string)
-    
-    return ensure_timezone_aware(iso_string)
 
 class TicketJoinRequestView(discord.ui.View):
     def __init__(self, bot, requesting_user: discord.Member, ticket_channel: discord.TextChannel):
@@ -948,22 +923,24 @@ class TicketCommands(app_commands.Group):
     async def _save_ticket_to_db(self, ticket_id: str, guild_id: int, user_id: int, title: str, description: str, priority: str, channel_id: int):
         """Save ticket to database with timezone-aware datetimes"""
         try:
-            created_at = utc_now()
-            updated_at = utc_now()
+            created_at = now_for_db()
+            updated_at = now_for_db()
             
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
                     """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at, updated_at)
                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
                     ticket_id, str(guild_id), str(user_id), title, description, 
-                    TicketStatus.OPEN.value, priority, str(channel_id), created_at, updated_at
+                    TicketStatus.OPEN.value, priority, str(channel_id), 
+                    format_for_database(created_at), format_for_database(updated_at)
                 )
             else:
                 await self.bot.db.connection.execute(
                     """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (ticket_id, str(guild_id), str(user_id), title, description, 
-                     TicketStatus.OPEN.value, priority, str(channel_id), created_at, updated_at)
+                     TicketStatus.OPEN.value, priority, str(channel_id), 
+                     format_for_database(created_at), format_for_database(updated_at))
                 )
                 await self.bot.db.connection.commit()
         except Exception as e:
@@ -1136,7 +1113,6 @@ class TicketCommands(app_commands.Group):
                     cursor = await self.bot.db.connection.execute(
                         "SELECT user_id, assignee_id FROM tickets WHERE ticket_id = ?", (ticket_id,)
                     )
-                    ticket = await cursor.fetchone()
                 
                 if ticket:
                     # Creator permissions

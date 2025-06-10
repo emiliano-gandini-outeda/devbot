@@ -2,6 +2,10 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder
+from utils.timezone_utils import (
+    utc_now, ensure_timezone_aware, parse_github_datetime, 
+    format_for_database, now_for_db, safe_datetime_subtract, safe_datetime_add
+)
 import json
 import asyncio
 import aiohttp
@@ -13,44 +17,6 @@ import os
 from config.settings import Settings
 
 logger = logging.getLogger(__name__)
-
-def utc_now():
-    """Get current UTC time as timezone-aware datetime"""
-    return datetime.now(timezone.utc)
-
-def ensure_timezone_aware(dt):
-    """Ensure datetime is timezone-aware (UTC)"""
-    if dt is None:
-        return utc_now()
-    
-    if dt.tzinfo is None:
-        # Assume naive datetime is UTC and make it timezone-aware
-        return dt.replace(tzinfo=timezone.utc)
-    
-    # Convert to UTC if it has a different timezone
-    return dt.astimezone(timezone.utc)
-
-def parse_github_datetime(iso_string):
-    """Parse GitHub API datetime string to timezone-aware datetime"""
-    if iso_string is None:
-        return None
-    
-    # GitHub returns ISO format like "2023-12-01T10:30:00Z"
-    if iso_string.endswith('Z'):
-        iso_string = iso_string[:-1] + '+00:00'
-    
-    return datetime.fromisoformat(iso_string)
-
-def ensure_utc_datetime(dt):
-    """Convert datetime to UTC timezone-aware datetime"""
-    if dt is None:
-        return utc_now()
-    
-    if isinstance(dt, str):
-        # Handle ISO format strings from GitHub API
-        return parse_github_datetime(dt)
-    
-    return ensure_timezone_aware(dt)
 
 class GitHubAPI:
     """GitHub API client with rate limiting and authentication"""
@@ -390,7 +356,7 @@ class GitHubIntegrations(commands.Cog):
         """Initialize repository state with current GitHub data"""
         try:
             owner, repo = repo_name.split("/", 1)
-            
+        
             # Get current repository data
             repo_data = await self.github.get_repository(owner, repo)
             if not repo_data:
@@ -400,27 +366,27 @@ class GitHubIntegrations(commands.Cog):
                     """INSERT INTO github_repo_state 
                        (guild_id, repo_name, last_commit_sha, last_release_id, 
                         last_issue_number, last_pr_number, stars_count, last_checked)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                       ON CONFLICT (guild_id, repo_name) DO NOTHING""",
-                    guild_id, repo_name, "", "", 0, 0, 0, utc_now()
-                )
-                return
-            
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                   ON CONFLICT (guild_id, repo_name) DO NOTHING""",
+                guild_id, repo_name, "", "", 0, 0, 0, format_for_database(now_for_db())
+            )
+            return
+        
             # Get initial data
             stars = repo_data.get('stargazers_count', 0)
-            
+        
             # Get latest commit
             last_commit_sha = ""
             commits = await self.github.get_commits(owner, repo, per_page=1)
             if commits:
                 last_commit_sha = commits[0]['sha']
-            
+        
             # Get latest release
             last_release_id = ""
             releases = await self.github.get_releases(owner, repo, per_page=1)
             if releases:
                 last_release_id = str(releases[0]['id'])
-            
+        
             # Get latest issue number
             last_issue_number = 0
             issues = await self.github.get_issues(owner, repo, per_page=1)
@@ -429,29 +395,30 @@ class GitHubIntegrations(commands.Cog):
                 actual_issues = [issue for issue in issues if 'pull_request' not in issue]
                 if actual_issues:
                     last_issue_number = actual_issues[0]['number']
-            
+        
             # Get latest PR number
             last_pr_number = 0
             pulls = await self.github.get_pulls(owner, repo, per_page=1)
             if pulls:
                 last_pr_number = pulls[0]['number']
-            
+        
             # Save initial state with timezone-aware datetime
+            current_time = format_for_database(now_for_db())
             await self.bot.db.connection.execute(
                 """INSERT INTO github_repo_state 
                    (guild_id, repo_name, last_commit_sha, last_release_id, 
                     last_issue_number, last_pr_number, stars_count, last_checked)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                   ON CONFLICT (guild_id, repo_name) DO UPDATE SET
-                   last_commit_sha = $3, last_release_id = $4, 
-                   last_issue_number = $5, last_pr_number = $6, 
-                   stars_count = $7, last_checked = $8""",
-                guild_id, repo_name, last_commit_sha, last_release_id,
-                last_issue_number, last_pr_number, stars, utc_now()
-            )
-            
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (guild_id, repo_name) DO UPDATE SET
+               last_commit_sha = $3, last_release_id = $4, 
+               last_issue_number = $5, last_pr_number = $6, 
+               stars_count = $7, last_checked = $8""",
+            guild_id, repo_name, last_commit_sha, last_release_id,
+            last_issue_number, last_pr_number, stars, current_time
+        )
+        
             logger.info(f"✅ Initialized state for {repo_name}")
-            
+        
         except Exception as e:
             logger.error(f"Failed to initialize state for {repo_name}: {e}")
             # Create minimal state to prevent future errors
@@ -459,10 +426,10 @@ class GitHubIntegrations(commands.Cog):
                 """INSERT INTO github_repo_state 
                    (guild_id, repo_name, last_commit_sha, last_release_id, 
                     last_issue_number, last_pr_number, stars_count, last_checked)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                   ON CONFLICT (guild_id, repo_name) DO NOTHING""",
-                guild_id, repo_name, "", "", 0, 0, 0, utc_now()
-            )
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+               ON CONFLICT (guild_id, repo_name) DO NOTHING""",
+            guild_id, repo_name, "", "", 0, 0, 0, format_for_database(now_for_db())
+        )
     
     async def cog_unload(self):
         """Clean up when cog is unloaded"""
@@ -824,27 +791,27 @@ class GitHubIntegrations(commands.Cog):
         try:
             owner, repo = repo_name.split("/", 1)
             cache_key = f"{guild_id}:{repo_name}"
-            
+        
             # Get current state from database (always fresh)
             state = await self.bot.db.connection.fetchrow(
                 "SELECT * FROM github_repo_state WHERE guild_id = $1 AND repo_name = $2",
                 guild_id, repo_name
             )
-            
+        
             if not state:
                 logger.warning(f"No state found for {repo_name} in guild {guild_id}, initializing...")
                 await self.initialize_repo_state(guild_id, repo_name)
-                
+            
                 # Fetch the newly created state
                 state = await self.bot.db.connection.fetchrow(
                     "SELECT * FROM github_repo_state WHERE guild_id = $1 AND repo_name = $2",
                     guild_id, repo_name
                 )
-                
+            
                 if not state:
                     logger.error(f"Failed to initialize state for {repo_name}")
                     return
-            
+        
             # Convert database state to proper format with timezone-aware datetimes
             current_state = {
                 'last_commit_sha': state['last_commit_sha'] or "",
@@ -854,47 +821,49 @@ class GitHubIntegrations(commands.Cog):
                 'stars_count': state['stars_count'] or 0,
                 'last_checked': ensure_timezone_aware(state['last_checked'])
             }
-            
+        
             # Check for new commits
             await self._check_commits(owner, repo, current_state, channel, guild_id, repo_name)
-            
+        
             # Check for new releases
             await self._check_releases(owner, repo, current_state, channel, guild_id, repo_name)
-            
+        
             # Check for new issues
             await self._check_issues(owner, repo, current_state, channel, guild_id, repo_name)
-            
+        
             # Check for new pull requests
             await self._check_pulls(owner, repo, current_state, channel, guild_id, repo_name)
-            
+        
             # Check for star changes
             await self._check_stars(owner, repo, current_state, channel, guild_id, repo_name)
-            
+        
             # Update last checked time with timezone-aware datetime
             await self.bot.db.connection.execute(
                 "UPDATE github_repo_state SET last_checked = $1 WHERE guild_id = $2 AND repo_name = $3",
-                utc_now(), guild_id, repo_name
+                format_for_database(now_for_db()), guild_id, repo_name
             )
-            
+        
             # Update cache
             if cache_key in self.repo_cache:
-                self.repo_cache[cache_key]["state"]["last_checked"] = utc_now()
-            
+                self.repo_cache[cache_key]["state"]["last_checked"] = now_for_db()
+        
         except Exception as e:
             logger.error(f"Error checking updates for {repo_name}: {e}")
     
     async def _check_commits(self, owner: str, repo: str, state: dict, channel: discord.TextChannel, guild_id: str, repo_name: str):
         """Check for new commits"""
         try:
-            # Get recent commits since last check
-            since_time = state['last_checked'] - timedelta(hours=1)  # Look back 1 hour to be safe
+            # Get recent commits since last check - use safe datetime operations
+            last_checked = ensure_timezone_aware(state['last_checked'])
+            since_time = safe_datetime_subtract(last_checked, timedelta(hours=1))
+        
             commits = await self.github.get_commits(owner, repo, since=since_time, per_page=10)
-            
+        
             if not commits:
                 return
-            
+        
             last_commit_sha = state['last_commit_sha']
-            
+        
             # If no previous commit, just store the latest
             if not last_commit_sha:
                 await self.bot.db.connection.execute(
@@ -902,26 +871,26 @@ class GitHubIntegrations(commands.Cog):
                     commits[0]['sha'], guild_id, repo_name
                 )
                 return
-            
+        
             # Find new commits (those that came after the last one we recorded)
             new_commits = []
             for commit in commits:
                 if commit['sha'] == last_commit_sha:
                     break
                 new_commits.append(commit)
-            
+        
             # Update last commit SHA if we have new commits
             if new_commits:
                 await self.bot.db.connection.execute(
                     "UPDATE github_repo_state SET last_commit_sha = $1 WHERE guild_id = $2 AND repo_name = $3",
                     new_commits[0]['sha'], guild_id, repo_name
                 )
-                
+            
                 # Send notifications for new commits (limit to 3 to avoid spam)
                 for commit in new_commits[:3]:
                     await self._send_commit_notification(commit, repo_name, channel, guild_id)
                     await asyncio.sleep(1)  # Brief delay between notifications
-                
+            
         except Exception as e:
             logger.error(f"Error checking commits for {repo_name}: {e}")
     
@@ -932,9 +901,9 @@ class GitHubIntegrations(commands.Cog):
             releases = await self.github.get_releases(owner, repo, per_page=5)
             if not releases:
                 return
-            
+        
             last_release_id = state['last_release_id']
-            
+        
             # If no previous release, just store the latest
             if not last_release_id:
                 await self.bot.db.connection.execute(
@@ -942,46 +911,48 @@ class GitHubIntegrations(commands.Cog):
                     str(releases[0]['id']), guild_id, repo_name
                 )
                 return
-            
+        
             # Find new releases
             new_releases = []
             for release in releases:
                 if str(release['id']) == last_release_id:
                     break
                 new_releases.append(release)
-            
+        
             # Update last release ID if we have new releases
             if new_releases:
                 await self.bot.db.connection.execute(
                     "UPDATE github_repo_state SET last_release_id = $1 WHERE guild_id = $2 AND repo_name = $3",
                     str(new_releases[0]['id']), guild_id, repo_name
                 )
-                
+            
                 # Send notifications for new releases
                 for release in new_releases:
                     await self._send_release_notification(release, repo_name, channel, guild_id)
                     await asyncio.sleep(1)
-                
+        
         except Exception as e:
             logger.error(f"Error checking releases for {repo_name}: {e}")
     
     async def _check_issues(self, owner: str, repo: str, state: dict, channel: discord.TextChannel, guild_id: str, repo_name: str):
         """Check for new issues"""
         try:
-            # Get recent issues (exclude PRs)
-            since_time = state['last_checked'] - timedelta(hours=1)
+            # Get recent issues (exclude PRs) - use safe datetime operations
+            last_checked = ensure_timezone_aware(state['last_checked'])
+            since_time = safe_datetime_subtract(last_checked, timedelta(hours=1))
+        
             issues = await self.github.get_issues(owner, repo, since=since_time, per_page=10)
-            
+        
             if not issues:
                 return
-            
+        
             # Filter out pull requests
             issues = [issue for issue in issues if 'pull_request' not in issue]
             if not issues:
                 return
-            
+        
             last_issue_number = state['last_issue_number']
-            
+        
             # If no previous issue, just store the latest
             if last_issue_number == 0:
                 await self.bot.db.connection.execute(
@@ -989,14 +960,14 @@ class GitHubIntegrations(commands.Cog):
                     issues[0]['number'], guild_id, repo_name
                 )
                 return
-            
+        
             # Find new issues
             new_issues = []
             for issue in issues:
                 if issue['number'] <= last_issue_number:
                     continue
                 new_issues.append(issue)
-            
+        
             # Update last issue number if we have new issues
             if new_issues:
                 max_issue_number = max(issue['number'] for issue in new_issues)
@@ -1004,12 +975,12 @@ class GitHubIntegrations(commands.Cog):
                     "UPDATE github_repo_state SET last_issue_number = $1 WHERE guild_id = $2 AND repo_name = $3",
                     max_issue_number, guild_id, repo_name
                 )
-                
+            
                 # Send notifications for new issues (limit to 3)
                 for issue in new_issues[:3]:
                     await self._send_issue_notification(issue, repo_name, channel, guild_id)
                     await asyncio.sleep(1)
-                
+        
         except Exception as e:
             logger.error(f"Error checking issues for {repo_name}: {e}")
     
@@ -1020,9 +991,9 @@ class GitHubIntegrations(commands.Cog):
             pulls = await self.github.get_pulls(owner, repo, per_page=10)
             if not pulls:
                 return
-            
+        
             last_pr_number = state['last_pr_number']
-            
+        
             # If no previous PR, just store the latest
             if last_pr_number == 0:
                 await self.bot.db.connection.execute(
@@ -1030,14 +1001,14 @@ class GitHubIntegrations(commands.Cog):
                     pulls[0]['number'], guild_id, repo_name
                 )
                 return
-            
+        
             # Find new PRs
             new_pulls = []
             for pull in pulls:
                 if pull['number'] <= last_pr_number:
                     continue
                 new_pulls.append(pull)
-            
+        
             # Update last PR number if we have new PRs
             if new_pulls:
                 max_pr_number = max(pull['number'] for pull in new_pulls)
@@ -1045,12 +1016,12 @@ class GitHubIntegrations(commands.Cog):
                     "UPDATE github_repo_state SET last_pr_number = $1 WHERE guild_id = $2 AND repo_name = $3",
                     max_pr_number, guild_id, repo_name
                 )
-                
+            
                 # Send notifications for new PRs (limit to 3)
                 for pull in new_pulls[:3]:
                     await self._send_pr_notification(pull, repo_name, channel, guild_id)
                     await asyncio.sleep(1)
-                
+        
         except Exception as e:
             logger.error(f"Error checking pull requests for {repo_name}: {e}")
     
@@ -1061,21 +1032,21 @@ class GitHubIntegrations(commands.Cog):
             repo_data = await self.github.get_repository(owner, repo)
             if not repo_data:
                 return
-            
+        
             stars = repo_data.get('stargazers_count', 0)
             old_stars = state['stars_count']
-            
+        
             # If significant change in stars, send notification
             if old_stars > 0 and abs(stars - old_stars) >= 5:
                 diff = stars - old_stars
                 await self._send_stars_notification(repo_name, stars, diff, channel, guild_id)
-            
+        
             # Always update star count
             await self.bot.db.connection.execute(
                 "UPDATE github_repo_state SET stars_count = $1 WHERE guild_id = $2 AND repo_name = $3",
                 stars, guild_id, repo_name
             )
-                
+            
         except Exception as e:
             logger.error(f"Error checking stars for {repo_name}: {e}")
     
@@ -1086,18 +1057,18 @@ class GitHubIntegrations(commands.Cog):
             subscribers = await self._get_subscribers(guild_id, repo_name, RepoEventTypes.COMMITS)
             if not subscribers:
                 return
-            
+        
             # Extract commit info
             sha = commit['sha'][:7]
             message = commit['commit']['message'].split('\n')[0]  # First line only
             author = commit['commit']['author']['name']
             date = ensure_timezone_aware(parse_github_datetime(commit['commit']['author']['date']))
             url = commit['html_url']
-            
+        
             # Truncate long commit messages
             if len(message) > 100:
                 message = message[:97] + "..."
-            
+        
             # Create embed
             embed = discord.Embed(
                 title=f"📝 New Commit to {repo_name}",
@@ -1106,17 +1077,17 @@ class GitHubIntegrations(commands.Cog):
                 url=url,
                 timestamp=date  # Use timezone-aware datetime
             )
-            
+        
             embed.add_field(name="Author", value=author, inline=True)
             embed.add_field(name="Commit", value=f"[{sha}]({url})", inline=True)
-            
+        
             # Add avatar if available
             if commit.get('author') and commit['author'] and commit['author'].get('avatar_url'):
                 embed.set_thumbnail(url=commit['author']['avatar_url'])
-            
+        
             # Add mentions
             mentions = " ".join([f"<@{sub}>" for sub in subscribers])
-            
+        
             if mentions:
                 await channel.send(mentions, embed=embed)
             else:
@@ -1132,7 +1103,7 @@ class GitHubIntegrations(commands.Cog):
             subscribers = await self._get_subscribers(guild_id, repo_name, RepoEventTypes.RELEASES)
             if not subscribers:
                 return
-            
+        
             # Extract release info
             name = release.get('name') or release['tag_name']
             tag = release['tag_name']
@@ -1140,14 +1111,14 @@ class GitHubIntegrations(commands.Cog):
             author = release['author']['login']
             is_prerelease = release.get('prerelease', False)
             url = release['html_url']
-            
+        
             # Truncate body if too long
             if len(body) > 500:
                 body = body[:497] + "..."
-            
+        
             # Create embed with timezone-aware datetime
             created_at = ensure_timezone_aware(parse_github_datetime(release.get('created_at')))
-            
+        
             embed = discord.Embed(
                 title=f"🚀 New {'Pre-release' if is_prerelease else 'Release'} for {repo_name}",
                 description=f"**{name}**\n\n{body}" if body else f"**{name}**",
@@ -1155,17 +1126,17 @@ class GitHubIntegrations(commands.Cog):
                 url=url,
                 timestamp=created_at
             )
-            
+        
             embed.add_field(name="Tag", value=tag, inline=True)
             embed.add_field(name="Author", value=author, inline=True)
-            
+        
             # Add avatar
             if release['author'].get('avatar_url'):
                 embed.set_thumbnail(url=release['author']['avatar_url'])
-            
+        
             # Add mentions
             mentions = " ".join([f"<@{sub}>" for sub in subscribers])
-            
+        
             if mentions:
                 await channel.send(mentions, embed=embed)
             else:
@@ -1181,21 +1152,21 @@ class GitHubIntegrations(commands.Cog):
             subscribers = await self._get_subscribers(guild_id, repo_name, RepoEventTypes.ISSUES)
             if not subscribers:
                 return
-            
+        
             # Extract issue info
             number = issue['number']
             title = issue['title']
             body = issue.get('body', '') or ""
             author = issue['user']['login']
             url = issue['html_url']
-            
+        
             # Truncate body if too long
             if len(body) > 300:
                 body = body[:297] + "..."
-            
+        
             # Create embed with timezone-aware datetime
             created_at = ensure_timezone_aware(parse_github_datetime(issue.get('created_at')))
-            
+        
             embed = discord.Embed(
                 title=f"❗ New Issue in {repo_name}",
                 description=f"**#{number}: {title}**\n\n{body}" if body else f"**#{number}: {title}**",
@@ -1203,16 +1174,16 @@ class GitHubIntegrations(commands.Cog):
                 url=url,
                 timestamp=created_at
             )
-            
+        
             embed.add_field(name="Author", value=author, inline=True)
-            
+        
             # Add avatar
             if issue['user'].get('avatar_url'):
                 embed.set_thumbnail(url=issue['user']['avatar_url'])
-            
+        
             # Add mentions
             mentions = " ".join([f"<@{sub}>" for sub in subscribers])
-            
+        
             if mentions:
                 await channel.send(mentions, embed=embed)
             else:
@@ -1228,25 +1199,25 @@ class GitHubIntegrations(commands.Cog):
             subscribers = await self._get_subscribers(guild_id, repo_name, RepoEventTypes.PULLS)
             if not subscribers:
                 return
-            
+        
             # Extract PR info
             number = pull['number']
             title = pull['title']
             body = pull.get('body', '') or ""
             author = pull['user']['login']
             url = pull['html_url']
-            
+        
             # Get branch info
             base = pull['base']['ref']
             head = pull['head']['ref']
-            
+        
             # Truncate body if too long
             if len(body) > 300:
                 body = body[:297] + "..."
-            
+        
             # Create embed with timezone-aware datetime
             created_at = ensure_timezone_aware(parse_github_datetime(pull.get('created_at')))
-            
+        
             embed = discord.Embed(
                 title=f"🔄 New Pull Request in {repo_name}",
                 description=f"**#{number}: {title}**\n\n{body}" if body else f"**#{number}: {title}**",
@@ -1254,17 +1225,17 @@ class GitHubIntegrations(commands.Cog):
                 url=url,
                 timestamp=created_at
             )
-            
+        
             embed.add_field(name="Author", value=author, inline=True)
             embed.add_field(name="Branches", value=f"`{head}` → `{base}`", inline=True)
-            
+        
             # Add avatar
             if pull['user'].get('avatar_url'):
                 embed.set_thumbnail(url=pull['user']['avatar_url'])
-            
+        
             # Add mentions
             mentions = " ".join([f"<@{sub}>" for sub in subscribers])
-            
+        
             if mentions:
                 await channel.send(mentions, embed=embed)
             else:
@@ -1280,11 +1251,11 @@ class GitHubIntegrations(commands.Cog):
             subscribers = await self._get_subscribers(guild_id, repo_name, RepoEventTypes.STARS)
             if not subscribers:
                 return
-            
+        
             # Create embed with timezone-aware datetime
             emoji = "⭐" if diff > 0 else "💫"
             title = f"{emoji} Star Update for {repo_name}"
-            
+        
             embed = discord.Embed(
                 title=title,
                 description=f"**{'+' if diff > 0 else ''}{diff} stars**\nNow at {stars:,} total stars",
@@ -1292,10 +1263,10 @@ class GitHubIntegrations(commands.Cog):
                 url=f"https://github.com/{repo_name}",
                 timestamp=utc_now()
             )
-            
+        
             # Add mentions
             mentions = " ".join([f"<@{sub}>" for sub in subscribers])
-            
+        
             if mentions:
                 await channel.send(mentions, embed=embed)
             else:
@@ -1312,7 +1283,7 @@ class GitHubIntegrations(commands.Cog):
                    WHERE guild_id = $1 AND repo_name = $2 AND event_type = $3 AND enabled = TRUE""",
                 guild_id, repo_name, event_type
             )
-            
+        
             return [sub['user_id'] for sub in subscribers]
         except Exception as e:
             logger.error(f"Error getting subscribers: {e}")
@@ -1328,7 +1299,7 @@ class GitHubIntegrations(commands.Cog):
             open_issues = repo_data.get('open_issues_count', 0)
             language = repo_data.get('language', 'Unknown')
             default_branch = repo_data.get('default_branch', 'main')
-            
+        
             embed = discord.Embed(
                 title=f"🐙 {repo_name}",
                 description=f"{description}\n\nNow tracking this repository for updates!",
@@ -1336,13 +1307,13 @@ class GitHubIntegrations(commands.Cog):
                 url=repo_data['html_url'],
                 timestamp=utc_now()  # Use timezone-aware datetime
             )
-            
+        
             embed.add_field(name="Stars", value=f"⭐ {stars:,}", inline=True)
             embed.add_field(name="Forks", value=f"🍴 {forks:,}", inline=True)
             embed.add_field(name="Issues", value=f"❗ {open_issues:,}", inline=True)
             embed.add_field(name="Language", value=language, inline=True)
             embed.add_field(name="Default Branch", value=default_branch, inline=True)
-            
+        
             embed.add_field(
                 name="Notifications",
                 value="You'll receive updates about:\n"
@@ -1353,15 +1324,15 @@ class GitHubIntegrations(commands.Cog):
                       "• ⭐ Star count changes",
                 inline=False
             )
-            
+        
             # Add owner avatar as thumbnail
             if repo_data.get('owner', {}).get('avatar_url'):
                 embed.set_thumbnail(url=repo_data['owner']['avatar_url'])
-            
+        
             embed.set_footer(text="GitHub Tracking • Use /list-repos to manage notification settings")
-            
+        
             await channel.send(embed=embed)
-            
+        
         except Exception as e:
             logger.error(f"Error sending repo status: {e}")
 

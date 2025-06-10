@@ -273,7 +273,8 @@ class DatabaseManager:
             )
             if row:
                 user_data = dict(row)
-                # Ensure datetime fields are timezone-aware
+                # Ensure datetime fields are timezone-aware using the utility
+                from utils.timezone_utils import ensure_timezone_aware
                 user_data['created_at'] = ensure_timezone_aware(user_data.get('created_at'))
                 user_data['updated_at'] = ensure_timezone_aware(user_data.get('updated_at'))
                 return user_data
@@ -285,7 +286,8 @@ class DatabaseManager:
     async def create_user(self, discord_id: str, username: str) -> bool:
         """Create new user in database with timezone-aware timestamps"""
         try:
-            created_at = now_for_db()
+            from utils.timezone_utils import now_for_db, format_for_database
+            created_at = format_for_database(now_for_db())
             await self.connection.execute(
                 "INSERT INTO users (discord_id, username, created_at, updated_at) VALUES ($1, $2, $3, $4) ON CONFLICT (discord_id) DO NOTHING",
                 discord_id, username, created_at, created_at
@@ -329,23 +331,26 @@ class DatabaseManager:
         for attempt in range(max_retries):
             try:
                 async with self._connection_lock:
-                    # Ensure any datetime arguments are timezone-aware
+                    # Ensure any datetime arguments are timezone-aware and properly formatted
                     processed_args = []
                     for arg in args:
                         if isinstance(arg, datetime):
-                            processed_args.append(ensure_timezone_aware(arg))
+                            # Use the timezone utility to ensure proper formatting
+                            from utils.timezone_utils import format_for_database
+                            processed_args.append(format_for_database(arg))
                         else:
                             processed_args.append(arg)
-                    
-                    if processed_args:
-                        await self.connection.execute(query, *processed_args)
-                    else:
-                        await self.connection.execute(query)
-                    return
+                
+                if processed_args:
+                    result = await self.connection.execute(query, *processed_args)
+                else:
+                    result = await self.connection.execute(query)
+                return result
             except Exception as e:
                 if attempt < max_retries - 1:
                     logger.warning(f"Database operation failed, retrying... (attempt {attempt + 1})")
                     await asyncio.sleep(0.1 * (attempt + 1))
                     continue
                 else:
+                    logger.error(f"Database operation failed after {max_retries} attempts: {e}")
                     raise e
