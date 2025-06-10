@@ -1,17 +1,15 @@
 """
-Timezone utilities for consistent datetime handling across the bot.
-This module provides functions to ensure all datetime objects are timezone-aware
-and properly formatted for database operations.
+Bulletproof datetime utilities for Discord bot.
+All datetime operations are timezone-aware (UTC) to prevent database query errors.
 """
 
 from datetime import datetime, timezone, timedelta
-import pytz
 import logging
 from typing import Union, Optional
 
 logger = logging.getLogger(__name__)
 
-def utc_now():
+def utc_now() -> datetime:
     """Get current UTC time as timezone-aware datetime"""
     return datetime.now(timezone.utc)
 
@@ -138,38 +136,6 @@ def get_relative_time(dt: Union[datetime, str, None]) -> str:
     """
     return format_for_discord(dt, 'R')
 
-def validate_datetime_for_db(dt: Union[datetime, str, None], field_name: str = "datetime") -> datetime:
-    """
-    Validate and prepare datetime for database operations.
-    
-    Args:
-        dt: datetime object to validate
-        field_name: name of the field for error messages
-        
-    Returns:
-        timezone-aware datetime in UTC
-        
-    Raises:
-        ValueError: if datetime cannot be processed
-    """
-    try:
-        result = ensure_timezone_aware(dt)
-        if result is None:
-            raise ValueError(f"{field_name} cannot be None")
-        
-        # Ensure it's a valid datetime
-        if not isinstance(result, datetime):
-            raise ValueError(f"{field_name} must be a datetime object")
-        
-        # Ensure it has timezone info
-        if result.tzinfo is None:
-            raise ValueError(f"{field_name} must be timezone-aware")
-        
-        return result
-    except Exception as e:
-        logger.error(f"Failed to validate {field_name}: {e}")
-        raise ValueError(f"Invalid {field_name}: {e}")
-
 def safe_datetime_subtract(dt1: Union[datetime, str, None], dt2: Union[datetime, str, None]) -> timedelta:
     """
     Safely subtract two datetimes, ensuring both are timezone-aware.
@@ -199,27 +165,6 @@ def safe_datetime_add(dt: Union[datetime, str, None], delta: timedelta) -> datet
     """
     dt_aware = ensure_timezone_aware(dt)
     return dt_aware + delta
-
-def safe_datetime_compare(dt1: datetime, dt2: datetime) -> int:
-    """
-    Safely compare two datetime objects, ensuring both are timezone-aware.
-    
-    Args:
-        dt1: First datetime
-        dt2: Second datetime
-        
-    Returns:
-        -1 if dt1 < dt2, 0 if dt1 == dt2, 1 if dt1 > dt2
-    """
-    dt1_aware = ensure_timezone_aware(dt1)
-    dt2_aware = ensure_timezone_aware(dt2)
-    
-    if dt1_aware < dt2_aware:
-        return -1
-    elif dt1_aware > dt2_aware:
-        return 1
-    else:
-        return 0
 
 def hours_ago(hours: int) -> datetime:
     """
@@ -257,47 +202,6 @@ def days_ago(days: int) -> datetime:
     """
     return utc_now() - timedelta(days=days)
 
-# Convenience functions for common operations
-def now_for_db() -> datetime:
-    """Get current time formatted for database insertion"""
-    return utc_now()
-
-def parse_user_datetime(user_input: str, default_timezone: str = 'UTC') -> Optional[datetime]:
-    """
-    Parse user-provided datetime string with timezone handling.
-    
-    Args:
-        user_input: user-provided datetime string
-        default_timezone: default timezone if none specified
-        
-    Returns:
-        timezone-aware datetime in UTC or None if parsing fails
-    """
-    if not user_input:
-        return None
-    
-    try:
-        # Try parsing as ISO first
-        return parse_iso_datetime(user_input)
-    except:
-        try:
-            # Try parsing without timezone, assume default
-            dt = datetime.fromisoformat(user_input)
-            if dt.tzinfo is None:
-                # Apply default timezone
-                tz = pytz.timezone(default_timezone)
-                dt = tz.localize(dt)
-            return dt.astimezone(timezone.utc)
-        except Exception as e:
-            logger.warning(f"Failed to parse user datetime '{user_input}': {e}")
-            return None
-
-def ensure_utc_datetime(dt: Optional[Union[datetime, str]]) -> datetime:
-    """
-    Alias for ensure_timezone_aware for backward compatibility.
-    """
-    return ensure_timezone_aware(dt)
-
 def datetime_to_timestamp(dt: Union[datetime, str, None]) -> int:
     """
     Convert datetime to Unix timestamp.
@@ -332,11 +236,11 @@ __all__ = [
     'format_for_database',
     'format_for_discord',
     'get_relative_time',
-    'validate_datetime_for_db',
     'safe_datetime_subtract',
     'safe_datetime_add',
-    'now_for_db',
-    'parse_user_datetime',
+    'hours_ago',
+    'minutes_ago',
+    'days_ago',
     'datetime_to_timestamp',
     'timestamp_to_datetime'
 ]
