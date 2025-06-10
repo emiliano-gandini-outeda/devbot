@@ -15,7 +15,7 @@ class TicketView(discord.ui.View):
         self.bot = bot
         self.ticket_id = ticket_id
     
-    @discord.ui.button(label="Transcribe and Close", style=discord.ButtonStyle.danger, emoji="📄")
+    @discord.ui.button(label="Close & Transcript", style=discord.ButtonStyle.danger, emoji="📄")
     async def transcribe_and_close(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             print(f"🎫 Starting ticket closure process for {self.ticket_id}")
