@@ -121,7 +121,7 @@ class DiscordBot(commands.Bot):
             'cogs.admin',
             'cogs.help',
             'cogs.setup',
-            'cogs.tickets',
+            'cogs.tickets',  # Only load tickets.py (consolidated)
             'cogs.reminders',
             'cogs.workflows',
             'cogs.roles',
