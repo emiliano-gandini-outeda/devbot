@@ -65,3 +65,4 @@ def format_timestamp(timestamp: int, style: str = "f") -> str:
 def get_relative_time(timestamp: int) -> str:
     """Get relative time string for Discord"""
     return f"<t:{timestamp}:R>"
+ 
