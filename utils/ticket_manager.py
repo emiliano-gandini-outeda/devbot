@@ -149,7 +149,7 @@ class TicketJoinRequestView(discord.ui.View):
                 description=f"Your request to join ticket {ticket_id} has been denied.",
                 color=0xED4245
             )
-            dm_embed.add_field(name="Denied by", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Denied by", value=interaction.user.mention, inline=True)
             
             await self.requesting_user.send(embed=dm_embed)
         except:
