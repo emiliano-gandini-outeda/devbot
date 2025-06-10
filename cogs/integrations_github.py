@@ -419,7 +419,7 @@ class GitHubIntegrations(commands.Cog):
         except Exception as e:
             print(f"❌ Error saving repo stats: {e}")
     
-    @app_commands.command(name="track-repo", description="Track a GitHub repository for updates")
+    @app_commands.command(name="github-track", description="Track a GitHub repository for updates")
     @app_commands.describe(
         repo_url="GitHub repository URL to track",
         ping_me="Get pinged when there are updates to this repository"
@@ -458,7 +458,7 @@ class GitHubIntegrations(commands.Cog):
             if not channel:
                 embed = discord.Embed(
                     title="❌ GitHub Channel Not Set",
-                    description="Please set a GitHub notification channel first using `/setup-github`.",
+                    description="Please set a GitHub notification channel first using `/github-setup`.",
                     color=0xE74C3C
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
@@ -567,7 +567,7 @@ class GitHubIntegrations(commands.Cog):
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="untrack-repo", description="Stop tracking a GitHub repository")
+    @app_commands.command(name="github-untrack", description="Stop tracking a GitHub repository")
     @app_commands.describe(repo_url="GitHub repository URL to stop tracking")
     async def untrack_repo(self, interaction: discord.Interaction, repo_url: str):
         """Stop tracking a GitHub repository"""
@@ -649,7 +649,7 @@ class GitHubIntegrations(commands.Cog):
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="list-repos", description="List all tracked GitHub repositories")
+    @app_commands.command(name="github-list", description="List all tracked GitHub repositories")
     async def list_repos(self, interaction: discord.Interaction):
         """List all tracked GitHub repositories"""
         await interaction.response.defer()
@@ -660,7 +660,7 @@ class GitHubIntegrations(commands.Cog):
             if guild_id not in self.tracked_repos or not self.tracked_repos[guild_id]:
                 embed = discord.Embed(
                     title="📋 Tracked Repositories",
-                    description="This server is not tracking any GitHub repositories.\n\nUse `/track-repo` to start tracking a repository!",
+                    description="This server is not tracking any GitHub repositories.\n\nUse `/github-track` to start tracking a repository!",
                     color=0x2F3136
                 )
                 await interaction.followup.send(embed=embed)
@@ -695,7 +695,7 @@ class GitHubIntegrations(commands.Cog):
                 inline=False
             )
             
-            embed.set_footer(text="Use /track-repo to add more repositories or update ping preferences")
+            embed.set_footer(text="Use /github-track to add more repositories or update ping preferences")
             
             await interaction.followup.send(embed=embed)
             
@@ -708,7 +708,7 @@ class GitHubIntegrations(commands.Cog):
             )
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="setup-github", description="Set up GitHub integration")
+    @app_commands.command(name="github-setup", description="Set up GitHub integration")
     @app_commands.describe(channel="Channel for GitHub notifications")
     async def setup_github(self, interaction: discord.Interaction, channel: discord.TextChannel):
         """Set up GitHub integration"""
@@ -797,9 +797,9 @@ class GitHubIntegrations(commands.Cog):
             )
             embed.add_field(
                 name="Next Steps",
-                value="• Use `/track-repo` to start tracking repositories\n"
-                      "• Use `/list-repos` to see tracked repositories\n"
-                      "• Use `/untrack-repo` to stop tracking a repository",
+                value="• Use `/github-track` to start tracking repositories\n"
+                      "• Use `/github-list` to see tracked repositories\n"
+                      "• Use `/github-untrack` to stop tracking a repository",
                 inline=False
             )
             embed.set_footer(text="You'll get notified when someone stars or forks your tracked repos!")
@@ -812,7 +812,7 @@ class GitHubIntegrations(commands.Cog):
                 description="This channel will receive GitHub repository updates!\n\nYou'll be notified when someone:\n• ⭐ Stars a tracked repository\n• 🍴 Forks a tracked repository",
                 color=0x57F287
             )
-            test_embed.set_footer(text="Use /track-repo to start tracking repositories")
+            test_embed.set_footer(text="Use /github-track to start tracking repositories")
             
             await channel.send(embed=test_embed)
             
