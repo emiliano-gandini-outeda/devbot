@@ -30,7 +30,25 @@ class Setup(commands.Cog):
             }
             
             # Store in user_data table using the ticket manager
-            await self.bot.ticket_manager.save_ticket_config(str(interaction.guild.id), config)
+            if hasattr(self.bot, 'ticket_manager') and self.bot.ticket_manager:
+                await self.bot.ticket_manager.save_ticket_config(str(interaction.guild.id), config)
+            else:
+                # Fallback if ticket_manager is not available
+                if self.bot.db.is_postgresql:
+                    await self.bot.db.connection.execute(
+                        """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
+                           VALUES ($1, $2, $3, $4)
+                           ON CONFLICT (user_id, guild_id, data_type) 
+                           DO UPDATE SET data_content = $4""",
+                        str(interaction.guild.id), str(interaction.guild.id), 'ticket_config', json.dumps(config)
+                    )
+                else:
+                    await self.bot.db.connection.execute(
+                        """INSERT OR REPLACE INTO user_data (user_id, guild_id, data_type, data_content) 
+                           VALUES (?, ?, ?, ?)""",
+                        (str(interaction.guild.id), str(interaction.guild.id), 'ticket_config', json.dumps(config))
+                    )
+                    await self.bot.db.connection.commit()
             
             embed = EmbedBuilder.success(
                 "Ticket System Setup",
@@ -64,15 +82,28 @@ class Setup(commands.Cog):
                 'setup_at': str(discord.utils.utcnow())
             }
             
+            guild_id = str(interaction.guild.id)
+            
             # Delete existing config first, then insert new one
-            await self.bot.db.connection.execute(
-                "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
-                str(interaction.guild.id), 'github_tracking_config'
-            )
-            await self.bot.db.connection.execute(
-                "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
-                str(interaction.guild.id), 'github_tracking_config', json.dumps(config)
-            )
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                    guild_id, 'github_tracking_config'
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $2, $3, $4)",
+                    guild_id, guild_id, 'github_tracking_config', json.dumps(config)
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = ? AND data_type = ?",
+                    (guild_id, 'github_tracking_config')
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES (?, ?, ?, ?)",
+                    (guild_id, guild_id, 'github_tracking_config', json.dumps(config))
+                )
+                await self.bot.db.connection.commit()
             
             embed = EmbedBuilder.success(
                 "GitHub Tracking Setup",
@@ -153,15 +184,28 @@ class Setup(commands.Cog):
                 'setup_at': str(discord.utils.utcnow())
             }
             
+            guild_id = str(interaction.guild.id)
+            
             # Delete existing config first, then insert new one
-            await self.bot.db.connection.execute(
-                "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
-                str(interaction.guild.id), 'meeting_config'
-            )
-            await self.bot.db.connection.execute(
-                "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
-                str(interaction.guild.id), 'meeting_config', json.dumps(config)
-            )
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                    guild_id, 'meeting_config'
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $2, $3, $4)",
+                    guild_id, guild_id, 'meeting_config', json.dumps(config)
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = ? AND data_type = ?",
+                    (guild_id, 'meeting_config')
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES (?, ?, ?, ?)",
+                    (guild_id, guild_id, 'meeting_config', json.dumps(config))
+                )
+                await self.bot.db.connection.commit()
             
             embed = EmbedBuilder.success(
                 "Meeting System Setup",
@@ -196,15 +240,28 @@ class Setup(commands.Cog):
                 'setup_at': str(discord.utils.utcnow())
             }
             
+            guild_id = str(interaction.guild.id)
+            
             # Delete existing config first, then insert new one
-            await self.bot.db.connection.execute(
-                "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
-                str(interaction.guild.id), 'reminder_config'
-            )
-            await self.bot.db.connection.execute(
-                "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
-                str(interaction.guild.id), 'reminder_config', json.dumps(config)
-            )
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                    guild_id, 'reminder_config'
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $2, $3, $4)",
+                    guild_id, guild_id, 'reminder_config', json.dumps(config)
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = ? AND data_type = ?",
+                    (guild_id, 'reminder_config')
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES (?, ?, ?, ?)",
+                    (guild_id, guild_id, 'reminder_config', json.dumps(config))
+                )
+                await self.bot.db.connection.commit()
             
             embed = EmbedBuilder.success(
                 "Reminder System Setup",
@@ -237,15 +294,28 @@ class Setup(commands.Cog):
                 'setup_at': str(discord.utils.utcnow())
             }
             
+            guild_id = str(interaction.guild.id)
+            
             # Delete existing config first, then insert new one
-            await self.bot.db.connection.execute(
-                "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
-                str(interaction.guild.id), 'thread_config'
-            )
-            await self.bot.db.connection.execute(
-                "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
-                str(interaction.guild.id), 'thread_config', json.dumps(config)
-            )
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                    guild_id, 'thread_config'
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $2, $3, $4)",
+                    guild_id, guild_id, 'thread_config', json.dumps(config)
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = ? AND data_type = ?",
+                    (guild_id, 'thread_config')
+                )
+                await self.bot.db.connection.execute(
+                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES (?, ?, ?, ?)",
+                    (guild_id, guild_id, 'thread_config', json.dumps(config))
+                )
+                await self.bot.db.connection.commit()
             
             embed = EmbedBuilder.success(
                 "Thread Logging Setup",

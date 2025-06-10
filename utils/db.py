@@ -150,7 +150,20 @@ class DatabaseManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """,
+            # User data table for flexible storage
             """
+            CREATE TABLE IF NOT EXISTS user_data (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                guild_id TEXT,
+                data_type TEXT NOT NULL,
+                data_content JSONB DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, guild_id, data_type)
+            )
+            """,
         ]
 
         for i, table_sql in enumerate(tables, 1):
@@ -170,7 +183,8 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_github_channels_guild ON github_channels(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_github_repos_guild ON github_repos(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_github_repo_stats_url ON github_repo_stats(repo_url)",
-            "CREATE INDEX IF NOT EXISTS idx_log_configs_guild ON log_configs(guild_id)"
+            "CREATE INDEX IF NOT EXISTS idx_log_configs_guild ON log_configs(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_user_data_lookup ON user_data(user_id, guild_id, data_type)"
         ]
 
         for index_sql in indexes:
@@ -270,7 +284,20 @@ class DatabaseManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """,
+            # User data table for flexible storage
             """
+            CREATE TABLE IF NOT EXISTS user_data (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                guild_id TEXT,
+                data_type TEXT NOT NULL,
+                data_content TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, guild_id, data_type)
+            )
+            """,
         ]
 
         for i, table_sql in enumerate(tables, 1):
@@ -292,7 +319,8 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_github_channels_guild ON github_channels(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_github_repos_guild ON github_repos(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_github_repo_stats_url ON github_repo_stats(repo_url)",
-            "CREATE INDEX IF NOT EXISTS idx_log_configs_guild ON log_configs(guild_id)"
+            "CREATE INDEX IF NOT EXISTS idx_log_configs_guild ON log_configs(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_user_data_lookup ON user_data(user_id, guild_id, data_type)"
         ]
 
         for index_sql in indexes:

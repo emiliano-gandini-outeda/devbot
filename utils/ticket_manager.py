@@ -55,41 +55,6 @@ class TicketManager:
             except Exception as e:
                 print(f"⚠️ Error checking user_data table: {e}")
             
-            # Method 2: Check ticket_configs table (if exists)
-            if not config:
-                try:
-                    if self.bot.db.is_postgresql:
-                        row = await self.bot.db.connection.fetchrow(
-                            "SELECT * FROM ticket_configs WHERE guild_id = $1", guild_id
-                        )
-                        if row:
-                            config = {
-                                'category_id': row['category_id'],
-                                'support_role_id': row['support_role_id'],
-                                'log_channel_id': row['log_channel_id'],
-                                'transcript_channel_id': row['log_channel_id'],  # Use log_channel as transcript
-                                'auto_close_hours': row['auto_close_hours'],
-                                'max_tickets_per_user': row['max_tickets_per_user']
-                            }
-                            print(f"✅ Found config in ticket_configs table: {config}")
-                    else:
-                        cursor = await self.bot.db.connection.execute(
-                            "SELECT * FROM ticket_configs WHERE guild_id = ?", (guild_id,)
-                        )
-                        row = await cursor.fetchone()
-                        if row:
-                            config = {
-                                'category_id': row[2],
-                                'support_role_id': row[3],
-                                'log_channel_id': row[4],
-                                'transcript_channel_id': row[4],  # Use log_channel as transcript
-                                'auto_close_hours': row[5],
-                                'max_tickets_per_user': row[6]
-                            }
-                            print(f"✅ Found config in ticket_configs table: {config}")
-                except Exception as e:
-                    print(f"⚠️ Error checking ticket_configs table (table may not exist): {e}")
-            
             # Cache the config if found
             if config:
                 self.ticket_configs[guild_id] = config
