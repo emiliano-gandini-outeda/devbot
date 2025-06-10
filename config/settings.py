@@ -28,6 +28,10 @@ class Settings:
     # OpenAI Configuration
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY', '')
     
+    # GitHub Integration
+    GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
+    
+
     # Application Settings
     DEBUG: bool = os.getenv('DEBUG', 'False').lower() == 'true'
     MAX_REMINDERS_PER_USER: int = int(os.getenv('MAX_REMINDERS_PER_USER', '10'))
