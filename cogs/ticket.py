@@ -15,7 +15,7 @@ class TicketView(discord.ui.View):
         self.bot = bot
         self.ticket_id = ticket_id
     
-    @discord.ui.button(label="Close & Transcript", style=discord.ButtonStyle.danger, emoji="📄")
+    @discord.ui.button(label="Transcribe & Close", style=discord.ButtonStyle.danger, emoji="📄")
     async def close_and_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             # Check if user is admin or ticket creator
@@ -44,12 +44,14 @@ class TicketView(discord.ui.View):
             await interaction.response.defer()
             
             # Create transcript
+            await interaction.followup.send("Creating transcript... Please wait.")
             transcript = await self.bot.ticket_manager.create_transcript(interaction.channel)
             
             # Get ticket creator
             ticket_user = interaction.guild.get_member(int(ticket_user_id))
             
             # Send transcript
+            await interaction.followup.send("Sending transcript to archive channel...")
             success = await self.bot.ticket_manager.send_transcript(
                 interaction.guild, transcript, self.ticket_id, ticket_user or interaction.user
             )
