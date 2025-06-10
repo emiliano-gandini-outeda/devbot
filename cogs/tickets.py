@@ -1,6 +1,6 @@
 """
-Tickets Cog - Complete rewrite with bulletproof datetime handling.
-All datetime operations use timezone-aware UTC datetimes to prevent database errors.
+Complete Tickets Cog - Full functionality with nuclear timestamp integration
+All datetime operations use Unix integer timestamps to prevent database errors
 """
 
 import discord
@@ -8,12 +8,11 @@ from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder
 from utils.ticket_manager import TicketManager, TicketJoinRequestView
-from utils.datetime_utils import (
-    utc_now, ensure_timezone_aware, format_for_database, 
-    format_for_discord, get_relative_time
+from utils.timestamp_utils import (
+    now_timestamp, timestamp_to_datetime, format_timestamp_for_discord, 
+    get_relative_timestamp
 )
 from config.constants import TicketStatus, TicketPriority
-from datetime import datetime, timezone, timedelta
 import json
 import asyncio
 import io
@@ -56,7 +55,7 @@ class TicketCloseView(discord.ui.View):
             # Send transcript
             transcript_sent = await ticket_manager.send_transcript(interaction.guild, transcript, self.ticket_id, interaction.user)
             
-            # Update ticket status
+            # Update ticket status with nuclear timestamp
             await ticket_manager.update_ticket_status(self.ticket_id, TicketStatus.CLOSED.value)
             
             # Send closure message
@@ -115,6 +114,100 @@ class TicketCloseView(discord.ui.View):
             logger.error(f"Error checking close permissions: {e}")
             return False
 
+class TicketSetupModal(discord.ui.Modal, title="Ticket System Setup"):
+    def __init__(self, bot):
+        super().__init__()
+        self.bot = bot
+    
+    category_name = discord.ui.TextInput(
+        label="Category Name",
+        placeholder="Enter category name for tickets (e.g., 'Support Tickets')",
+        default="Support Tickets",
+        max_length=100
+    )
+    
+    transcript_channel = discord.ui.TextInput(
+        label="Transcript Channel Name",
+        placeholder="Enter channel name for transcripts (e.g., 'ticket-transcripts')",
+        default="ticket-transcripts",
+        max_length=100
+    )
+    
+    support_role = discord.ui.TextInput(
+        label="Support Role Name (Optional)",
+        placeholder="Enter support role name (leave empty if none)",
+        required=False,
+        max_length=100
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        try:
+            guild = interaction.guild
+            
+            # Create or get category
+            category = None
+            for cat in guild.categories:
+                if cat.name.lower() == self.category_name.value.lower():
+                    category = cat
+                    break
+            
+            if not category:
+                category = await guild.create_category(
+                    name=self.category_name.value,
+                    reason="Ticket system setup"
+                )
+            
+            # Create or get transcript channel
+            transcript_channel = None
+            for channel in guild.text_channels:
+                if channel.name.lower() == self.transcript_channel.value.lower().replace(' ', '-'):
+                    transcript_channel = channel
+                    break
+            
+            if not transcript_channel:
+                transcript_channel = await guild.create_text_channel(
+                    name=self.transcript_channel.value.replace(' ', '-'),
+                    category=category,
+                    reason="Ticket system setup - transcript channel"
+                )
+            
+            # Get support role if specified
+            support_role = None
+            if self.support_role.value:
+                for role in guild.roles:
+                    if role.name.lower() == self.support_role.value.lower():
+                        support_role = role
+                        break
+            
+            # Save configuration with nuclear timestamp
+            ticket_manager = self.bot.get_cog('Tickets').ticket_manager
+            success = await ticket_manager.save_ticket_config(
+                str(guild.id),
+                str(category.id),
+                str(transcript_channel.id),
+                str(support_role.id) if support_role else None
+            )
+            
+            if success:
+                embed = EmbedBuilder.success(
+                    "✅ Ticket System Configured",
+                    f"**Category:** {category.name}\n"
+                    f"**Transcript Channel:** {transcript_channel.mention}\n"
+                    f"**Support Role:** {support_role.mention if support_role else 'None'}\n\n"
+                    f"🎫 Users can now create tickets using `/ticket create`"
+                )
+            else:
+                embed = EmbedBuilder.error("Error", "Failed to save ticket configuration")
+            
+            await interaction.followup.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Setup modal error: {e}")
+            embed = EmbedBuilder.error("Setup Error", f"Failed to setup ticket system: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
 class TicketCommands(app_commands.Group):
     """Ticket system commands"""
     
@@ -171,19 +264,19 @@ class TicketCommands(app_commands.Group):
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             
-            # Save ticket to database with timezone-aware datetimes
+            # Save ticket to database with nuclear timestamp
             await self.ticket_manager.save_ticket_to_database(
                 ticket_id, str(interaction.guild.id), str(interaction.user.id), 
                 title, description, priority, str(channel.id)
             )
             
-            # Create ticket embed with timezone-aware datetime
-            created_at = utc_now()
+            # Create ticket embed with nuclear timestamp
+            created_timestamp = now_timestamp()
             embed = discord.Embed(
                 title=f"🎫 Support Ticket: {ticket_id}",
                 description=f"**Issue Description:**\n{description}",
                 color=0x5865F2,
-                timestamp=created_at
+                timestamp=timestamp_to_datetime(created_timestamp)
             )
             embed.add_field(name="📋 Title", value=title, inline=False)
             embed.add_field(name="⚡ Priority", value=priority.title(), inline=True)
@@ -256,16 +349,16 @@ class TicketCommands(app_commands.Group):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Create join request with timezone-aware datetime
-        current_time = utc_now()
+        # Create join request with nuclear timestamp
+        current_timestamp = now_timestamp()
         embed = discord.Embed(
             title="🎫 Ticket Join Request",
             description=f"{interaction.user.mention} wants to join this ticket conversation",
             color=0xFEE75C,
-            timestamp=current_time
+            timestamp=timestamp_to_datetime(current_timestamp)
         )
         embed.add_field(name="👤 User", value=f"{interaction.user.mention}\n`{interaction.user}`", inline=True)
-        embed.add_field(name="📅 Requested", value=format_for_discord(current_time), inline=True)
+        embed.add_field(name="📅 Requested", value=format_timestamp_for_discord(current_timestamp), inline=True)
         embed.add_field(name="🔍 Current Access", value="👀 **Read Only**\n(Can see all messages)", inline=True)
         embed.add_field(name="📝 Requesting", value="💬 **Write Access**\n(Can participate in conversation)", inline=True)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
@@ -349,7 +442,7 @@ class TicketCommands(app_commands.Group):
                 else:
                     tickets = await self.ticket_manager.get_user_tickets(str(interaction.guild.id), str(user.id), status)
             else:
-                # Get all tickets for guild (implement this method in ticket_manager if needed)
+                # Get all tickets for guild
                 tickets = await self._get_guild_tickets(str(interaction.guild.id), status)
             
             if not tickets:
@@ -360,7 +453,7 @@ class TicketCommands(app_commands.Group):
             embed = discord.Embed(
                 title="🎫 Support Tickets",
                 color=0x5865F2,
-                timestamp=utc_now()
+                timestamp=timestamp_to_datetime(now_timestamp())
             )
             embed.set_footer(text="devBot - Powered by EGOS")
             
@@ -371,7 +464,7 @@ class TicketCommands(app_commands.Group):
                 ticket_status = ticket['status']
                 priority = ticket['priority']
                 channel_id = ticket['channel_id']
-                created_at = ensure_timezone_aware(ticket['created_at'])
+                created_at = ticket['created_at']  # Already Unix timestamp
                 
                 ticket_user = interaction.guild.get_member(int(user_id))
                 user_name = ticket_user.display_name if ticket_user else "Unknown"
@@ -393,7 +486,7 @@ class TicketCommands(app_commands.Group):
                           f"**Priority:** {priority_emoji} {priority.title()}\n"
                           f"**Status:** {ticket_status.title()}\n"
                           f"**Channel:** {channel_link}\n"
-                          f"**Created:** {get_relative_time(created_at)}",
+                          f"**Created:** {get_relative_timestamp(created_at)}",
                     inline=True
                 )
             
@@ -487,6 +580,78 @@ class TicketCommands(app_commands.Group):
             embed = EmbedBuilder.error("Error", f"Failed to unassign ticket: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
+    @app_commands.command(name="close", description="Close a ticket")
+    @app_commands.describe(ticket_id="Ticket ID to close (optional if in ticket channel)")
+    async def close_ticket(self, interaction: discord.Interaction, ticket_id: str = None):
+        # Get ticket ID from channel if not provided
+        if not ticket_id:
+            if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
+                embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels or with a ticket ID")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket:", "").strip()
+        
+        # Check permissions
+        ticket = await self.ticket_manager.get_ticket_by_id(ticket_id)
+        if not ticket:
+            embed = EmbedBuilder.error("Not Found", f"Ticket {ticket_id} not found")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Check if user can close ticket
+        can_close = (
+            str(interaction.user.id) == ticket['user_id'] or  # Ticket creator
+            str(interaction.user.id) == ticket['assignee_id'] or  # Assignee
+            self._is_admin(interaction.user)  # Admin
+        )
+        
+        if not can_close:
+            embed = EmbedBuilder.error("Permission Denied", "Only ticket creator, assignee, or admins can close tickets")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        await interaction.response.defer()
+        
+        try:
+            # Create transcript
+            channel = interaction.guild.get_channel(int(ticket['channel_id']))
+            if channel:
+                transcript = await self.ticket_manager.create_transcript(channel)
+                transcript_sent = await self.ticket_manager.send_transcript(interaction.guild, transcript, ticket_id, interaction.user)
+            else:
+                transcript_sent = False
+            
+            # Update ticket status
+            await self.ticket_manager.update_ticket_status(ticket_id, TicketStatus.CLOSED.value)
+            
+            # Send closure message
+            if transcript_sent:
+                embed = EmbedBuilder.success(
+                    "🎫 Ticket Closed Successfully",
+                    f"**Ticket {ticket_id}** has been closed and transcript saved."
+                )
+            else:
+                embed = EmbedBuilder.warning(
+                    "⚠️ Ticket Closed with Issues",
+                    f"**Ticket {ticket_id}** has been closed.\n"
+                    f"❌ **Transcript:** Could not be saved - check transcript channel configuration"
+                )
+            
+            await interaction.followup.send(embed=embed)
+            
+            # Delete channel after delay if it exists
+            if channel:
+                await asyncio.sleep(5)
+                try:
+                    await channel.delete(reason=f"Ticket {ticket_id} closed")
+                except Exception as e:
+                    logger.error(f"Could not delete channel: {e}")
+            
+        except Exception as e:
+            logger.error(f"Error closing ticket: {e}")
+            embed = EmbedBuilder.error("Error", f"Failed to close ticket: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+    
     # Helper methods
     def _is_admin(self, user: discord.Member) -> bool:
         """Check if user is admin"""
@@ -526,38 +691,23 @@ class TicketCommands(app_commands.Group):
     async def _get_guild_tickets(self, guild_id: str, status: str = "all"):
         """Get all tickets for a guild"""
         try:
-            if self.bot.db.is_postgresql:
-                if status == "all":
-                    tickets = await self.bot.db.connection.fetch(
-                        "SELECT * FROM tickets WHERE guild_id = $1 ORDER BY created_at DESC LIMIT 50",
-                        guild_id
-                    )
-                else:
-                    tickets = await self.bot.db.connection.fetch(
-                        "SELECT * FROM tickets WHERE guild_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 50",
-                        guild_id, status
-                    )
-                return [dict(ticket) for ticket in tickets]
+            if status == "all":
+                tickets = await self.bot.db.fetch(
+                    "SELECT * FROM tickets WHERE guild_id = $1 ORDER BY created_at DESC LIMIT 50",
+                    guild_id
+                )
             else:
-                if status == "all":
-                    cursor = await self.bot.db.connection.execute(
-                        "SELECT * FROM tickets WHERE guild_id = ? ORDER BY created_at DESC LIMIT 50",
-                        (guild_id,)
-                    )
-                else:
-                    cursor = await self.bot.db.connection.execute(
-                        "SELECT * FROM tickets WHERE guild_id = ? AND status = ? ORDER BY created_at DESC LIMIT 50",
-                        (guild_id, status)
-                    )
-                tickets = await cursor.fetchall()
-                columns = ['id', 'ticket_id', 'guild_id', 'user_id', 'assignee_id', 'title', 'description', 'status', 'priority', 'channel_id', 'created_at', 'updated_at']
-                return [dict(zip(columns, ticket)) for ticket in tickets]
+                tickets = await self.bot.db.fetch(
+                    "SELECT * FROM tickets WHERE guild_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT 50",
+                    guild_id, status
+                )
+            return tickets
         except Exception as e:
             logger.error(f"Error getting guild tickets: {e}")
             return []
 
 class Tickets(commands.Cog):
-    """Support ticket system"""
+    """Support ticket system with nuclear timestamp integration"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -567,7 +717,33 @@ class Tickets(commands.Cog):
     async def cog_load(self):
         """Called when the cog is loaded"""
         self.bot.tree.add_command(self.ticket_commands)
-        logger.info("🎫 Ticket system loaded successfully")
+        logger.info("🎫 Nuclear Ticket system loaded successfully")
+    
+    @app_commands.command(name="setup-tickets", description="🎫 Setup the ticket system (Admin only)")
+    async def setup_tickets(self, interaction: discord.Interaction):
+        """Setup ticket system for the guild"""
+        # Check admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup the ticket system")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Check if already configured
+        config = await self.ticket_manager.get_ticket_config(str(interaction.guild.id))
+        if config:
+            embed = EmbedBuilder.info(
+                "Already Configured",
+                f"Ticket system is already configured for this server.\n\n"
+                f"**Category:** <#{config['category_id']}>\n"
+                f"**Transcript Channel:** <#{config['transcript_channel_id']}>\n"
+                f"**Support Role:** <@&{config['support_role_id']}>" if config.get('support_role_id') else "**Support Role:** None"
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Show setup modal
+        modal = TicketSetupModal(self.bot)
+        await interaction.response.send_modal(modal)
 
 async def setup(bot):
     """Setup function for the cog"""
@@ -575,5 +751,5 @@ async def setup(bot):
     await bot.add_cog(cog)
     
     # Print success message
-    command_count = len(cog.ticket_commands.commands)
+    command_count = len(cog.ticket_commands.commands) + 1  # +1 for setup-tickets
     logger.info(f"🎫 Successfully loaded Tickets cog with {command_count} commands")
