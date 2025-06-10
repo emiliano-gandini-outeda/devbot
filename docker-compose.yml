@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    environment:
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+      - APP_ID=${APP_ID}
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - DATABASE_URL=${DATABASE_URL}
+    depends_on:
+      - postgres
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=discord_bot
+      - POSTGRES_USER=bot_user
+      - POSTGRES_PASSWORD=bot_password
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

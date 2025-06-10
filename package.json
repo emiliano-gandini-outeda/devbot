@@ -1,0 +1,17 @@
+{
+  "name": "discord-management-bot",
+  "version": "1.0.0",
+  "description": "A comprehensive Discord management bot",
+  "main": "bot.py",
+  "scripts": {
+    "start": "python bot.py",
+    "dev": "python bot.py",
+    "deploy": "railway up"
+  },
+  "keywords": ["discord", "bot", "management", "tickets", "github", "automation"],
+  "author": "Your Name",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
