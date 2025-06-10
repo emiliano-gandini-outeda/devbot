@@ -41,7 +41,7 @@ class HelpDropdown(discord.ui.Select):
             ),
             discord.SelectOption(
                 label="🔗 Integrations",
-                description="Google, Notion, Trello connections",
+                description="Google, GitHub, Notion, Trello connections",
                 emoji="🔗",
                 value="integrations"
             ),
@@ -165,7 +165,8 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             admin_commands = [
                 "`/ticket-system-setup <category> <transcript_channel>` - Setup ticket system",
-                "`/ticket assign <ticket_id> <assignee>` - Assign ticket to user"
+                "`/ticket assign <ticket_id> <assignee>` - Assign ticket to user",
+                "`/ticket unassign <ticket_id> <user>` - Unassign user from ticket"
             ]
             
             embed.add_field(
@@ -278,9 +279,10 @@ class HelpDropdown(discord.ui.Select):
         ]
         
         github_commands = [
-            "`/track-repo <repo>` - Track GitHub repository",
+            "`/setup-github <channel>` - Set up GitHub integration",
+            "`/track-repo <repo_url>` - Track GitHub repository",
             "`/list-repos` - List tracked repositories with toggle options",
-            "`/untrack-repo <repo>` - Stop tracking a repository"
+            "`/untrack-repo <repo_url>` - Stop tracking a repository"
         ]
         
         embed.add_field(name="📅 Google Calendar", value="\n".join(google_commands), inline=False)
@@ -420,7 +422,7 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             embed.add_field(
                 name="Admin Commands",
-                value="`/logging-setup <log_channel>` - Configure logging channel",
+                value="`/setup-logs <log_channel>` - Configure logging channel",
                 inline=False
             )
         

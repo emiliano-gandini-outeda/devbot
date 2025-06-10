@@ -29,14 +29,8 @@ class Setup(commands.Cog):
                 'setup_at': str(discord.utils.utcnow())
             }
             
-            # Store in user_data table
-            await self.bot.db.connection.execute(
-                """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
-                   VALUES ($1, $1, $2, $3)
-                   ON CONFLICT (user_id, guild_id, data_type) DO UPDATE SET
-                   data_content = $3, updated_at = CURRENT_TIMESTAMP""",
-                str(interaction.guild.id), 'ticket_config', json.dumps(config)
-            )
+            # Store in user_data table using the ticket manager
+            await self.bot.ticket_manager.save_ticket_config(str(interaction.guild.id), config)
             
             embed = EmbedBuilder.success(
                 "Ticket System Setup",

@@ -212,6 +212,42 @@ class DatabaseManager:
             )
             """,
 
+            # GitHub repository stats table
+            """
+            CREATE TABLE IF NOT EXISTS github_repo_stats (
+                id SERIAL PRIMARY KEY,
+                repo_name TEXT UNIQUE NOT NULL,
+                stars INTEGER DEFAULT 0,
+                forks INTEGER DEFAULT 0,
+                open_issues INTEGER DEFAULT 0,
+                last_commit TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+
+            # GitHub channels table
+            """
+            CREATE TABLE IF NOT EXISTS github_channels (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT UNIQUE NOT NULL,
+                channel_id TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+
+            # GitHub repos table
+            """
+            CREATE TABLE IF NOT EXISTS github_repos (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                repo_url TEXT NOT NULL,
+                ping_users TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, repo_url)
+            )
+            """,
+
             # Log configs table
             """
             CREATE TABLE IF NOT EXISTS log_configs (
@@ -244,11 +280,15 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)",
             "CREATE INDEX IF NOT EXISTS idx_admin_roles_guild_id ON admin_roles(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_tickets_guild_id ON tickets(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tickets_ticket_id ON tickets(ticket_id)",
             "CREATE INDEX IF NOT EXISTS idx_reminders_remind_at ON reminders(remind_at)",
             "CREATE INDEX IF NOT EXISTS idx_workflows_guild_id ON workflows(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_meetings_guild_id ON meetings(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_keywords_guild_user ON keywords(guild_id, user_id)",
             "CREATE INDEX IF NOT EXISTS idx_github_repos_guild ON github_tracked_repos(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_github_repo_stats_name ON github_repo_stats(repo_name)",
+            "CREATE INDEX IF NOT EXISTS idx_github_channels_guild ON github_channels(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_github_repos_new_guild ON github_repos(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_user_data_lookup ON user_data(user_id, guild_id, data_type)",
             "CREATE INDEX IF NOT EXISTS idx_log_configs_guild ON log_configs(guild_id)"
         ]
