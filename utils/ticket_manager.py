@@ -275,6 +275,8 @@ class TicketManager:
     async def get_ticket_config(self, guild_id: str) -> Optional[dict]:
         """Get ticket configuration for a guild"""
         try:
+            print(f"🔍 Getting ticket config for guild {guild_id}")
+            
             if self.bot.db.is_postgresql:
                 row = await self.bot.db.connection.fetchrow(
                     "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
@@ -290,61 +292,101 @@ class TicketManager:
             if row:
                 data_content = row['data_content'] if self.bot.db.is_postgresql else row[0]
                 if isinstance(data_content, str):
-                    return json.loads(data_content)
-                return data_content
-            return None
+                    config = json.loads(data_content)
+                else:
+                    config = data_content
+                
+                print(f"✅ Found ticket config: {config}")
+                return config
+            else:
+                print(f"❌ No ticket config found for guild {guild_id}")
+                return None
         except Exception as e:
-            print(f"Error getting ticket config: {e}")
+            print(f"❌ Error getting ticket config: {e}")
             return None
     
     async def create_ticket_channel(self, guild: discord.Guild, ticket_id: str, user: discord.Member, title: str) -> Optional[discord.TextChannel]:
-        """Create a ticket channel"""
+        """Create a ticket channel - PUBLIC AND READ-ONLY BY DEFAULT"""
         try:
+            print(f"🎫 Creating ticket channel for {ticket_id}")
+            
             # Get ticket config
             config = await self.get_ticket_config(str(guild.id))
             if not config:
-                print(f"No ticket config found for guild {guild.id}")
+                print(f"❌ No ticket config found for guild {guild.id}")
                 return None
             
             category_id = config.get('category_id')
             if not category_id:
-                print(f"No category_id in ticket config for guild {guild.id}")
+                print(f"❌ No category_id in ticket config for guild {guild.id}")
                 return None
             
             category = guild.get_channel(int(category_id))
             if not category:
-                print(f"Category channel {category_id} not found in guild {guild.id}")
+                print(f"❌ Category channel {category_id} not found in guild {guild.id}")
                 return None
             
-            # Create channel
+            # Create channel name
             channel_name = f"ticket-{ticket_id.lower()}"
             
-            # Set permissions - PUBLIC AND READ-ONLY BY DEFAULT
+            print(f"🔧 Setting up PUBLIC READ-ONLY permissions for {channel_name}")
+            
+            # CRITICAL: Set permissions - PUBLIC AND READ-ONLY BY DEFAULT
             overwrites = {
-                guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
-                user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
-                guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+                # @everyone can READ but NOT WRITE (PUBLIC READ-ONLY)
+                guild.default_role: discord.PermissionOverwrite(
+                    read_messages=True,      # ✅ Can see the ticket
+                    send_messages=False,     # ❌ Cannot write messages
+                    add_reactions=False,     # ❌ Cannot add reactions
+                    attach_files=False       # ❌ Cannot attach files
+                ),
+                # Ticket creator can READ and WRITE
+                user: discord.PermissionOverwrite(
+                    read_messages=True,      # ✅ Can see the ticket
+                    send_messages=True,      # ✅ Can write messages
+                    add_reactions=True,      # ✅ Can add reactions
+                    attach_files=True        # ✅ Can attach files
+                ),
+                # Bot can manage everything
+                guild.me: discord.PermissionOverwrite(
+                    read_messages=True,
+                    send_messages=True,
+                    manage_channels=True,
+                    manage_messages=True,
+                    add_reactions=True,
+                    attach_files=True
+                )
             }
             
-            # Add admin roles with write permissions
-            if self.bot.admin_manager:
+            # Add admin roles with WRITE permissions
+            if hasattr(self.bot, 'admin_manager') and self.bot.admin_manager:
                 admin_role_ids = self.bot.admin_manager.get_admin_roles(str(guild.id))
                 for role_id in admin_role_ids:
                     role = guild.get_role(int(role_id))
                     if role:
-                        overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                        overwrites[role] = discord.PermissionOverwrite(
+                            read_messages=True,
+                            send_messages=True,
+                            add_reactions=True,
+                            attach_files=True
+                        )
+                        print(f"✅ Added admin role {role.name} with write permissions")
             
+            print(f"📝 Creating channel with overwrites: {len(overwrites)} permission sets")
+            
+            # Create the channel
             channel = await guild.create_text_channel(
                 name=channel_name,
                 category=category,
-                topic=f"Support ticket: {ticket_id} | Created by {user.display_name}",
+                topic=f"Support ticket: {ticket_id} | Created by {user.display_name} | 🌐 Public & Read-Only",
                 overwrites=overwrites
             )
             
+            print(f"✅ Created PUBLIC READ-ONLY ticket channel: {channel.name}")
             return channel
             
         except Exception as e:
-            print(f"Error creating ticket channel: {e}")
+            print(f"❌ Error creating ticket channel: {e}")
             return None
     
     async def set_ticket_visibility(self, channel: discord.TextChannel, private: bool = True) -> bool:
@@ -353,21 +395,32 @@ class TicketManager:
             guild = channel.guild
             
             if private:
+                print(f"🔒 Setting ticket {channel.name} to PRIVATE")
                 # Private: Only assignees and admins can read
                 overwrites = {
-                    guild.default_role: discord.PermissionOverwrite(read_messages=False, send_messages=False)
+                    guild.default_role: discord.PermissionOverwrite(
+                        read_messages=False, 
+                        send_messages=False
+                    )
                 }
             else:
+                print(f"🌐 Setting ticket {channel.name} to PUBLIC READ-ONLY")
                 # Public: Everyone can read, but only assignees can write
                 overwrites = {
-                    guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False)
+                    guild.default_role: discord.PermissionOverwrite(
+                        read_messages=True,      # ✅ Can read
+                        send_messages=False,     # ❌ Cannot write
+                        add_reactions=False,     # ❌ Cannot react
+                        attach_files=False       # ❌ Cannot attach files
+                    )
                 }
             
             # Always allow bot to manage
             overwrites[guild.me] = discord.PermissionOverwrite(
                 read_messages=True, 
                 send_messages=True, 
-                manage_channels=True
+                manage_channels=True,
+                manage_messages=True
             )
             
             # Get ticket info to preserve creator and assignee permissions
@@ -389,67 +442,120 @@ class TicketManager:
                     user_id = ticket['user_id'] if self.bot.db.is_postgresql else ticket[3]
                     creator = guild.get_member(int(user_id))
                     if creator:
-                        overwrites[creator] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                        overwrites[creator] = discord.PermissionOverwrite(
+                            read_messages=True, 
+                            send_messages=True,
+                            add_reactions=True,
+                            attach_files=True
+                        )
                     
                     # Assignee permissions
                     assignee_id = ticket['assignee_id'] if self.bot.db.is_postgresql else ticket[4]
                     if assignee_id:
                         assignee = guild.get_member(int(assignee_id))
                         if assignee:
-                            overwrites[assignee] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                            overwrites[assignee] = discord.PermissionOverwrite(
+                                read_messages=True, 
+                                send_messages=True,
+                                add_reactions=True,
+                                attach_files=True
+                            )
             
             # Admin role permissions
-            if self.bot.admin_manager:
+            if hasattr(self.bot, 'admin_manager') and self.bot.admin_manager:
                 admin_role_ids = self.bot.admin_manager.get_admin_roles(str(guild.id))
                 for role_id in admin_role_ids:
                     role = guild.get_role(int(role_id))
                     if role:
-                        overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                        overwrites[role] = discord.PermissionOverwrite(
+                            read_messages=True, 
+                            send_messages=True,
+                            add_reactions=True,
+                            attach_files=True
+                        )
             
             await channel.edit(overwrites=overwrites)
+            print(f"✅ Updated ticket visibility successfully")
             return True
             
         except Exception as e:
-            print(f"Error setting ticket visibility: {e}")
+            print(f"❌ Error setting ticket visibility: {e}")
             return False
     
     async def create_transcript(self, channel: discord.TextChannel) -> str:
         """Create a transcript of the ticket channel"""
         try:
+            print(f"📝 Creating transcript for {channel.name}")
+            
             messages = []
+            message_count = 0
+            
             async for message in channel.history(limit=None, oldest_first=True):
                 timestamp = message.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')
-                content = message.content or "[No content]"
+                content = message.content or "[No text content]"
                 
+                # Handle embeds
+                if message.embeds:
+                    for embed in message.embeds:
+                        if embed.title:
+                            content += f"\n[EMBED] Title: {embed.title}"
+                        if embed.description:
+                            content += f"\n[EMBED] Description: {embed.description}"
+                
+                # Handle attachments
                 if message.attachments:
-                    attachments = "\n".join([f"Attachment: {att.filename}" for att in message.attachments])
+                    attachments = "\n".join([f"[ATTACHMENT] {att.filename} ({att.url})" for att in message.attachments])
                     content += f"\n{attachments}"
                 
-                messages.append(f"[{timestamp}] {message.author}: {content}")
+                # Handle reactions
+                if message.reactions:
+                    reactions = ", ".join([f"{reaction.emoji}({reaction.count})" for reaction in message.reactions])
+                    content += f"\n[REACTIONS] {reactions}"
+                
+                messages.append(f"[{timestamp}] {message.author.display_name} ({message.author.id}): {content}")
+                message_count += 1
             
-            return "\n".join(messages)
+            transcript_header = f"""
+=== TICKET TRANSCRIPT ===
+Channel: {channel.name}
+Guild: {channel.guild.name}
+Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
+Total Messages: {message_count}
+========================
+
+"""
+            
+            full_transcript = transcript_header + "\n".join(messages)
+            print(f"✅ Created transcript with {message_count} messages")
+            return full_transcript
             
         except Exception as e:
-            print(f"Error creating transcript: {e}")
+            print(f"❌ Error creating transcript: {e}")
             return f"Error creating transcript: {str(e)}"
     
     async def send_transcript(self, guild: discord.Guild, transcript: str, ticket_id: str, user: discord.Member) -> bool:
         """Send transcript to the configured channel"""
         try:
+            print(f"📤 Attempting to send transcript for ticket {ticket_id}")
+            
             config = await self.get_ticket_config(str(guild.id))
             if not config:
-                print(f"No ticket config found for guild {guild.id}")
+                print(f"❌ No ticket config found for guild {guild.id}")
                 return False
             
             transcript_channel_id = config.get('transcript_channel_id')
             if not transcript_channel_id:
-                print(f"No transcript_channel_id in config for guild {guild.id}")
+                print(f"❌ No transcript_channel_id in config for guild {guild.id}")
+                print(f"📋 Available config keys: {list(config.keys())}")
                 return False
             
+            print(f"🔍 Looking for transcript channel: {transcript_channel_id}")
             transcript_channel = guild.get_channel(int(transcript_channel_id))
             if not transcript_channel:
-                print(f"Transcript channel {transcript_channel_id} not found in guild {guild.id}")
+                print(f"❌ Transcript channel {transcript_channel_id} not found in guild {guild.id}")
                 return False
+            
+            print(f"✅ Found transcript channel: {transcript_channel.name}")
             
             # Create transcript file
             transcript_file = discord.File(
@@ -459,16 +565,20 @@ class TicketManager:
             
             embed = discord.Embed(
                 title=f"🎫 Ticket Transcript: {ticket_id}",
-                description=f"Ticket closed by {user.mention}",
+                description=f"**Ticket closed by:** {user.mention}\n**Guild:** {guild.name}",
                 color=0x5865F2,
                 timestamp=datetime.utcnow()
             )
+            embed.add_field(name="📊 Stats", value=f"Lines: {len(transcript.split(chr(10)))}", inline=True)
+            embed.add_field(name="📅 Closed", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
             embed.set_footer(text="devBot - Powered by EGOS")
             
             await transcript_channel.send(embed=embed, file=transcript_file)
-            print(f"Transcript sent successfully for ticket {ticket_id}")
+            print(f"✅ Transcript sent successfully for ticket {ticket_id} to {transcript_channel.name}")
             return True
             
         except Exception as e:
-            print(f"Error sending transcript: {e}")
+            print(f"❌ Error sending transcript: {e}")
+            import traceback
+            traceback.print_exc()
             return False

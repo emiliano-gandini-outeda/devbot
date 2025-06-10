@@ -86,16 +86,16 @@ class TicketView(discord.ui.View):
             # Send closure message
             if success:
                 embed = EmbedBuilder.success(
-                    "Ticket Closed Successfully", 
-                    f"🎫 **Ticket {self.ticket_id}** has been closed and transcript saved.\n"
-                    f"📄 **Transcript:** Sent to transcript channel\n"
+                    "🎫 Ticket Closed Successfully", 
+                    f"**Ticket {self.ticket_id}** has been closed and transcript saved.\n\n"
+                    f"📄 **Transcript:** Successfully sent to transcript channel\n"
                     f"⏰ **Channel Deletion:** This channel will be deleted in 10 seconds."
                 )
             else:
                 embed = EmbedBuilder.warning(
-                    "Ticket Closed with Warning", 
-                    f"🎫 **Ticket {self.ticket_id}** has been closed.\n"
-                    f"⚠️ **Transcript:** Could not be saved (check transcript channel configuration)\n"
+                    "⚠️ Ticket Closed with Issues", 
+                    f"**Ticket {self.ticket_id}** has been closed.\n\n"
+                    f"❌ **Transcript:** Could not be saved - check transcript channel configuration\n"
                     f"⏰ **Channel Deletion:** This channel will be deleted in 10 seconds."
                 )
             
@@ -152,6 +152,8 @@ class TicketCommands(app_commands.Group):
         await interaction.response.defer()
         
         try:
+            print(f"🎫 Creating PUBLIC READ-ONLY ticket {ticket_id}")
+            
             # Create ticket channel (PUBLIC AND READ-ONLY BY DEFAULT)
             channel = await self.bot.ticket_manager.create_ticket_channel(
                 interaction.guild, ticket_id, interaction.user, title
@@ -181,16 +183,16 @@ class TicketCommands(app_commands.Group):
             
             # Create ticket embed for the channel
             embed = discord.Embed(
-                title=f"🎫 Ticket: {ticket_id}",
-                description=description,
+                title=f"🎫 Support Ticket: {ticket_id}",
+                description=f"**Issue Description:**\n{description}",
                 color=0x5865F2
             )
             embed.add_field(name="📋 Title", value=title, inline=False)
             embed.add_field(name="⚡ Priority", value=priority.title(), inline=True)
-            embed.add_field(name="📊 Status", value="Open", inline=True)
+            embed.add_field(name="📊 Status", value="🟢 Open", inline=True)
             embed.add_field(name="👤 Created by", value=interaction.user.mention, inline=True)
-            embed.add_field(name="👀 Visibility", value="🌐 Public & Read-Only", inline=False)
-            embed.add_field(name="ℹ️ Info", value="Everyone can read this ticket, but only you, assignees, and admins can reply.", inline=False)
+            embed.add_field(name="👀 Visibility", value="🌐 **Public & Read-Only**", inline=False)
+            embed.add_field(name="ℹ️ Access Info", value="• Everyone can **read** this ticket\n• Only you, assignees, and admins can **write**\n• Use `/ticket join` to request write access", inline=False)
             embed.timestamp = datetime.utcnow()
             embed.set_footer(text="devBot - Powered by EGOS")
             
@@ -198,25 +200,30 @@ class TicketCommands(app_commands.Group):
             
             # Send initial message in ticket channel
             await channel.send(
-                f"🎫 **Welcome {interaction.user.mention}!** Your support ticket has been created.\n"
-                f"📖 This ticket is **public and read-only** - everyone can see it, but only authorized users can respond.\n"
-                f"💬 You can participate in this ticket since you created it.",
+                f"🎫 **Welcome {interaction.user.mention}!** Your support ticket has been created.\n\n"
+                f"🌐 **This ticket is PUBLIC and READ-ONLY by default:**\n"
+                f"• ✅ Everyone can see and read this conversation\n"
+                f"• ❌ Only you, assignees, and admins can respond\n"
+                f"• 💬 Others can request to join using `/ticket join`\n\n"
+                f"📝 **You can participate** since you created this ticket.",
                 embed=embed, 
                 view=view
             )
             
             # Respond to user
             embed_response = EmbedBuilder.success(
-                "🎫 Ticket Created Successfully",
-                f"**Ticket ID:** {ticket_id}\n"
+                "🎫 Public Ticket Created Successfully",
+                f"**Ticket ID:** `{ticket_id}`\n"
                 f"**Channel:** {channel.mention}\n"
                 f"**Priority:** {priority.title()}\n"
-                f"**Visibility:** 🌐 Public & Read-Only\n\n"
-                f"ℹ️ Your ticket is visible to everyone but only you, assignees, and admins can respond."
+                f"**Visibility:** 🌐 **Public & Read-Only**\n\n"
+                f"✅ **Your ticket is now visible to everyone** in the server\n"
+                f"💬 **Only you, assignees, and admins** can respond\n"
+                f"🔧 **Use `/ticket private`** if you need to make it private later"
             )
             await interaction.followup.send(embed=embed_response, ephemeral=True)
             
-            print(f"✅ Created public ticket {ticket_id} in {channel.name}")
+            print(f"✅ Created PUBLIC READ-ONLY ticket {ticket_id} in {channel.name}")
             
         except Exception as e:
             print(f"❌ Error creating ticket: {e}")
@@ -331,16 +338,18 @@ class TicketCommands(app_commands.Group):
                 )
                 await self.bot.db.connection.commit()
             
-            # Remove user permissions from ticket channel
+            # Remove user permissions from ticket channel (but keep read access since it's public)
             channel_id = ticket['channel_id'] if self.bot.db.is_postgresql else ticket[9]
             if channel_id:
                 channel = interaction.guild.get_channel(int(channel_id))
                 if channel:
-                    await channel.set_permissions(user, overwrite=None)
+                    # Reset to default public read-only permissions
+                    await channel.set_permissions(user, read_messages=True, send_messages=False)
             
             embed = EmbedBuilder.success(
                 "Ticket Unassigned",
-                f"{user.mention} has been unassigned from ticket **{ticket_id}**"
+                f"{user.mention} has been unassigned from ticket **{ticket_id}**\n"
+                f"They can still read the ticket (public access) but can no longer write."
             )
             await interaction.response.send_message(embed=embed)
             
@@ -399,6 +408,7 @@ class TicketCommands(app_commands.Group):
             
             embed = discord.Embed(
                 title="🎫 Support Tickets",
+                description="📋 Recent tickets (showing up to 10)",
                 color=0x5865F2
             )
             embed.set_footer(text="devBot - Powered by EGOS")
@@ -426,7 +436,7 @@ class TicketCommands(app_commands.Group):
                 priority_emoji = {"low": "🔵", "medium": "🟡", "high": "🔴"}.get(priority, "🟡")
                 
                 # Create channel link if channel exists
-                channel_link = "Channel Deleted"
+                channel_link = "❌ Channel Deleted"
                 if channel_id:
                     channel = interaction.guild.get_channel(int(channel_id))
                     if channel:
@@ -448,7 +458,7 @@ class TicketCommands(app_commands.Group):
             embed = EmbedBuilder.error("Error", f"Failed to fetch tickets: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="join", description="Request to join a ticket")
+    @app_commands.command(name="join", description="Request to join a ticket conversation")
     @app_commands.describe(ticket_id="ID of the ticket to join (optional, not needed if in ticket channel)")
     async def ticket_join(self, interaction: discord.Interaction, ticket_id: str = None):
         # If no ticket ID provided, check if we're in a ticket channel
@@ -493,22 +503,22 @@ class TicketCommands(app_commands.Group):
         # Check if user already has write access
         permissions = channel.permissions_for(interaction.user)
         if permissions.send_messages:
-            embed = EmbedBuilder.warning("Already Joined", "You already have write access to this ticket")
+            embed = EmbedBuilder.warning("Already Joined", "You already have write access to this ticket conversation")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
         # Create join request embed
         embed = discord.Embed(
             title="🎫 Ticket Join Request",
-            description=f"{interaction.user.mention} wants to join this ticket and participate in the conversation",
+            description=f"{interaction.user.mention} wants to join this ticket conversation",
             color=0xFEE75C
         )
-        embed.add_field(name="User", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
-        embed.add_field(name="Requested", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
-        embed.add_field(name="Current Access", value="👀 Read Only", inline=True)
-        embed.add_field(name="Requesting", value="💬 Write Access", inline=True)
+        embed.add_field(name="👤 User", value=f"{interaction.user.mention}\n`{interaction.user}`", inline=True)
+        embed.add_field(name="📅 Requested", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+        embed.add_field(name="🔍 Current Access", value="👀 **Read Only**\n(Can see all messages)", inline=True)
+        embed.add_field(name="📝 Requesting", value="💬 **Write Access**\n(Can participate in conversation)", inline=True)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        embed.set_footer(text="devBot - Powered by EGOS")
+        embed.set_footer(text="Only ticket creator, assignees, or admins can approve • devBot - Powered by EGOS")
         
         view = TicketJoinRequestView(self.bot, interaction.user, channel)
         
@@ -517,9 +527,11 @@ class TicketCommands(app_commands.Group):
         
         # Notify user
         response_embed = EmbedBuilder.success(
-            "Request Sent",
-            f"Your request to join ticket **{ticket_id}** has been sent.\n"
-            f"You can already read all messages, but you'll need approval to participate in the conversation."
+            "📤 Join Request Sent",
+            f"Your request to join ticket **{ticket_id}** has been sent.\n\n"
+            f"👀 **Current Access:** You can read all messages\n"
+            f"⏳ **Pending:** Write access (ability to respond)\n"
+            f"✅ **Approval:** Ticket creator, assignees, or admins can approve"
         )
         await interaction.response.send_message(embed=response_embed, ephemeral=True)
     
@@ -564,7 +576,7 @@ class TicketCommands(app_commands.Group):
         success = await self.bot.ticket_manager.set_ticket_visibility(interaction.channel, private=True)
         
         if success:
-            embed = EmbedBuilder.success("🔒 Ticket Set to Private", "This ticket is now private - only assigned users and admins can read it")
+            embed = EmbedBuilder.success("🔒 Ticket Set to Private", "This ticket is now **private** - only assigned users and admins can read it")
         else:
             embed = EmbedBuilder.error("Error", "Failed to set ticket visibility")
         
@@ -610,7 +622,7 @@ class TicketCommands(app_commands.Group):
         success = await self.bot.ticket_manager.set_ticket_visibility(interaction.channel, private=False)
         
         if success:
-            embed = EmbedBuilder.success("🌐 Ticket Set to Public", "This ticket is now public - everyone can read it (but only assigned users can write)")
+            embed = EmbedBuilder.success("🌐 Ticket Set to Public", "This ticket is now **public** - everyone can read it (but only assigned users can write)")
         else:
             embed = EmbedBuilder.error("Error", "Failed to set ticket visibility")
         
