@@ -242,40 +242,48 @@ class GitHubIntegrations(commands.Cog):
                 "stars": 0,
                 "last_commit": "",
                 "last_check": datetime.utcnow(),
-                "pull_requests": []
+                "pull_requests": [],
+                "initialized": False
             }
         
-        # Mock repository data (in a real implementation, this would use the GitHub API)
-        new_stars = random.randint(0, 100)
-        new_commit = f"commit_{random.randint(1000, 9999)}"
-        new_prs = [f"pr_{random.randint(100, 999)}" for _ in range(random.randint(0, 3))]
-        
+        # For demo purposes, simulate realistic repo activity
+        # In production, this would use the actual GitHub API
         cache = self.repo_cache[cache_key]
+        
+        # Only generate updates after initialization to avoid false positives
+        if not cache["initialized"]:
+            # First run - just initialize without sending updates
+            cache["stars"] = random.randint(10, 50)
+            cache["last_commit"] = f"commit_{random.randint(1000, 9999)}"
+            cache["pull_requests"] = []
+            cache["initialized"] = True
+            cache["last_check"] = datetime.utcnow()
+            return
+        
+        # Simulate realistic changes (small increments)
         updates = []
         
-        # Check for star changes
-        if cache["stars"] > 0 and new_stars != cache["stars"]:
-            diff = new_stars - cache["stars"]
-            if diff > 0:
-                updates.append(f"⭐ **{diff} new stars** (now at {new_stars})")
+        # Star changes (small, realistic increments)
+        star_change = random.choice([0, 0, 0, 0, 1, 1, 2])  # Mostly no change, sometimes +1 or +2
+        if star_change > 0:
+            old_stars = cache["stars"]
+            cache["stars"] += star_change
+            updates.append(f"⭐ **+{star_change} new stars** (now at {cache['stars']})")
         
-        # Check for new commits
-        if cache["last_commit"] and new_commit != cache["last_commit"]:
-            updates.append(f"📝 **New commit:** {new_commit}")
+        # Commit changes (less frequent)
+        if random.random() < 0.3:  # 30% chance of new commit
+            new_commit = f"commit_{random.randint(1000, 9999)}"
+            if new_commit != cache["last_commit"]:
+                updates.append(f"📝 **New commit:** `{new_commit[:8]}`")
+                cache["last_commit"] = new_commit
         
-        # Check for new PRs
-        new_pr_count = 0
-        for pr in new_prs:
-            if pr not in cache["pull_requests"]:
-                new_pr_count += 1
+        # PR changes (even less frequent)
+        if random.random() < 0.2:  # 20% chance of new PR
+            new_pr = f"pr_{random.randint(100, 999)}"
+            if new_pr not in cache["pull_requests"]:
+                cache["pull_requests"].append(new_pr)
+                updates.append(f"🔀 **New pull request:** #{new_pr}")
         
-        if new_pr_count > 0:
-            updates.append(f"🔀 **{new_pr_count} new pull requests**")
-        
-        # Update cache
-        cache["stars"] = new_stars
-        cache["last_commit"] = new_commit
-        cache["pull_requests"] = new_prs
         cache["last_check"] = datetime.utcnow()
         
         # Send updates if any
@@ -300,19 +308,25 @@ class GitHubIntegrations(commands.Cog):
                 inline=True
             )
             
+            embed.add_field(
+                name="⭐ Stars",
+                value=str(cache["stars"]),
+                inline=True
+            )
+            
             # Add subscriber mentions
             if subscribers:
                 mentions = []
                 for sub in subscribers:
                     user_id = sub['user_id']
                     mentions.append(f"<@{user_id}>")
-                
-                if mentions:
-                    await channel.send(" ".join(mentions), embed=embed)
-                    return
             
-            # If no subscribers, just send the embed
-            await channel.send(embed=embed)
+            if mentions:
+                await channel.send(" ".join(mentions), embed=embed)
+                return
+        
+        # If no subscribers, just send the embed
+        await channel.send(embed=embed)
     
     async def _send_repo_status(self, repo_name, channel):
         """Send initial repository status"""
