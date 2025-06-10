@@ -145,7 +145,7 @@ class TicketCommands(app_commands.Group):
             embed.add_field(name="Status", value="Open", inline=True)
             embed.add_field(name="Created by", value=interaction.user.mention, inline=True)
             embed.timestamp = datetime.utcnow()
-            embed.set_footer(text="Railway Bot")
+            embed.set_footer(text="devBot")
             
             view = TicketView(self.bot, ticket_id)
             
@@ -200,7 +200,7 @@ class TicketCommands(app_commands.Group):
                 title="🎫 Support Tickets",
                 color=0x5865F2
             )
-            embed.set_footer(text="Railway Bot")
+            embed.set_footer(text="devBot")
             
             for ticket in tickets:
                 ticket_id = ticket['ticket_id']
