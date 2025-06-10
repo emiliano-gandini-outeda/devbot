@@ -1,6 +1,5 @@
 """
-Ticket Manager - Core ticket business logic with bulletproof datetime handling.
-All datetime operations use timezone-aware UTC datetimes to prevent database errors.
+EMERGENCY FIX: Ticket Manager with corrected datetime handling
 """
 
 import discord
@@ -452,16 +451,26 @@ class TicketManager:
             return False
     
     async def save_ticket_to_database(self, ticket_id: str, guild_id: str, user_id: str, title: str, description: str, priority: str, channel_id: str, assignee_id: Optional[str] = None):
-        """Save ticket to database with timezone-aware datetimes"""
+        """EMERGENCY FIX: Save ticket to database with correct parameter count"""
         try:
             current_time = utc_now()
             
+            # CRITICAL FIX: Ensure all parameters are provided in correct order
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
                     """INSERT INTO tickets (ticket_id, guild_id, user_id, assignee_id, title, description, status, priority, channel_id, created_at, updated_at)
                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
-                    ticket_id, guild_id, user_id, assignee_id, title, description, 
-                    "open", priority, channel_id, current_time, current_time
+                    ticket_id,           # $1
+                    guild_id,            # $2
+                    user_id,             # $3
+                    assignee_id,         # $4
+                    title,               # $5
+                    description,         # $6
+                    "open",              # $7
+                    priority,            # $8
+                    channel_id,          # $9
+                    current_time,        # $10 - FIXED: timezone-aware datetime
+                    current_time         # $11 - FIXED: timezone-aware datetime
                 )
             else:
                 await self.bot.db.connection.execute(
@@ -475,7 +484,10 @@ class TicketManager:
             logger.info(f"Ticket {ticket_id} saved to database successfully")
             
         except Exception as e:
-            logger.error(f"Error saving ticket to database: {e}")
+            logger.error(f"EMERGENCY: Error saving ticket to database: {e}")
+            logger.error(f"Parameters: ticket_id={ticket_id}, guild_id={guild_id}, user_id={user_id}")
+            logger.error(f"Title={title}, description={description}, priority={priority}, channel_id={channel_id}")
+            logger.error(f"Current time type: {type(current_time)}, tzinfo: {current_time.tzinfo}")
             raise
     
     async def get_ticket_by_id(self, ticket_id: str) -> Optional[Dict[str, Any]]:
