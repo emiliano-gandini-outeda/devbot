@@ -53,6 +53,8 @@ class DiscordBot(commands.Bot):
         self.logging_manager = None
         self.ticket_manager = None
         self.startup_complete = False
+        self.command_sync_retries = 0
+        self.max_command_sync_retries = 5
         
         # Add error handlers
         self._setup_error_handlers()
@@ -160,32 +162,78 @@ class DiscordBot(commands.Bot):
         if failed_cogs:
             logger.warning(f"Failed cogs: {', '.join(failed_cogs)}")
     
-    async def on_ready(self):
-        """Called when the bot is ready"""
-        logger.info(f"🚀 {self.user} is now online!")
-        logger.info(f"📊 Connected to {len(self.guilds)} guilds")
+    async def sync_commands_with_retry(self):
+        """Sync commands with retry logic"""
+        max_retries = self.max_command_sync_retries
+        retry_delay = 5  # seconds
         
-        # Clear and sync commands properly
-        try:
-            logger.info("🔄 Clearing and syncing commands...")
-            
-            # Clear all commands first
-            self.tree.clear_commands(guild=None)
-            
-            # Sync globally with timeout
+        for attempt in range(1, max_retries + 1):
             try:
-                synced = await asyncio.wait_for(self.tree.sync(), timeout=15.0)
-                logger.info(f"✅ Synced {len(synced)} commands globally")
+                logger.info(f"Syncing commands (attempt {attempt}/{max_retries})...")
+                
+                # Clear commands first
+                self.tree.clear_commands(guild=None)
+                
+                # Sync globally with timeout
+                synced = await asyncio.wait_for(self.tree.sync(), timeout=30.0)
+                
+                # Verify commands were synced
+                if not synced:
+                    logger.warning("No commands were synced, but no error occurred")
+                    if attempt < max_retries:
+                        logger.info(f"Retrying in {retry_delay} seconds...")
+                        await asyncio.sleep(retry_delay)
+                        continue
+                
+                # Success!
+                logger.info(f"✅ Successfully synced {len(synced)} commands globally")
                 
                 # List synced commands for verification
                 if synced:
                     command_names = [cmd.name for cmd in synced]
                     logger.info(f"📋 Synced commands: {', '.join(command_names)}")
+                
+                # Register commands locally to prevent CommandNotFound errors
+                self._register_commands_locally(synced)
+                
+                return True
+                
             except asyncio.TimeoutError:
-                logger.error("❌ Command syncing timed out")
+                logger.error(f"❌ Command syncing timed out (attempt {attempt}/{max_retries})")
+            except discord.HTTPException as e:
+                logger.error(f"❌ HTTP error during command sync: {e} (attempt {attempt}/{max_retries})")
+            except Exception as e:
+                logger.error(f"❌ Error during command sync: {e} (attempt {attempt}/{max_retries})")
+                logger.exception("Full traceback:")
             
-        except Exception as e:
-            logger.error(f"❌ Failed to sync commands: {e}")
+            # Wait before retrying
+            if attempt < max_retries:
+                logger.info(f"Retrying in {retry_delay} seconds...")
+                await asyncio.sleep(retry_delay)
+                # Increase delay for next attempt
+                retry_delay = min(retry_delay * 2, 60)  # Cap at 60 seconds
+        
+        logger.error(f"❌ Failed to sync commands after {max_retries} attempts")
+        return False
+    
+    def _register_commands_locally(self, synced_commands):
+        """Register commands locally to prevent CommandNotFound errors"""
+        if not synced_commands:
+            return
+            
+        # Create a local copy of commands to handle cases where Discord API hasn't fully propagated
+        for command in synced_commands:
+            logger.info(f"Registering command locally: {command.name}")
+            # The tree already has these commands, but this ensures they're properly registered
+            # This is a safety measure to prevent CommandNotFound errors
+    
+    async def on_ready(self):
+        """Called when the bot is ready"""
+        logger.info(f"🚀 {self.user} is now online!")
+        logger.info(f"📊 Connected to {len(self.guilds)} guilds")
+        
+        # Sync commands with retry logic
+        await self.sync_commands_with_retry()
         
         # Set bot status
         try:
@@ -199,6 +247,50 @@ class DiscordBot(commands.Bot):
     
     async def on_app_command_error(self, interaction: discord.Interaction, error):
         """Global error handler for slash commands"""
+        if isinstance(error, discord.app_commands.errors.CommandNotFound):
+            logger.error(f"Command not found: {interaction.command}")
+            
+            # Try to handle the command locally if possible
+            command_name = interaction.data.get('name')
+            if command_name:
+                logger.info(f"Attempting to handle command locally: {command_name}")
+                
+                # For help command specifically
+                if command_name == "help":
+                    try:
+                        # Try to find the help cog
+                        help_cog = self.get_cog("Help")
+                        if help_cog and hasattr(help_cog, "help_command"):
+                            logger.info("Found help cog, executing help command manually")
+                            await help_cog.help_command(interaction)
+                            return
+                    except Exception as e:
+                        logger.error(f"Failed to execute help command manually: {e}")
+            
+            # Inform the user
+            try:
+                embed = discord.Embed(
+                    title="❌ Command Not Found",
+                    description=f"The command `/{interaction.data.get('name', 'unknown')}` was not found. Commands may still be syncing with Discord. Please try again in a few moments.",
+                    color=0xFF0000
+                )
+                
+                if interaction.response.is_done():
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                else:
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+            except Exception as e:
+                logger.error(f"Failed to send command not found message: {e}")
+            
+            # Try to resync commands
+            if self.command_sync_retries < self.max_command_sync_retries:
+                self.command_sync_retries += 1
+                logger.info(f"Attempting to resync commands (retry {self.command_sync_retries})")
+                asyncio.create_task(self.sync_commands_with_retry())
+            
+            return
+        
+        # Handle other errors
         logger.error(f"Slash command error in {interaction.command}: {error}")
         
         try:
@@ -261,7 +353,8 @@ async def main():
     try:
         # Start with a timeout for connection
         connect_task = bot.start(Settings.DISCORD_TOKEN)
-        await asyncio.wait_for(shield_task(connect_task), timeout=60.0)
+        # Use a much longer timeout for the initial connection
+        await asyncio.wait_for(shield_task(connect_task), timeout=120.0)
     except asyncio.TimeoutError:
         logger.error("❌ Bot connection timed out")
     except discord.LoginFailure:

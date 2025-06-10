@@ -164,7 +164,7 @@ class HelpDropdown(discord.ui.Select):
         
         if self.is_admin:
             admin_commands = [
-                "`/ticket-system-setup <category> <transcript_channel>` - Setup ticket system",
+                "`/setup-tickets <category> <transcript_channel>` - Setup ticket system",
                 "`/ticket assign <ticket_id> <assignee>` - Assign ticket to user",
                 "`/ticket unassign <ticket_id> <user>` - Unassign user from ticket"
             ]
@@ -279,10 +279,10 @@ class HelpDropdown(discord.ui.Select):
         ]
         
         github_commands = [
-            "`/setup-github <channel>` - Set up GitHub integration",
-            "`/track-repo <repo_url>` - Track GitHub repository",
-            "`/list-repos` - List tracked repositories with toggle options",
-            "`/untrack-repo <repo_url>` - Stop tracking a repository"
+            "`/github-setup <channel>` - Set up GitHub integration",
+            "`/github-track <repo_url>` - Track GitHub repository",
+            "`/github-list` - List tracked repositories with toggle options",
+            "`/github-untrack <repo_url>` - Stop tracking a repository"
         ]
         
         embed.add_field(name="📅 Google Calendar", value="\n".join(google_commands), inline=False)
@@ -473,6 +473,11 @@ class Help(commands.Cog):
         
         view = HelpView(self.bot, is_admin)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    
+    # Add a direct method that can be called from the error handler
+    async def help_command_direct(self, interaction: discord.Interaction):
+        """Direct help command that can be called from error handlers"""
+        await self.help_command(interaction)
 
 async def setup(bot):
     await bot.add_cog(Help(bot))
