@@ -3,76 +3,91 @@ from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder
 import json
+from datetime import datetime
 
 class NotionIntegrations(commands.Cog):
-    """Notion integration commands"""
+    """Notion workspace integration"""
     
     def __init__(self, bot):
         self.bot = bot
     
     @app_commands.command(name="notion-databases", description="List your Notion databases")
     async def notion_databases(self, interaction: discord.Interaction):
-        embed = EmbedBuilder.info(
-            "Notion Integration",
-            "Notion integration is not yet implemented. This feature will allow you to:\n\n"
-            "• List your Notion databases\n"
-            "• Create new pages and notes\n"
-            "• Search your Notion workspace\n"
-            "• Sync Discord messages to Notion\n\n"
-            "Stay tuned for updates!"
+        await interaction.response.defer(ephemeral=True)
+        
+        embed = discord.Embed(
+            title="🚧 Notion Integration Coming Soon",
+            description="Notion integration is currently under development.",
+            color=0xFEE75C
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        embed.add_field(
+            name="Planned Features",
+            value="• List databases\n• Create notes\n• Search workspace\n• Sync Discord messages to Notion",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Status",
+            value="This feature is not yet implemented. Check back soon!",
+            inline=False
+        )
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="create-note", description="Create a new note in Notion")
+    @app_commands.command(name="create-note", description="Create a note in Notion")
     @app_commands.describe(
-        title="Title for the note",
-        content="Content of the note",
+        title="Note title",
+        content="Note content",
         database_id="Notion database ID (optional)"
     )
     async def create_note(self, interaction: discord.Interaction, title: str, content: str, database_id: str = None):
-        embed = EmbedBuilder.info(
-            "Notion Integration",
-            "Notion integration is not yet implemented. This command would create a new note with:\n\n"
-            f"**Title:** {title}\n"
-            f"**Content:** {content[:100]}{'...' if len(content) > 100 else ''}\n"
-            f"**Database:** {database_id or 'Default'}\n\n"
-            "Stay tuned for updates!"
+        await interaction.response.defer(ephemeral=True)
+        
+        embed = discord.Embed(
+            title="🚧 Notion Integration Coming Soon",
+            description="Creating notes in Notion is currently under development.",
+            color=0xFEE75C
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        embed.add_field(
+            name="Your Request",
+            value=f"**Title:** {title}\n**Content:** {content[:100]}{'...' if len(content) > 100 else ''}",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Status",
+            value="This feature is not yet implemented. Check back soon!",
+            inline=False
+        )
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
     
     @app_commands.command(name="notion-search", description="Search your Notion workspace")
     @app_commands.describe(query="Search query")
     async def notion_search(self, interaction: discord.Interaction, query: str):
-        embed = EmbedBuilder.info(
-            "Notion Integration",
-            f"Notion search is not yet implemented. This would search for: **{query}**\n\n"
-            "This feature will allow you to:\n"
-            "• Search across all your Notion pages\n"
-            "• Filter by database or page type\n"
-            "• Get quick links to results\n\n"
-            "Stay tuned for updates!"
+        await interaction.response.defer(ephemeral=True)
+        
+        embed = discord.Embed(
+            title="🚧 Notion Integration Coming Soon",
+            description="Searching Notion is currently under development.",
+            color=0xFEE75C
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        
+        embed.add_field(
+            name="Your Query",
+            value=query,
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Status",
+            value="This feature is not yet implemented. Check back soon!",
+            inline=False
+        )
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
 async def setup(bot):
-    cog = NotionIntegrations(bot)
-    await bot.add_cog(cog)
-    
-    # Sync commands to all guilds
-    for guild in bot.guilds:
-        try:
-            # Copy global commands to guild
-            bot.tree.copy_global_to(guild=guild)
-            
-            # Add cog commands to guild
-            for command in cog.get_app_commands():
-                if command not in bot.tree.get_commands(guild=guild):
-                    bot.tree.add_command(command, guild=guild)
-            
-            # Sync to guild
-            await bot.tree.sync(guild=guild)
-            print(f"✅ Synced Notion Integrations commands to {guild.name}")
-        except Exception as e:
-            print(f"❌ Failed to sync Notion Integrations commands to {guild.name}: {e}")
-    
-    print(f"📚 Successfully loaded Notion Integrations cog with {len(cog.get_app_commands())} commands")
+    await bot.add_cog(NotionIntegrations(bot))

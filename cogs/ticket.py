@@ -7,6 +7,7 @@ from utils.helpers import EmbedBuilder
 from config.constants import TicketStatus
 from utils.ticket_manager import TicketJoinRequestView
 import asyncio
+from typing import Optional
 
 class TicketView(discord.ui.View):
     def __init__(self, bot, ticket_id: str):
@@ -107,11 +108,11 @@ class TicketCommands(app_commands.Group):
     )
     async def create_ticket(self, interaction: discord.Interaction, title: str, description: str, priority: str = "medium"):
         # Check if ticket system is configured
-        config = self.bot.ticket_manager.get_ticket_config(str(interaction.guild.id))
+        config = await self.bot.ticket_manager.get_ticket_config(str(interaction.guild.id))
         if not config:
             embed = EmbedBuilder.error(
                 "Ticket System Not Configured",
-                "The ticket system has not been set up. Please ask an administrator to run `/setup ticket`"
+                "The ticket system has not been set up. Please ask an administrator to run `/ticket-system-setup`"
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -131,7 +132,7 @@ class TicketCommands(app_commands.Group):
             )
             
             if not channel:
-                embed = EmbedBuilder.error("Error", "Failed to create ticket channel. Please check bot permissions.")
+                embed = EmbedBuilder.error("Error", "Failed to create ticket channel. Please check bot permissions and ticket system configuration.")
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             

@@ -370,4 +370,3 @@ class WorkflowManager:
 
         except Exception as e:
             print(f"Error checking channel create triggers: {e}")
-

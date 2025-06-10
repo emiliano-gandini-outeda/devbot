@@ -15,8 +15,12 @@ class Roles(commands.Cog):
         user="User to assign role to",
         role="Role to assign"
     )
-    @app_commands.default_permissions(manage_roles=True)
     async def assign_role(self, interaction: discord.Interaction, user: discord.Member, role: discord.Role):
+        if not interaction.user.guild_permissions.manage_roles:
+            embed = EmbedBuilder.error("Permission Denied", "You need Manage Roles permission to assign roles")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
         try:
             if role >= interaction.guild.me.top_role:
                 embed = EmbedBuilder.error(
@@ -51,8 +55,12 @@ class Roles(commands.Cog):
         user="User to remove role from",
         role="Role to remove"
     )
-    @app_commands.default_permissions(manage_roles=True)
     async def remove_role(self, interaction: discord.Interaction, user: discord.Member, role: discord.Role):
+        if not interaction.user.guild_permissions.manage_roles:
+            embed = EmbedBuilder.error("Permission Denied", "You need Manage Roles permission to remove roles")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
         try:
             if role not in user.roles:
                 embed = EmbedBuilder.warning("Not Assigned", f"{user.mention} doesn't have the {role.mention} role")
@@ -114,7 +122,7 @@ class Roles(commands.Cog):
             embed.add_field(name="Allowed", value="\n".join(allowed), inline=True)
         
         if denied:
-            embed.add_field(name="Denied", value="\n".join(denied[:10]), inline=True)  # Limit to 10 to avoid overflow
+            embed.add_field(name="Denied", value="\n".join(denied[:10]), inline=True)
         
         embed.set_thumbnail(url=user.display_avatar.url)
         await interaction.response.send_message(embed=embed)
@@ -194,16 +202,4 @@ class Roles(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
 async def setup(bot):
-    cog = Roles(bot)
-    await bot.add_cog(cog)
-    
-    # Sync commands to all guilds
-    for guild in bot.guilds:
-        try:
-            bot.tree.copy_global_to(guild=guild)
-            await bot.tree.sync(guild=guild)
-            print(f"✅ Synced Roles commands to {guild.name}")
-        except Exception as e:
-            print(f"❌ Failed to sync Roles commands to {guild.name}: {e}")
-    
-    print(f"👥 Successfully loaded Roles cog with {len(cog.get_app_commands())} commands")
+    await bot.add_cog(Roles(bot))

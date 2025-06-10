@@ -16,7 +16,7 @@ class Setup(commands.Cog):
         transcript_channel="Channel where ticket transcripts will be sent"
     )
     async def setup_tickets(self, interaction: discord.Interaction, category: discord.CategoryChannel, transcript_channel: discord.TextChannel):
-        if not self.bot.admin_manager.is_admin(interaction.user):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup the ticket system")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -29,7 +29,14 @@ class Setup(commands.Cog):
                 'setup_at': str(discord.utils.utcnow())
             }
             
-            await self.bot.ticket_manager.save_ticket_config(str(interaction.guild.id), config)
+            # Store in user_data table
+            await self.bot.db.connection.execute(
+                """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
+                   VALUES ($1, $1, $2, $3)
+                   ON CONFLICT (user_id, guild_id, data_type) DO UPDATE SET
+                   data_content = $3, updated_at = CURRENT_TIMESTAMP""",
+                str(interaction.guild.id), 'ticket_config', json.dumps(config)
+            )
             
             embed = EmbedBuilder.success(
                 "Ticket System Setup",
@@ -50,7 +57,7 @@ class Setup(commands.Cog):
         tracking_channel="Channel where GitHub repository updates will be sent"
     )
     async def setup_tracking(self, interaction: discord.Interaction, tracking_channel: discord.TextChannel):
-        if not self.bot.admin_manager.is_admin(interaction.user):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup GitHub tracking")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -63,23 +70,15 @@ class Setup(commands.Cog):
                 'setup_at': str(discord.utils.utcnow())
             }
             
-            if self.bot.db.is_postgresql:
-                # Delete existing config first, then insert new one
-                await self.bot.db.connection.execute(
-                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
-                    str(interaction.guild.id), 'github_tracking_config'
-                )
-                await self.bot.db.connection.execute(
-                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
-                    str(interaction.guild.id), 'github_tracking_config', json.dumps(config)
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, guild_id, data_type, data_content) 
-                       VALUES (?, ?, ?, ?)""",
-                    (str(interaction.guild.id), str(interaction.guild.id), 'github_tracking_config', json.dumps(config))
-                )
-                await self.bot.db.connection.commit()
+            # Delete existing config first, then insert new one
+            await self.bot.db.connection.execute(
+                "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                str(interaction.guild.id), 'github_tracking_config'
+            )
+            await self.bot.db.connection.execute(
+                "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
+                str(interaction.guild.id), 'github_tracking_config', json.dumps(config)
+            )
             
             embed = EmbedBuilder.success(
                 "GitHub Tracking Setup",
@@ -95,10 +94,10 @@ class Setup(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to setup GitHub tracking: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="server-logs-setup", description="Setup logging channel (Admin only)")
+    @app_commands.command(name="setup-logs", description="Setup logging channel (Admin only)")
     @app_commands.describe(log_channel="Channel where logs will be sent")
     async def setup_logs(self, interaction: discord.Interaction, log_channel: discord.TextChannel):
-        if not self.bot.admin_manager.is_admin(interaction.user):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup logging")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -133,7 +132,7 @@ class Setup(commands.Cog):
             )
             test_embed.add_field(name="Setup by", value=interaction.user.mention, inline=True)
             test_embed.add_field(name="Channel", value=log_channel.mention, inline=True)
-            test_embed.set_footer(text="devBot")
+            test_embed.set_footer(text="devBot - Powered by EGOS")
             
             await log_channel.send(embed=test_embed)
             
@@ -147,7 +146,7 @@ class Setup(commands.Cog):
         voice_channel="Default voice channel for meetings"
     )
     async def setup_meetings(self, interaction: discord.Interaction, announcement_channel: discord.TextChannel, voice_channel: discord.VoiceChannel):
-        if not self.bot.admin_manager.is_admin(interaction.user):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup meetings")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -160,23 +159,15 @@ class Setup(commands.Cog):
                 'setup_at': str(discord.utils.utcnow())
             }
             
-            if self.bot.db.is_postgresql:
-                # Delete existing config first, then insert new one
-                await self.bot.db.connection.execute(
-                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
-                    str(interaction.guild.id), 'meeting_config'
-                )
-                await self.bot.db.connection.execute(
-                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
-                    str(interaction.guild.id), 'meeting_config', json.dumps(config)
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, guild_id, data_type, data_content) 
-                       VALUES (?, ?, ?, ?)""",
-                    (str(interaction.guild.id), str(interaction.guild.id), 'meeting_config', json.dumps(config))
-                )
-                await self.bot.db.connection.commit()
+            # Delete existing config first, then insert new one
+            await self.bot.db.connection.execute(
+                "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                str(interaction.guild.id), 'meeting_config'
+            )
+            await self.bot.db.connection.execute(
+                "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
+                str(interaction.guild.id), 'meeting_config', json.dumps(config)
+            )
             
             embed = EmbedBuilder.success(
                 "Meeting System Setup",
@@ -199,7 +190,7 @@ class Setup(commands.Cog):
         reminder_channel="Channel where reminders will be sent when DMs fail"
     )
     async def setup_reminders(self, interaction: discord.Interaction, reminder_channel: discord.TextChannel):
-        if not self.bot.admin_manager.is_admin(interaction.user):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup reminders")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -211,23 +202,15 @@ class Setup(commands.Cog):
                 'setup_at': str(discord.utils.utcnow())
             }
             
-            if self.bot.db.is_postgresql:
-                # Delete existing config first, then insert new one
-                await self.bot.db.connection.execute(
-                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
-                    str(interaction.guild.id), 'reminder_config'
-                )
-                await self.bot.db.connection.execute(
-                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
-                    str(interaction.guild.id), 'reminder_config', json.dumps(config)
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, guild_id, data_type, data_content) 
-                       VALUES (?, ?, ?, ?)""",
-                    (str(interaction.guild.id), str(interaction.guild.id), 'reminder_config', json.dumps(config))
-                )
-                await self.bot.db.connection.commit()
+            # Delete existing config first, then insert new one
+            await self.bot.db.connection.execute(
+                "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                str(interaction.guild.id), 'reminder_config'
+            )
+            await self.bot.db.connection.execute(
+                "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
+                str(interaction.guild.id), 'reminder_config', json.dumps(config)
+            )
             
             embed = EmbedBuilder.success(
                 "Reminder System Setup",
@@ -248,7 +231,7 @@ class Setup(commands.Cog):
         thread_log_channel="Channel where thread transcripts will be sent"
     )
     async def setup_threads(self, interaction: discord.Interaction, thread_log_channel: discord.TextChannel):
-        if not self.bot.admin_manager.is_admin(interaction.user):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup thread logging")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -260,23 +243,15 @@ class Setup(commands.Cog):
                 'setup_at': str(discord.utils.utcnow())
             }
             
-            if self.bot.db.is_postgresql:
-                # Delete existing config first, then insert new one
-                await self.bot.db.connection.execute(
-                    "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
-                    str(interaction.guild.id), 'thread_config'
-                )
-                await self.bot.db.connection.execute(
-                    "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
-                    str(interaction.guild.id), 'thread_config', json.dumps(config)
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, guild_id, data_type, data_content) 
-                       VALUES (?, ?, ?, ?)""",
-                    (str(interaction.guild.id), str(interaction.guild.id), 'thread_config', json.dumps(config))
-                )
-                await self.bot.db.connection.commit()
+            # Delete existing config first, then insert new one
+            await self.bot.db.connection.execute(
+                "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                str(interaction.guild.id), 'thread_config'
+            )
+            await self.bot.db.connection.execute(
+                "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
+                str(interaction.guild.id), 'thread_config', json.dumps(config)
+            )
             
             embed = EmbedBuilder.success(
                 "Thread Logging Setup",
@@ -293,16 +268,5 @@ class Setup(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
-    cog = Setup(bot)
-    await bot.add_cog(cog)
-    
-    # Sync commands to all guilds
-    for guild in bot.guilds:
-        try:
-            bot.tree.copy_global_to(guild=guild)
-            await bot.tree.sync(guild=guild)
-            print(f"⚙️ Synced Setup commands to {guild.name}")
-        except Exception as e:
-            print(f"❌ Failed to sync Setup commands to {guild.name}: {e}")
-    
-    print(f"⚙️ Successfully loaded Setup cog with {len(cog.get_app_commands())} commands")
+    await bot.add_cog(Setup(bot))
+    print(f"⚙️ Successfully loaded Setup cog with {len(Setup(bot).get_app_commands())} commands")
