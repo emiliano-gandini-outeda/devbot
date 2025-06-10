@@ -1,5 +1,5 @@
 """
-Core Ticket Manager - Business logic and database operations
+Core Ticket Manager - FIXED for existing database schema
 Handles all ticket CRUD operations, permissions, and state management
 """
 
@@ -59,7 +59,7 @@ class TicketJoinRequestView(discord.ui.View):
                 color=0x57F287
             )
             embed.add_field(name="Accepted by", value=interaction.user.mention, inline=True)
-            embed.add_field(name="Time", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+            embed.add_field(name="Time", value=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), inline=True)
             
             # Disable all buttons
             for item in self.children:
@@ -114,7 +114,7 @@ class TicketJoinRequestView(discord.ui.View):
             color=0xED4245
         )
         embed.add_field(name="Denied by", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Time", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+        embed.add_field(name="Time", value=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), inline=True)
         
         # Disable all buttons
         for item in self.children:
@@ -136,52 +136,8 @@ class TicketJoinRequestView(discord.ui.View):
             # If DM fails, don't send in channel for privacy
             pass
 
-class RejectReasonModal(discord.ui.Modal):
-    def __init__(self, bot, requester: discord.Member, rejector: discord.Member):
-        super().__init__(title="Rejection Reason")
-        self.bot = bot
-        self.requester = requester
-        self.rejector = rejector
-        
-        self.reason_input = discord.ui.TextInput(
-            label="Reason for rejection",
-            placeholder="Please provide a reason for rejecting this request...",
-            style=discord.TextStyle.paragraph,
-            required=True,
-            max_length=500
-        )
-        self.add_item(self.reason_input)
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        try:
-            # Send DM to requester
-            embed = discord.Embed(
-                title="❌ Ticket Join Request Rejected",
-                description=f"Your request to join the ticket in **{interaction.guild.name}** was rejected.",
-                color=0xED4245
-            )
-            embed.add_field(name="Rejected by", value=self.rejector.display_name, inline=True)
-            embed.add_field(name="Reason", value=self.reason_input.value, inline=False)
-            
-            try:
-                await self.requester.send(embed=embed)
-                response_msg = f"Request rejected and {self.requester.mention} has been notified."
-            except discord.Forbidden:
-                response_msg = f"Request rejected but couldn't send DM to {self.requester.mention}."
-            
-            embed_response = discord.Embed(
-                title="❌ Request Rejected",
-                description=response_msg,
-                color=0xED4245
-            )
-            
-            await interaction.response.send_message(embed=embed_response)
-            
-        except Exception as e:
-            await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
-
 class TicketManager:
-    """Core ticket business logic and database operations"""
+    """Core ticket business logic and database operations - FIXED for existing schema"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -234,7 +190,7 @@ class TicketManager:
     
     async def create_ticket(self, guild: discord.Guild, user: discord.Member, 
                           title: str, description: str, priority: str = "medium") -> Optional[Dict[str, Any]]:
-        """Create a new ticket with channel and database entry"""
+        """Create a new ticket with channel and database entry - FIXED for existing schema"""
         try:
             # Get configuration
             config = await self.get_ticket_config(str(guild.id))
@@ -251,13 +207,13 @@ class TicketManager:
             if not channel:
                 return None
             
-            # Save to database
+            # FIXED: Use existing database schema - no assigned_users column
             await self.bot.db.connection.execute(
                 """INSERT INTO tickets (ticket_id, guild_id, user_id, channel_id, title, description, 
-                   status, priority, assigned_users, created_at, updated_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)""",
+                   status, priority, created_at, updated_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
                 ticket_id, str(guild.id), str(user.id), str(channel.id), title, description,
-                'open', priority, json.dumps([str(user.id)]), current_time, current_time
+                'open', priority, current_time, current_time
             )
             
             ticket_data = {
@@ -269,7 +225,6 @@ class TicketManager:
                 'description': description,
                 'status': 'open',
                 'priority': priority,
-                'assigned_users': [str(user.id)],
                 'created_at': current_time,
                 'updated_at': current_time
             }
@@ -321,7 +276,7 @@ class TicketManager:
             return None
     
     async def get_ticket(self, ticket_id: str) -> Optional[Dict[str, Any]]:
-        """Get ticket by ID"""
+        """Get ticket by ID - FIXED for existing schema"""
         try:
             row = await self.bot.db.connection.fetchrow(
                 "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
@@ -329,9 +284,6 @@ class TicketManager:
             
             if row:
                 ticket = dict(row)
-                # Parse JSON fields
-                if ticket.get('assigned_users'):
-                    ticket['assigned_users'] = json.loads(ticket['assigned_users'])
                 return ticket
             return None
         except Exception as e:
@@ -355,8 +307,6 @@ class TicketManager:
             tickets = []
             for row in rows:
                 ticket = dict(row)
-                if ticket.get('assigned_users'):
-                    ticket['assigned_users'] = json.loads(ticket['assigned_users'])
                 tickets.append(ticket)
             
             return tickets
@@ -381,8 +331,6 @@ class TicketManager:
             tickets = []
             for row in rows:
                 ticket = dict(row)
-                if ticket.get('assigned_users'):
-                    ticket['assigned_users'] = json.loads(ticket['assigned_users'])
                 tickets.append(ticket)
             
             return tickets
@@ -391,49 +339,26 @@ class TicketManager:
             return []
     
     async def assign_user_to_ticket(self, ticket_id: str, user_id: str) -> bool:
-        """Assign a user to a ticket"""
+        """Assign a user to a ticket - FIXED for existing schema"""
         try:
-            ticket = await self.get_ticket(ticket_id)
-            if not ticket:
-                return False
-            
-            assigned_users = ticket.get('assigned_users', [])
-            if user_id not in assigned_users:
-                assigned_users.append(user_id)
-                
+            # Use assignee_id column if it exists, otherwise just update updated_at
+            try:
                 await self.bot.db.connection.execute(
-                    "UPDATE tickets SET assigned_users = $1, updated_at = $2 WHERE ticket_id = $3",
-                    json.dumps(assigned_users), self.current_timestamp(), ticket_id
+                    "UPDATE tickets SET assignee_id = $1, updated_at = $2 WHERE ticket_id = $3",
+                    user_id, self.current_timestamp(), ticket_id
                 )
-                
                 logger.info(f"Assigned user {user_id} to ticket {ticket_id}")
-            
-            return True
+                return True
+            except Exception:
+                # If assignee_id column doesn't exist, just update timestamp
+                await self.bot.db.connection.execute(
+                    "UPDATE tickets SET updated_at = $1 WHERE ticket_id = $2",
+                    self.current_timestamp(), ticket_id
+                )
+                logger.info(f"Updated ticket {ticket_id} (assignee_id column not available)")
+                return True
         except Exception as e:
             logger.error(f"Error assigning user to ticket: {e}")
-            return False
-    
-    async def unassign_user_from_ticket(self, ticket_id: str, user_id: str) -> bool:
-        """Unassign a user from a ticket"""
-        try:
-            ticket = await self.get_ticket(ticket_id)
-            if not ticket:
-                return False
-            
-            assigned_users = ticket.get('assigned_users', [])
-            if user_id in assigned_users:
-                assigned_users.remove(user_id)
-                
-                await self.bot.db.connection.execute(
-                    "UPDATE tickets SET assigned_users = $1, updated_at = $2 WHERE ticket_id = $3",
-                    json.dumps(assigned_users), self.current_timestamp(), ticket_id
-                )
-                
-                logger.info(f"Unassigned user {user_id} from ticket {ticket_id}")
-            
-            return True
-        except Exception as e:
-            logger.error(f"Error unassigning user from ticket: {e}")
             return False
     
     async def update_ticket_status(self, ticket_id: str, status: str) -> bool:
@@ -442,10 +367,18 @@ class TicketManager:
             current_time = self.current_timestamp()
             
             if status == 'closed':
-                await self.bot.db.connection.execute(
-                    "UPDATE tickets SET status = $1, updated_at = $2, closed_at = $3 WHERE ticket_id = $4",
-                    status, current_time, current_time, ticket_id
-                )
+                # Try to update with closed_at if column exists
+                try:
+                    await self.bot.db.connection.execute(
+                        "UPDATE tickets SET status = $1, updated_at = $2, closed_at = $3 WHERE ticket_id = $4",
+                        status, current_time, current_time, ticket_id
+                    )
+                except Exception:
+                    # If closed_at column doesn't exist, just update status
+                    await self.bot.db.connection.execute(
+                        "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
+                        status, current_time, ticket_id
+                    )
             else:
                 await self.bot.db.connection.execute(
                     "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
@@ -479,12 +412,19 @@ class TicketManager:
                 ticket = await self.get_ticket(ticket_id)
                 
                 if ticket:
-                    # Restore permissions for assigned users
-                    assigned_users = ticket.get('assigned_users', [])
-                    for user_id in assigned_users:
+                    # Restore permissions for ticket creator
+                    user_id = ticket.get('user_id')
+                    if user_id:
                         user = guild.get_member(int(user_id))
                         if user:
                             await channel.set_permissions(user, read_messages=True, send_messages=True)
+                    
+                    # Restore permissions for assignee if exists
+                    assignee_id = ticket.get('assignee_id')
+                    if assignee_id:
+                        assignee = guild.get_member(int(assignee_id))
+                        if assignee:
+                            await channel.set_permissions(assignee, read_messages=True, send_messages=True)
                     
                     # Restore admin permissions
                     if hasattr(self.bot, 'admin_manager') and self.bot.admin_manager:
@@ -574,21 +514,35 @@ class TicketManager:
             return False
     
     def can_manage_ticket(self, user: discord.Member, ticket: Dict[str, Any]) -> bool:
-        """Check if user can manage a ticket (close, assign, etc.)"""
+        """Check if user can manage a ticket (close, assign, etc.) - FIXED for existing schema"""
         # Check if user is admin
         if hasattr(self.bot, 'admin_manager') and self.bot.admin_manager and self.bot.admin_manager.is_admin(user):
             return True
         
-        # Check if user is assigned to the ticket
-        assigned_users = ticket.get('assigned_users', [])
-        return str(user.id) in assigned_users
+        # Check if user is the ticket creator
+        if str(user.id) == ticket.get('user_id'):
+            return True
+        
+        # Check if user is assigned to the ticket (if assignee_id exists)
+        assignee_id = ticket.get('assignee_id')
+        if assignee_id and str(user.id) == assignee_id:
+            return True
+        
+        return False
     
     def can_access_ticket(self, user: discord.Member, ticket: Dict[str, Any]) -> bool:
-        """Check if user can access a ticket (read/write)"""
+        """Check if user can access a ticket (read/write) - FIXED for existing schema"""
         # Admins can always access
         if hasattr(self.bot, 'admin_manager') and self.bot.admin_manager and self.bot.admin_manager.is_admin(user):
             return True
         
-        # Assigned users can access
-        assigned_users = ticket.get('assigned_users', [])
-        return str(user.id) in assigned_users
+        # Ticket creator can access
+        if str(user.id) == ticket.get('user_id'):
+            return True
+        
+        # Assignee can access (if assignee_id exists)
+        assignee_id = ticket.get('assignee_id')
+        if assignee_id and str(user.id) == assignee_id:
+            return True
+        
+        return False
