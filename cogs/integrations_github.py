@@ -1,36 +1,412 @@
+"""
+Enhanced GitHub Integration with Real API Calls
+Uses existing GITHUB_TOKEN environment variable for authentication
+"""
+
 import discord
 from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder
-import json
+import aiohttp
 import asyncio
-from datetime import datetime
-import random
-from typing import List
-from discord.ui import Select, View, Button
+import json
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Any
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
+class GitHubAPI:
+    """GitHub API client with real API integration"""
+    
+    BASE_URL = "https://api.github.com"
+    
+    def __init__(self, token: str = None):
+        self.token = token or os.getenv('GITHUB_TOKEN')
+        self.headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "Discord-Bot-GitHub-Integration"
+        }
+        
+        if self.token:
+            self.headers["Authorization"] = f"token {self.token}"
+            logger.info("✅ GitHub API initialized with authentication")
+        else:
+            logger.warning("⚠️ No GitHub token provided - API requests will be rate limited")
+        
+        self.rate_limit_remaining = 5000
+        self.rate_limit_reset = 0
+        self.session = None
+    
+    async def ensure_session(self):
+        """Ensure aiohttp session exists"""
+        if self.session is None or self.session.closed:
+            timeout = aiohttp.ClientTimeout(total=30)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+    
+    async def close(self):
+        """Close the aiohttp session"""
+        if self.session and not self.session.closed:
+            await self.session.close()
+    
+    async def _handle_rate_limit(self):
+        """Handle GitHub API rate limiting"""
+        if self.rate_limit_remaining <= 1:
+            now = datetime.now(timezone.utc).timestamp()
+            wait_time = max(0, self.rate_limit_reset - now) + 1
+            
+            if wait_time > 0:
+                logger.warning(f"GitHub API rate limit reached. Waiting {wait_time:.2f} seconds")
+                await asyncio.sleep(wait_time)
+    
+    def _update_rate_limit(self, headers):
+        """Update rate limit information from response headers"""
+        try:
+            if "X-RateLimit-Remaining" in headers:
+                self.rate_limit_remaining = int(headers["X-RateLimit-Remaining"])
+            
+            if "X-RateLimit-Reset" in headers:
+                self.rate_limit_reset = int(headers["X-RateLimit-Reset"])
+                
+            logger.debug(f"Rate limit: {self.rate_limit_remaining} remaining, resets at {self.rate_limit_reset}")
+        except (ValueError, KeyError) as e:
+            logger.warning(f"Failed to parse rate limit headers: {e}")
+    
+    async def request(self, method: str, endpoint: str, **kwargs) -> Optional[Dict]:
+        """Make a request to the GitHub API with rate limiting"""
+        await self.ensure_session()
+        await self._handle_rate_limit()
+        
+        url = f"{self.BASE_URL}{endpoint}"
+        
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                async with self.session.request(method, url, headers=self.headers, **kwargs) as response:
+                    self._update_rate_limit(response.headers)
+                    
+                    if response.status == 403:
+                        if self.rate_limit_remaining == 0:
+                            logger.warning("Rate limited, waiting for reset...")
+                            await self._handle_rate_limit()
+                            continue
+                        else:
+                            logger.error(f"GitHub API 403 error: {await response.text()}")
+                            return None
+                    
+                    if response.status == 404:
+                        logger.debug(f"GitHub API 404: {endpoint}")
+                        return None
+                    
+                    if response.status >= 400:
+                        error_text = await response.text()
+                        logger.error(f"GitHub API error {response.status}: {error_text}")
+                        response.raise_for_status()
+                    
+                    return await response.json()
+            
+            except aiohttp.ClientResponseError as e:
+                if e.status == 404:
+                    return None
+                
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"GitHub API error: {e}. Retrying in {wait_time}s (attempt {attempt+1}/{max_retries})")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"GitHub API error after {max_retries} attempts: {e}")
+                    raise
+            
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"GitHub API connection error: {e}. Retrying in {wait_time}s")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.error(f"GitHub API connection error after {max_retries} attempts: {e}")
+                    raise
+    
+    async def get_repository(self, owner: str, repo: str) -> Optional[Dict]:
+        """Get repository information"""
+        return await self.request("GET", f"/repos/{owner}/{repo}")
+    
+    async def get_commits(self, owner: str, repo: str, since: str = None, per_page: int = 5) -> Optional[List[Dict]]:
+        """Get recent commits"""
+        params = {"per_page": per_page}
+        if since:
+            params["since"] = since
+        
+        return await self.request("GET", f"/repos/{owner}/{repo}/commits", params=params)
+    
+    async def get_releases(self, owner: str, repo: str, per_page: int = 5) -> Optional[List[Dict]]:
+        """Get recent releases"""
+        return await self.request("GET", f"/repos/{owner}/{repo}/releases", params={"per_page": per_page})
+    
+    async def get_issues(self, owner: str, repo: str, state: str = "open", since: str = None, per_page: int = 5) -> Optional[List[Dict]]:
+        """Get recent issues"""
+        params = {"state": state, "per_page": per_page}
+        if since:
+            params["since"] = since
+        
+        return await self.request("GET", f"/repos/{owner}/{repo}/issues", params=params)
+    
+    async def get_pulls(self, owner: str, repo: str, state: str = "open", per_page: int = 5) -> Optional[List[Dict]]:
+        """Get recent pull requests"""
+        params = {"state": state, "per_page": per_page}
+        return await self.request("GET", f"/repos/{owner}/{repo}/pulls", params=params)
+
 class GitHubIntegrations(commands.Cog):
-    """GitHub repository tracking"""
+    """Enhanced GitHub repository tracking with real API integration"""
     
     def __init__(self, bot):
         self.bot = bot
-        self.repo_cache = {}  # Cache for repository data
-        self.bot.loop.create_task(self.check_repo_updates())
+        self.github = GitHubAPI()
+        self.repo_cache = {}
+        self.check_task = None
+        self.initialized = False
+        
+        # Initialize after bot is ready
+        self.bot.loop.create_task(self.initialize())
+    
+    async def initialize(self):
+        """Initialize the GitHub integration"""
+        try:
+            await self.bot.wait_until_ready()
+            
+            # Wait for database to be ready
+            max_wait = 30
+            wait_time = 0
+            while not self.bot.db and wait_time < max_wait:
+                await asyncio.sleep(1)
+                wait_time += 1
+            
+            if not self.bot.db:
+                logger.error("Database not available for GitHub integration")
+                return
+            
+            # Create necessary tables
+            await self.create_tables()
+            
+            # Load tracked repositories
+            await self.load_tracked_repos()
+            
+            # Start background task
+            self.check_task = self.bot.loop.create_task(self.check_repo_updates())
+            
+            self.initialized = True
+            logger.info("✅ GitHub integration initialized with real API")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize GitHub integration: {e}")
+    
+    async def create_tables(self):
+        """Create necessary database tables"""
+        try:
+            # GitHub tracked repositories table
+            await self.bot.db.connection.execute("""
+                CREATE TABLE IF NOT EXISTS github_tracked_repos (
+                    id SERIAL PRIMARY KEY,
+                    guild_id TEXT NOT NULL,
+                    repo_name TEXT NOT NULL,
+                    channel_id TEXT NOT NULL,
+                    added_by TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(guild_id, repo_name)
+                )
+            """)
+            
+            # GitHub repository state table
+            await self.bot.db.connection.execute("""
+                CREATE TABLE IF NOT EXISTS github_repo_state (
+                    id SERIAL PRIMARY KEY,
+                    guild_id TEXT NOT NULL,
+                    repo_name TEXT NOT NULL,
+                    last_commit_sha TEXT,
+                    last_release_id TEXT,
+                    last_issue_number INTEGER DEFAULT 0,
+                    last_pr_number INTEGER DEFAULT 0,
+                    stars_count INTEGER DEFAULT 0,
+                    last_checked INTEGER NOT NULL,
+                    UNIQUE(guild_id, repo_name)
+                )
+            """)
+            
+            # GitHub user subscriptions table
+            await self.bot.db.connection.execute("""
+                CREATE TABLE IF NOT EXISTS github_subscriptions (
+                    id SERIAL PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    guild_id TEXT NOT NULL,
+                    repo_name TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    enabled BOOLEAN DEFAULT TRUE,
+                    created_at INTEGER NOT NULL,
+                    UNIQUE(user_id, guild_id, repo_name, event_type)
+                )
+            """)
+            
+            logger.info("✅ GitHub tables created/verified")
+        except Exception as e:
+            logger.error(f"❌ Failed to create GitHub tables: {e}")
+            raise
+    
+    async def load_tracked_repos(self):
+        """Load tracked repositories into cache"""
+        try:
+            repos = await self.bot.db.connection.fetch(
+                "SELECT * FROM github_tracked_repos"
+            )
+            
+            self.repo_cache = {}
+            
+            for repo in repos:
+                guild_id = repo['guild_id']
+                repo_name = repo['repo_name']
+                
+                try:
+                    # Get repo state
+                    state = await self.bot.db.connection.fetchrow(
+                        "SELECT * FROM github_repo_state WHERE guild_id = $1 AND repo_name = $2",
+                        guild_id, repo_name
+                    )
+                    
+                    if not state:
+                        # Initialize state if it doesn't exist
+                        await self.initialize_repo_state(guild_id, repo_name)
+                        state = await self.bot.db.connection.fetchrow(
+                            "SELECT * FROM github_repo_state WHERE guild_id = $1 AND repo_name = $2",
+                            guild_id, repo_name
+                        )
+                    
+                    # Add to cache
+                    cache_key = f"{guild_id}:{repo_name}"
+                    self.repo_cache[cache_key] = {
+                        "channel_id": repo['channel_id'],
+                        "added_by": repo['added_by'],
+                        "created_at": repo['created_at'],
+                        "state": {
+                            "last_commit_sha": state['last_commit_sha'] or "",
+                            "last_release_id": state['last_release_id'] or "",
+                            "last_issue_number": state['last_issue_number'] or 0,
+                            "last_pr_number": state['last_pr_number'] or 0,
+                            "stars_count": state['stars_count'] or 0,
+                            "last_checked": state['last_checked']
+                        }
+                    }
+                    
+                except Exception as e:
+                    logger.error(f"Failed to load state for {repo_name}: {e}")
+                    continue
+            
+            logger.info(f"✅ Loaded {len(self.repo_cache)} tracked repositories")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load tracked repositories: {e}")
+            self.repo_cache = {}
+    
+    async def initialize_repo_state(self, guild_id: str, repo_name: str):
+        """Initialize repository state with current GitHub data"""
+        try:
+            owner, repo = repo_name.split("/", 1)
+            current_time = int(datetime.now(timezone.utc).timestamp())
+            
+            # Get current repository data
+            repo_data = await self.github.get_repository(owner, repo)
+            if not repo_data:
+                logger.warning(f"Could not fetch data for {repo_name}")
+                # Initialize with empty state
+                await self.bot.db.connection.execute(
+                    """INSERT INTO github_repo_state 
+                       (guild_id, repo_name, last_commit_sha, last_release_id, 
+                        last_issue_number, last_pr_number, stars_count, last_checked)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                       ON CONFLICT (guild_id, repo_name) DO NOTHING""",
+                    guild_id, repo_name, "", "", 0, 0, 0, current_time
+                )
+                return
+            
+            # Get initial data
+            stars = repo_data.get('stargazers_count', 0)
+            
+            # Get latest commit
+            last_commit_sha = ""
+            commits = await self.github.get_commits(owner, repo, per_page=1)
+            if commits:
+                last_commit_sha = commits[0]['sha']
+            
+            # Get latest release
+            last_release_id = ""
+            releases = await self.github.get_releases(owner, repo, per_page=1)
+            if releases:
+                last_release_id = str(releases[0]['id'])
+            
+            # Get latest issue number
+            last_issue_number = 0
+            issues = await self.github.get_issues(owner, repo, per_page=1)
+            if issues:
+                actual_issues = [issue for issue in issues if 'pull_request' not in issue]
+                if actual_issues:
+                    last_issue_number = actual_issues[0]['number']
+            
+            # Get latest PR number
+            last_pr_number = 0
+            pulls = await self.github.get_pulls(owner, repo, per_page=1)
+            if pulls:
+                last_pr_number = pulls[0]['number']
+            
+            # Save initial state
+            await self.bot.db.connection.execute(
+                """INSERT INTO github_repo_state 
+                   (guild_id, repo_name, last_commit_sha, last_release_id, 
+                    last_issue_number, last_pr_number, stars_count, last_checked)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                   ON CONFLICT (guild_id, repo_name) DO UPDATE SET
+                   last_commit_sha = $3, last_release_id = $4, 
+                   last_issue_number = $5, last_pr_number = $6, 
+                   stars_count = $7, last_checked = $8""",
+                guild_id, repo_name, last_commit_sha, last_release_id,
+                last_issue_number, last_pr_number, stars, current_time
+            )
+            
+            logger.info(f"✅ Initialized state for {repo_name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize state for {repo_name}: {e}")
+            # Create minimal state to prevent future errors
+            current_time = int(datetime.now(timezone.utc).timestamp())
+            await self.bot.db.connection.execute(
+                """INSERT INTO github_repo_state 
+                   (guild_id, repo_name, last_commit_sha, last_release_id, 
+                    last_issue_number, last_pr_number, stars_count, last_checked)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                   ON CONFLICT (guild_id, repo_name) DO NOTHING""",
+                guild_id, repo_name, "", "", 0, 0, 0, current_time
+            )
+    
+    async def cog_unload(self):
+        """Clean up when cog is unloaded"""
+        if self.check_task:
+            self.check_task.cancel()
+            try:
+                await self.check_task
+            except asyncio.CancelledError:
+                pass
+        
+        await self.github.close()
     
     @app_commands.command(name="track-repo", description="Track a GitHub repository for updates")
     @app_commands.describe(
         repo="Repository name (format: owner/repo)",
-        ping_me="Whether you want to be pinged for updates (default: True)"
+        channel="Channel to send notifications to (default: current channel)"
     )
-    async def track_repo(self, interaction: discord.Interaction, repo: str, ping_me: bool = True):
+    async def track_repo(self, interaction: discord.Interaction, repo: str, channel: Optional[discord.TextChannel] = None):
+        """Track a GitHub repository for updates"""
         await interaction.response.defer()
         
         try:
             # Validate repository format
-            if "/" not in repo:
+            if "/" not in repo or repo.count("/") != 1:
                 embed = EmbedBuilder.error(
                     "Invalid Format",
                     "Repository must be in the format `owner/repo`"
@@ -38,164 +414,280 @@ class GitHubIntegrations(commands.Cog):
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             
-            # Get tracking config to find the channel
-            config = await self.bot.db.connection.fetchrow(
-                "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
-                str(interaction.guild.id), 'github_tracking_config'
-            )
+            owner, repo_name = repo.split("/", 1)
             
-            if not config:
+            # Validate repository name format
+            if not owner or not repo_name:
                 embed = EmbedBuilder.error(
-                    "GitHub Tracking Not Configured",
-                    "GitHub tracking has not been set up. Please ask an administrator to run `/setup-tracking`"
+                    "Invalid Format",
+                    "Both owner and repository name must be provided"
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             
-            config_data = json.loads(config['data_content'])
-            tracking_channel_id = config_data.get('tracking_channel_id')
-            
-            if not tracking_channel_id:
+            # Check if repository exists
+            repository = await self.github.get_repository(owner, repo_name)
+            if not repository:
                 embed = EmbedBuilder.error(
-                    "Invalid Configuration",
-                    "GitHub tracking configuration is invalid. Please ask an administrator to reconfigure it."
+                    "Repository Not Found",
+                    f"Could not find repository `{repo}`. Please check the name and try again.\n\n"
+                    "Make sure the repository is public or you have access to it."
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             
-            channel = interaction.guild.get_channel(int(tracking_channel_id))
+            # Use current channel if none specified
             if not channel:
+                channel = interaction.channel
+            
+            # Check bot permissions in channel
+            perms = channel.permissions_for(interaction.guild.me)
+            if not (perms.send_messages and perms.embed_links):
                 embed = EmbedBuilder.error(
-                    "Channel Not Found",
-                    "The configured tracking channel no longer exists. Please ask an administrator to reconfigure it."
+                    "Missing Permissions",
+                    f"I need `Send Messages` and `Embed Links` permissions in {channel.mention}"
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             
             # Check if already tracking
             existing = await self.bot.db.connection.fetchrow(
-                "SELECT * FROM github_tracked_repos WHERE guild_id = $1 AND repo_name = $2 AND channel_id = $3",
-                str(interaction.guild.id), repo, str(channel.id)
+                "SELECT * FROM github_tracked_repos WHERE guild_id = $1 AND repo_name = $2",
+                str(interaction.guild.id), repo
             )
             
             if existing:
-                embed = EmbedBuilder.warning(
-                    "Already Tracking",
-                    f"Already tracking {repo} in {channel.mention}"
-                )
-                await interaction.followup.send(embed=embed, ephemeral=True)
+                # Update channel if different
+                if str(channel.id) != existing['channel_id']:
+                    await self.bot.db.connection.execute(
+                        "UPDATE github_tracked_repos SET channel_id = $1 WHERE guild_id = $2 AND repo_name = $3",
+                        str(channel.id), str(interaction.guild.id), repo
+                    )
+                    
+                    # Update cache
+                    cache_key = f"{interaction.guild.id}:{repo}"
+                    if cache_key in self.repo_cache:
+                        self.repo_cache[cache_key]["channel_id"] = str(channel.id)
+                    
+                    embed = EmbedBuilder.success(
+                        "Repository Updated",
+                        f"Updated tracking for `{repo}` to {channel.mention}"
+                    )
+                    await interaction.followup.send(embed=embed)
+                else:
+                    embed = EmbedBuilder.info(
+                        "Already Tracking",
+                        f"Already tracking `{repo}` in {channel.mention}"
+                    )
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                
                 return
             
             # Add to database
+            current_time = int(datetime.now(timezone.utc).timestamp())
             await self.bot.db.connection.execute(
-                "INSERT INTO github_tracked_repos (guild_id, repo_name, channel_id, added_by) VALUES ($1, $2, $3, $4)",
-                str(interaction.guild.id), repo, str(channel.id), str(interaction.user.id)
+                "INSERT INTO github_tracked_repos (guild_id, repo_name, channel_id, added_by, created_at) VALUES ($1, $2, $3, $4, $5)",
+                str(interaction.guild.id), repo, str(channel.id), str(interaction.user.id), current_time
             )
             
-            # Set up user subscription
-            if ping_me:
+            # Initialize repo state
+            await self.initialize_repo_state(str(interaction.guild.id), repo)
+            
+            # Set up default subscriptions for the user
+            event_types = ["commits", "releases", "issues", "pulls", "stars"]
+            for event_type in event_types:
                 await self.bot.db.connection.execute(
-                    """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, enabled) 
-                       VALUES ($1, $2, $3, $4)
-                       ON CONFLICT (user_id, guild_id, repo_name) DO UPDATE SET enabled = $4""",
-                    str(interaction.user.id), str(interaction.guild.id), repo, True
+                    """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, event_type, enabled, created_at)
+                       VALUES ($1, $2, $3, $4, $5, $6)
+                       ON CONFLICT (user_id, guild_id, repo_name, event_type) DO UPDATE SET enabled = $5""",
+                    str(interaction.user.id), str(interaction.guild.id), repo, event_type, True, current_time
                 )
             
-            # Initialize cache for this repo
-            self.repo_cache[f"{interaction.guild.id}:{repo}:{channel.id}"] = {
-                "stars": 0,
-                "last_commit": "",
-                "last_check": datetime.utcnow(),
-                "pull_requests": []
+            # Add to cache
+            cache_key = f"{interaction.guild.id}:{repo}"
+            self.repo_cache[cache_key] = {
+                "channel_id": str(channel.id),
+                "added_by": str(interaction.user.id),
+                "created_at": current_time,
+                "state": {
+                    "last_commit_sha": "",
+                    "last_release_id": "",
+                    "last_issue_number": 0,
+                    "last_pr_number": 0,
+                    "stars_count": repository.get("stargazers_count", 0),
+                    "last_checked": current_time
+                }
             }
             
-            embed = EmbedBuilder.success(
-                "Repository Tracked",
-                f"Now tracking {repo} in {channel.mention}\n\n"
-                f"**Ping notifications:** {'Enabled' if ping_me else 'Disabled'}\n\n"
-                f"You'll receive notifications for:\n"
-                f"• New commits\n"
-                f"• Star count changes\n"
-                f"• New pull requests"
+            # Create success embed
+            embed = discord.Embed(
+                title="✅ Repository Tracked",
+                description=f"Now tracking `{repo}` in {channel.mention}",
+                color=0x2EA043,  # GitHub green
+                url=repository["html_url"],
+                timestamp=datetime.now(timezone.utc)
             )
+            
+            embed.add_field(
+                name="Repository",
+                value=f"[{repo}]({repository['html_url']})",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Stars",
+                value=f"⭐ {repository.get('stargazers_count', 0):,}",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Language",
+                value=repository.get('language', 'Unknown'),
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Notifications",
+                value="You'll receive updates for:\n" + "\n".join([
+                    "📝 New commits",
+                    "🚀 New releases", 
+                    "❗ New issues",
+                    "🔄 New pull requests",
+                    "⭐ Star changes"
+                ]),
+                inline=False
+            )
+            
+            if repository.get("owner", {}).get("avatar_url"):
+                embed.set_thumbnail(url=repository["owner"]["avatar_url"])
+            
+            embed.set_footer(text="Use /list-repos to manage notification settings")
+            
             await interaction.followup.send(embed=embed)
             
-            # Send initial status
-            await self._send_repo_status(repo, channel)
+            # Send initial status to the channel
+            await self._send_repo_status(repo, channel, repository)
             
         except Exception as e:
+            logger.error(f"Error tracking repo: {e}")
             embed = EmbedBuilder.error("Error", f"Failed to track repository: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
     @app_commands.command(name="untrack-repo", description="Stop tracking a GitHub repository")
     @app_commands.describe(repo="Repository name (format: owner/repo)")
     async def untrack_repo(self, interaction: discord.Interaction, repo: str):
+        """Stop tracking a GitHub repository"""
         await interaction.response.defer()
         
         try:
-            # Remove from database
-            result = await self.bot.db.connection.execute(
-                "DELETE FROM github_tracked_repos WHERE guild_id = $1 AND repo_name = $2",
+            # Check if tracking
+            existing = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM github_tracked_repos WHERE guild_id = $1 AND repo_name = $2",
                 str(interaction.guild.id), repo
             )
             
-            if "DELETE 0" in str(result):
+            if not existing:
                 embed = EmbedBuilder.error(
                     "Not Tracking",
-                    f"Not tracking {repo} in this server"
+                    f"Not tracking `{repo}` in this server"
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             
-            # Remove user subscriptions
+            # Check permissions (only admins or the person who added it can remove)
+            is_admin = hasattr(self.bot, 'admin_manager') and self.bot.admin_manager and self.bot.admin_manager.is_admin(interaction.user)
+            is_adder = str(interaction.user.id) == existing['added_by']
+            
+            if not (is_admin or is_adder):
+                embed = EmbedBuilder.error(
+                    "Permission Denied",
+                    "Only server managers or the person who added this repository can remove it"
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+            
+            # Remove from database
+            await self.bot.db.connection.execute(
+                "DELETE FROM github_tracked_repos WHERE guild_id = $1 AND repo_name = $2",
+                str(interaction.guild.id), repo
+            )
+            
+            # Remove state
+            await self.bot.db.connection.execute(
+                "DELETE FROM github_repo_state WHERE guild_id = $1 AND repo_name = $2",
+                str(interaction.guild.id), repo
+            )
+            
+            # Remove subscriptions
             await self.bot.db.connection.execute(
                 "DELETE FROM github_subscriptions WHERE guild_id = $1 AND repo_name = $2",
                 str(interaction.guild.id), repo
             )
             
             # Remove from cache
-            cache_keys_to_remove = [key for key in self.repo_cache.keys() if f"{interaction.guild.id}:{repo}:" in key]
-            for key in cache_keys_to_remove:
-                del self.repo_cache[key]
+            cache_key = f"{interaction.guild.id}:{repo}"
+            if cache_key in self.repo_cache:
+                del self.repo_cache[cache_key]
             
             embed = EmbedBuilder.success(
-                "Tracking Stopped",
-                f"Stopped tracking {repo}"
+                "Repository Untracked",
+                f"Stopped tracking `{repo}`"
             )
             await interaction.followup.send(embed=embed)
             
         except Exception as e:
+            logger.error(f"Error untracking repo: {e}")
             embed = EmbedBuilder.error("Error", f"Failed to untrack repository: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="list-repos", description="List tracked GitHub repositories with subscription options")
+    @app_commands.command(name="list-repos", description="List tracked GitHub repositories")
     async def list_repos(self, interaction: discord.Interaction):
+        """List tracked GitHub repositories with subscription options"""
         await interaction.response.defer(ephemeral=True)
         
         try:
             # Get tracked repos for this guild
             repos = await self.bot.db.connection.fetch(
-                "SELECT * FROM github_tracked_repos WHERE guild_id = $1",
+                "SELECT * FROM github_tracked_repos WHERE guild_id = $1 ORDER BY created_at DESC",
                 str(interaction.guild.id)
             )
             
             if not repos:
-                embed = EmbedBuilder.info("No Repositories", "No GitHub repositories are being tracked in this server")
+                embed = EmbedBuilder.info(
+                    "No Repositories",
+                    "No GitHub repositories are being tracked in this server.\n\n"
+                    "Use `/track-repo` to start tracking a repository."
+                )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             
-            # Create view with dropdown and buttons
-            view = RepoListView(self.bot, repos, interaction.user.id, str(interaction.guild.id))
-            
             embed = discord.Embed(
                 title="🐙 Tracked GitHub Repositories",
-                description=f"This server is tracking {len(repos)} repositories\n\nSelect a repository below to view details and toggle notifications:",
-                color=0x333333  # GitHub dark
+                description=f"This server is tracking **{len(repos)}** repositories.",
+                color=0x333333,  # GitHub dark
+                timestamp=datetime.now(timezone.utc)
             )
             
-            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            # Add a summary of tracked repos
+            repo_list = []
+            for i, repo in enumerate(repos[:10], 1):  # Show first 10
+                channel = interaction.guild.get_channel(int(repo['channel_id']))
+                channel_name = channel.mention if channel else "Unknown Channel"
+                repo_list.append(f"`{i}.` **{repo['repo_name']}** → {channel_name}")
+            
+            if repo_list:
+                embed.add_field(
+                    name="Tracked Repositories",
+                    value="\n".join(repo_list) + (f"\n*...and {len(repos) - 10} more*" if len(repos) > 10 else ""),
+                    inline=False
+                )
+            
+            embed.set_footer(text="Use /track-repo to add more repositories")
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
             
         except Exception as e:
+            logger.error(f"Error listing repos: {e}")
             embed = EmbedBuilder.error("Error", f"Failed to list repositories: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
@@ -203,304 +695,564 @@ class GitHubIntegrations(commands.Cog):
         """Background task to check for repository updates"""
         await self.bot.wait_until_ready()
         
+        # Wait for initialization to complete
+        while not self.initialized:
+            await asyncio.sleep(5)
+        
+        logger.info("🔄 Starting GitHub repository update checker")
+        
         while not self.bot.is_closed():
             try:
-                # Get all tracked repos
-                repos = await self.bot.db.connection.fetch("SELECT * FROM github_tracked_repos")
+                if not self.repo_cache:
+                    logger.debug("No repositories to check")
+                    await asyncio.sleep(300)  # 5 minutes
+                    continue
                 
-                for repo in repos:
-                    guild_id = repo['guild_id']
-                    repo_name = repo['repo_name']
-                    channel_id = repo['channel_id']
-                    
-                    # Check if guild and channel still exist
-                    guild = self.bot.get_guild(int(guild_id))
-                    if not guild:
+                logger.debug(f"Checking {len(self.repo_cache)} repositories for updates")
+                
+                for cache_key, repo_info in list(self.repo_cache.items()):
+                    try:
+                        guild_id, repo_name = cache_key.split(":", 1)
+                        channel_id = repo_info["channel_id"]
+                        
+                        # Check if guild and channel still exist
+                        guild = self.bot.get_guild(int(guild_id))
+                        if not guild:
+                            logger.debug(f"Guild {guild_id} not found, removing from cache")
+                            del self.repo_cache[cache_key]
+                            continue
+                        
+                        channel = guild.get_channel(int(channel_id))
+                        if not channel:
+                            logger.debug(f"Channel {channel_id} not found, removing from cache")
+                            del self.repo_cache[cache_key]
+                            continue
+                        
+                        # Check for updates
+                        await self._check_repo_updates(repo_name, channel, guild_id)
+                        
+                        # Sleep briefly between repos to avoid rate limiting
+                        await asyncio.sleep(2)
+                        
+                    except Exception as e:
+                        logger.error(f"Error checking updates for {cache_key}: {e}")
                         continue
-                    
-                    channel = guild.get_channel(int(channel_id))
-                    if not channel:
-                        continue
-                    
-                    # Check for updates
-                    await self._check_repo_updates(repo_name, channel, guild_id)
                 
-                # Sleep for 10 minutes
-                await asyncio.sleep(600)
+                # Sleep for 5 minutes between full checks
+                logger.debug("Completed update check cycle, sleeping for 5 minutes")
+                await asyncio.sleep(300)
                 
+            except asyncio.CancelledError:
+                logger.info("GitHub update checker cancelled")
+                break
             except Exception as e:
-                print(f"Error checking repository updates: {e}")
-                await asyncio.sleep(60)
+                logger.error(f"Error in GitHub update checker: {e}")
+                await asyncio.sleep(60)  # Wait a minute before retrying
     
-    async def _check_repo_updates(self, repo_name, channel, guild_id):
+    async def _check_repo_updates(self, repo_name: str, channel: discord.TextChannel, guild_id: str):
         """Check for updates to a specific repository"""
-        cache_key = f"{guild_id}:{repo_name}:{channel.id}"
-        
-        # Initialize cache if needed
-        if cache_key not in self.repo_cache:
-            self.repo_cache[cache_key] = {
-                "stars": 0,
-                "last_commit": "",
-                "last_check": datetime.utcnow(),
-                "pull_requests": []
-            }
-        
-        # Mock repository data (in a real implementation, this would use the GitHub API)
-        new_stars = random.randint(0, 100)
-        new_commit = f"commit_{random.randint(1000, 9999)}"
-        new_prs = [f"pr_{random.randint(100, 999)}" for _ in range(random.randint(0, 3))]
-        
-        cache = self.repo_cache[cache_key]
-        updates = []
-        
-        # Check for star changes
-        if cache["stars"] > 0 and new_stars != cache["stars"]:
-            diff = new_stars - cache["stars"]
-            if diff > 0:
-                updates.append(f"⭐ **{diff} new stars** (now at {new_stars})")
-        
-        # Check for new commits
-        if cache["last_commit"] and new_commit != cache["last_commit"]:
-            updates.append(f"📝 **New commit:** {new_commit}")
-        
-        # Check for new PRs
-        new_pr_count = 0
-        for pr in new_prs:
-            if pr not in cache["pull_requests"]:
-                new_pr_count += 1
-        
-        if new_pr_count > 0:
-            updates.append(f"🔀 **{new_pr_count} new pull requests**")
-        
-        # Update cache
-        cache["stars"] = new_stars
-        cache["last_commit"] = new_commit
-        cache["pull_requests"] = new_prs
-        cache["last_check"] = datetime.utcnow()
-        
-        # Send updates if any
-        if updates:
-            # Get subscribers
-            subscribers = await self.bot.db.connection.fetch(
-                "SELECT user_id FROM github_subscriptions WHERE guild_id = $1 AND repo_name = $2 AND enabled = TRUE",
+        try:
+            owner, repo = repo_name.split("/", 1)
+            cache_key = f"{guild_id}:{repo_name}"
+            
+            # Get current state from database
+            state = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM github_repo_state WHERE guild_id = $1 AND repo_name = $2",
                 guild_id, repo_name
             )
             
+            if not state:
+                logger.warning(f"No state found for {repo_name} in guild {guild_id}, initializing...")
+                await self.initialize_repo_state(guild_id, repo_name)
+                return
+            
+            # Check for new commits, releases, issues, PRs, and star changes
+            await self._check_commits(owner, repo, state, channel, guild_id, repo_name)
+            await self._check_releases(owner, repo, state, channel, guild_id, repo_name)
+            await self._check_issues(owner, repo, state, channel, guild_id, repo_name)
+            await self._check_pulls(owner, repo, state, channel, guild_id, repo_name)
+            await self._check_stars(owner, repo, state, channel, guild_id, repo_name)
+            
+            # Update last checked time
+            current_time = int(datetime.now(timezone.utc).timestamp())
+            await self.bot.db.connection.execute(
+                "UPDATE github_repo_state SET last_checked = $1 WHERE guild_id = $2 AND repo_name = $3",
+                current_time, guild_id, repo_name
+            )
+            
+            # Update cache
+            if cache_key in self.repo_cache:
+                self.repo_cache[cache_key]["state"]["last_checked"] = current_time
+            
+        except Exception as e:
+            logger.error(f"Error checking updates for {repo_name}: {e}")
+    
+    async def _check_commits(self, owner: str, repo: str, state: dict, channel: discord.TextChannel, guild_id: str, repo_name: str):
+        """Check for new commits"""
+        try:
+            commits = await self.github.get_commits(owner, repo, per_page=5)
+            if not commits:
+                return
+            
+            last_commit_sha = state['last_commit_sha']
+            
+            # If no previous commit, just store the latest
+            if not last_commit_sha:
+                await self.bot.db.connection.execute(
+                    "UPDATE github_repo_state SET last_commit_sha = $1 WHERE guild_id = $2 AND repo_name = $3",
+                    commits[0]['sha'], guild_id, repo_name
+                )
+                return
+            
+            # Find new commits
+            new_commits = []
+            for commit in commits:
+                if commit['sha'] == last_commit_sha:
+                    break
+                new_commits.append(commit)
+            
+            # Update last commit SHA if we have new commits
+            if new_commits:
+                await self.bot.db.connection.execute(
+                    "UPDATE github_repo_state SET last_commit_sha = $1 WHERE guild_id = $2 AND repo_name = $3",
+                    new_commits[0]['sha'], guild_id, repo_name
+                )
+                
+                # Send notifications for new commits (limit to 3)
+                for commit in new_commits[:3]:
+                    await self._send_commit_notification(commit, repo_name, channel, guild_id)
+                    await asyncio.sleep(1)
+            
+        except Exception as e:
+            logger.error(f"Error checking commits for {repo_name}: {e}")
+    
+    async def _check_releases(self, owner: str, repo: str, state: dict, channel: discord.TextChannel, guild_id: str, repo_name: str):
+        """Check for new releases"""
+        try:
+            releases = await self.github.get_releases(owner, repo, per_page=5)
+            if not releases:
+                return
+            
+            last_release_id = state['last_release_id']
+            
+            # If no previous release, just store the latest
+            if not last_release_id:
+                await self.bot.db.connection.execute(
+                    "UPDATE github_repo_state SET last_release_id = $1 WHERE guild_id = $2 AND repo_name = $3",
+                    str(releases[0]['id']), guild_id, repo_name
+                )
+                return
+            
+            # Find new releases
+            new_releases = []
+            for release in releases:
+                if str(release['id']) == last_release_id:
+                    break
+                new_releases.append(release)
+            
+            # Update last release ID if we have new releases
+            if new_releases:
+                await self.bot.db.connection.execute(
+                    "UPDATE github_repo_state SET last_release_id = $1 WHERE guild_id = $2 AND repo_name = $3",
+                    str(new_releases[0]['id']), guild_id, repo_name
+                )
+                
+                # Send notifications for new releases
+                for release in new_releases:
+                    await self._send_release_notification(release, repo_name, channel, guild_id)
+                    await asyncio.sleep(1)
+            
+        except Exception as e:
+            logger.error(f"Error checking releases for {repo_name}: {e}")
+    
+    async def _check_issues(self, owner: str, repo: str, state: dict, channel: discord.TextChannel, guild_id: str, repo_name: str):
+        """Check for new issues"""
+        try:
+            issues = await self.github.get_issues(owner, repo, per_page=10)
+            if not issues:
+                return
+            
+            # Filter out pull requests
+            issues = [issue for issue in issues if 'pull_request' not in issue]
+            if not issues:
+                return
+            
+            last_issue_number = state['last_issue_number']
+            
+            # If no previous issue, just store the latest
+            if last_issue_number == 0:
+                await self.bot.db.connection.execute(
+                    "UPDATE github_repo_state SET last_issue_number = $1 WHERE guild_id = $2 AND repo_name = $3",
+                    issues[0]['number'], guild_id, repo_name
+                )
+                return
+            
+            # Find new issues
+            new_issues = []
+            for issue in issues:
+                if issue['number'] <= last_issue_number:
+                    continue
+                new_issues.append(issue)
+            
+            # Update last issue number if we have new issues
+            if new_issues:
+                max_issue_number = max(issue['number'] for issue in new_issues)
+                await self.bot.db.connection.execute(
+                    "UPDATE github_repo_state SET last_issue_number = $1 WHERE guild_id = $2 AND repo_name = $3",
+                    max_issue_number, guild_id, repo_name
+                )
+                
+                # Send notifications for new issues (limit to 3)
+                for issue in new_issues[:3]:
+                    await self._send_issue_notification(issue, repo_name, channel, guild_id)
+                    await asyncio.sleep(1)
+            
+        except Exception as e:
+            logger.error(f"Error checking issues for {repo_name}: {e}")
+    
+    async def _check_pulls(self, owner: str, repo: str, state: dict, channel: discord.TextChannel, guild_id: str, repo_name: str):
+        """Check for new pull requests"""
+        try:
+            pulls = await self.github.get_pulls(owner, repo, per_page=10)
+            if not pulls:
+                return
+            
+            last_pr_number = state['last_pr_number']
+            
+            # If no previous PR, just store the latest
+            if last_pr_number == 0:
+                await self.bot.db.connection.execute(
+                    "UPDATE github_repo_state SET last_pr_number = $1 WHERE guild_id = $2 AND repo_name = $3",
+                    pulls[0]['number'], guild_id, repo_name
+                )
+                return
+            
+            # Find new PRs
+            new_pulls = []
+            for pull in pulls:
+                if pull['number'] <= last_pr_number:
+                    continue
+                new_pulls.append(pull)
+            
+            # Update last PR number if we have new PRs
+            if new_pulls:
+                max_pr_number = max(pull['number'] for pull in new_pulls)
+                await self.bot.db.connection.execute(
+                    "UPDATE github_repo_state SET last_pr_number = $1 WHERE guild_id = $2 AND repo_name = $3",
+                    max_pr_number, guild_id, repo_name
+                )
+                
+                # Send notifications for new PRs (limit to 3)
+                for pull in new_pulls[:3]:
+                    await self._send_pr_notification(pull, repo_name, channel, guild_id)
+                    await asyncio.sleep(1)
+            
+        except Exception as e:
+            logger.error(f"Error checking pull requests for {repo_name}: {e}")
+    
+    async def _check_stars(self, owner: str, repo: str, state: dict, channel: discord.TextChannel, guild_id: str, repo_name: str):
+        """Check for star count changes"""
+        try:
+            repo_data = await self.github.get_repository(owner, repo)
+            if not repo_data:
+                return
+            
+            stars = repo_data.get('stargazers_count', 0)
+            old_stars = state['stars_count']
+            
+            # If significant change in stars, send notification
+            if old_stars > 0 and abs(stars - old_stars) >= 5:
+                diff = stars - old_stars
+                await self._send_stars_notification(repo_name, stars, diff, channel, guild_id)
+            
+            # Always update star count
+            await self.bot.db.connection.execute(
+                "UPDATE github_repo_state SET stars_count = $1 WHERE guild_id = $2 AND repo_name = $3",
+                stars, guild_id, repo_name
+            )
+            
+        except Exception as e:
+            logger.error(f"Error checking stars for {repo_name}: {e}")
+    
+    async def _send_commit_notification(self, commit: dict, repo_name: str, channel: discord.TextChannel, guild_id: str):
+        """Send notification for a new commit"""
+        try:
+            # Get subscribers for commits
+            subscribers = await self._get_subscribers(guild_id, repo_name, "commits")
+            if not subscribers:
+                return
+            
+            # Extract commit info
+            sha = commit['sha'][:7]
+            message = commit['commit']['message'].split('\n')[0]  # First line only
+            author = commit['commit']['author']['name']
+            url = commit['html_url']
+            
+            # Truncate long commit messages
+            if len(message) > 100:
+                message = message[:97] + "..."
+            
             # Create embed
             embed = discord.Embed(
-                title=f"🐙 {repo_name} Updates",
-                description="\n".join(updates),
-                color=0x333333,  # GitHub dark
-                timestamp=datetime.utcnow()
+                title=f"📝 New Commit to {repo_name}",
+                description=f"**{message}**",
+                color=0x0366D6,  # GitHub blue
+                url=url,
+                timestamp=datetime.now(timezone.utc)
             )
             
-            embed.add_field(
-                name="Repository",
-                value=f"[{repo_name}](https://github.com/{repo_name})",
-                inline=True
-            )
+            embed.add_field(name="Author", value=author, inline=True)
+            embed.add_field(name="Commit", value=f"[{sha}]({url})", inline=True)
             
-            # Add subscriber mentions
-            if subscribers:
-                mentions = []
-                for sub in subscribers:
-                    user_id = sub['user_id']
-                    mentions.append(f"<@{user_id}>")
+            # Add avatar if available
+            if commit.get('author') and commit['author'] and commit['author'].get('avatar_url'):
+                embed.set_thumbnail(url=commit['author']['avatar_url'])
+            
+            # Add mentions
+            mentions = " ".join([f"<@{sub}>" for sub in subscribers])
+            
+            if mentions:
+                await channel.send(mentions, embed=embed)
+            else:
+                await channel.send(embed=embed)
                 
-                if mentions:
-                    await channel.send(" ".join(mentions), embed=embed)
-                    return
-            
-            # If no subscribers, just send the embed
-            await channel.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Error sending commit notification: {e}")
     
-    async def _send_repo_status(self, repo_name, channel):
+    async def _send_release_notification(self, release: dict, repo_name: str, channel: discord.TextChannel, guild_id: str):
+        """Send notification for a new release"""
+        try:
+            # Get subscribers for releases
+            subscribers = await self._get_subscribers(guild_id, repo_name, "releases")
+            if not subscribers:
+                return
+            
+            # Extract release info
+            name = release.get('name') or release['tag_name']
+            tag = release['tag_name']
+            body = release.get('body', '') or ""
+            author = release['author']['login']
+            is_prerelease = release.get('prerelease', False)
+            url = release['html_url']
+            
+            # Truncate body if too long
+            if len(body) > 500:
+                body = body[:497] + "..."
+            
+            # Create embed
+            embed = discord.Embed(
+                title=f"🚀 New {'Pre-release' if is_prerelease else 'Release'} for {repo_name}",
+                description=f"**{name}**\n\n{body}" if body else f"**{name}**",
+                color=0x6F42C1,  # GitHub purple
+                url=url,
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            embed.add_field(name="Tag", value=tag, inline=True)
+            embed.add_field(name="Author", value=author, inline=True)
+            
+            # Add avatar
+            if release['author'].get('avatar_url'):
+                embed.set_thumbnail(url=release['author']['avatar_url'])
+            
+            # Add mentions
+            mentions = " ".join([f"<@{sub}>" for sub in subscribers])
+            
+            if mentions:
+                await channel.send(mentions, embed=embed)
+            else:
+                await channel.send(embed=embed)
+                
+        except Exception as e:
+            logger.error(f"Error sending release notification: {e}")
+    
+    async def _send_issue_notification(self, issue: dict, repo_name: str, channel: discord.TextChannel, guild_id: str):
+        """Send notification for a new issue"""
+        try:
+            # Get subscribers for issues
+            subscribers = await self._get_subscribers(guild_id, repo_name, "issues")
+            if not subscribers:
+                return
+            
+            # Extract issue info
+            number = issue['number']
+            title = issue['title']
+            body = issue.get('body', '') or ""
+            author = issue['user']['login']
+            url = issue['html_url']
+            
+            # Truncate body if too long
+            if len(body) > 300:
+                body = body[:297] + "..."
+            
+            # Create embed
+            embed = discord.Embed(
+                title=f"❗ New Issue in {repo_name}",
+                description=f"**#{number}: {title}**\n\n{body}" if body else f"**#{number}: {title}**",
+                color=0xD73A49,  # GitHub red
+                url=url,
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            embed.add_field(name="Author", value=author, inline=True)
+            
+            # Add avatar
+            if issue['user'].get('avatar_url'):
+                embed.set_thumbnail(url=issue['user']['avatar_url'])
+            
+            # Add mentions
+            mentions = " ".join([f"<@{sub}>" for sub in subscribers])
+            
+            if mentions:
+                await channel.send(mentions, embed=embed)
+            else:
+                await channel.send(embed=embed)
+                
+        except Exception as e:
+            logger.error(f"Error sending issue notification: {e}")
+    
+    async def _send_pr_notification(self, pull: dict, repo_name: str, channel: discord.TextChannel, guild_id: str):
+        """Send notification for a new pull request"""
+        try:
+            # Get subscribers for pull requests
+            subscribers = await self._get_subscribers(guild_id, repo_name, "pulls")
+            if not subscribers:
+                return
+            
+            # Extract PR info
+            number = pull['number']
+            title = pull['title']
+            body = pull.get('body', '') or ""
+            author = pull['user']['login']
+            url = pull['html_url']
+            
+            # Get branch info
+            base = pull['base']['ref']
+            head = pull['head']['ref']
+            
+            # Truncate body if too long
+            if len(body) > 300:
+                body = body[:297] + "..."
+            
+            # Create embed
+            embed = discord.Embed(
+                title=f"🔄 New Pull Request in {repo_name}",
+                description=f"**#{number}: {title}**\n\n{body}" if body else f"**#{number}: {title}**",
+                color=0x28A745,  # GitHub green
+                url=url,
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            embed.add_field(name="Author", value=author, inline=True)
+            embed.add_field(name="Branches", value=f"`{head}` → `{base}`", inline=True)
+            
+            # Add avatar
+            if pull['user'].get('avatar_url'):
+                embed.set_thumbnail(url=pull['user']['avatar_url'])
+            
+            # Add mentions
+            mentions = " ".join([f"<@{sub}>" for sub in subscribers])
+            
+            if mentions:
+                await channel.send(mentions, embed=embed)
+            else:
+                await channel.send(embed=embed)
+                
+        except Exception as e:
+            logger.error(f"Error sending PR notification: {e}")
+    
+    async def _send_stars_notification(self, repo_name: str, stars: int, diff: int, channel: discord.TextChannel, guild_id: str):
+        """Send notification for star count changes"""
+        try:
+            # Get subscribers for stars
+            subscribers = await self._get_subscribers(guild_id, repo_name, "stars")
+            if not subscribers:
+                return
+            
+            # Create embed
+            emoji = "⭐" if diff > 0 else "💫"
+            title = f"{emoji} Star Update for {repo_name}"
+            
+            embed = discord.Embed(
+                title=title,
+                description=f"**{'+' if diff > 0 else ''}{diff} stars**\nNow at {stars:,} total stars",
+                color=0xFFD700,  # Gold
+                url=f"https://github.com/{repo_name}",
+                timestamp=datetime.now(timezone.utc)
+            )
+            
+            # Add mentions
+            mentions = " ".join([f"<@{sub}>" for sub in subscribers])
+            
+            if mentions:
+                await channel.send(mentions, embed=embed)
+            else:
+                await channel.send(embed=embed)
+                
+        except Exception as e:
+            logger.error(f"Error sending stars notification: {e}")
+    
+    async def _get_subscribers(self, guild_id: str, repo_name: str, event_type: str) -> List[str]:
+        """Get list of user IDs subscribed to this event type for this repo"""
+        try:
+            subscribers = await self.bot.db.connection.fetch(
+                """SELECT user_id FROM github_subscriptions 
+                   WHERE guild_id = $1 AND repo_name = $2 AND event_type = $3 AND enabled = TRUE""",
+                guild_id, repo_name, event_type
+            )
+            
+            return [sub['user_id'] for sub in subscribers]
+        except Exception as e:
+            logger.error(f"Error getting subscribers: {e}")
+            return []
+    
+    async def _send_repo_status(self, repo_name: str, channel: discord.TextChannel, repo_data: dict):
         """Send initial repository status"""
         try:
-            # Mock repository data
-            stars = random.randint(0, 100)
-            forks = random.randint(0, 50)
-            issues = random.randint(0, 20)
+            # Extract repo info
+            description = repo_data.get('description', 'No description')
+            stars = repo_data.get('stargazers_count', 0)
+            forks = repo_data.get('forks_count', 0)
+            open_issues = repo_data.get('open_issues_count', 0)
+            language = repo_data.get('language', 'Unknown')
+            default_branch = repo_data.get('default_branch', 'main')
             
             embed = discord.Embed(
                 title=f"🐙 {repo_name}",
-                description=f"Started tracking {repo_name}",
+                description=f"{description}\n\nNow tracking this repository for updates!",
                 color=0x333333,  # GitHub dark
-                url=f"https://github.com/{repo_name}"
+                url=repo_data['html_url'],
+                timestamp=datetime.now(timezone.utc)
             )
             
-            embed.add_field(name="Stars", value=str(stars), inline=True)
-            embed.add_field(name="Forks", value=str(forks), inline=True)
-            embed.add_field(name="Open Issues", value=str(issues), inline=True)
+            embed.add_field(name="Stars", value=f"⭐ {stars:,}", inline=True)
+            embed.add_field(name="Forks", value=f"🍴 {forks:,}", inline=True)
+            embed.add_field(name="Issues", value=f"❗ {open_issues:,}", inline=True)
+            embed.add_field(name="Language", value=language, inline=True)
+            embed.add_field(name="Default Branch", value=default_branch, inline=True)
             
             embed.add_field(
                 name="Notifications",
-                value="You'll receive updates about:\n• New commits\n• Star count changes\n• New pull requests",
+                value="You'll receive updates about:\n"
+                      "• 📝 New commits\n"
+                      "• 🚀 New releases\n"
+                      "• ❗ New issues\n"
+                      "• 🔄 New pull requests\n"
+                      "• ⭐ Star count changes",
                 inline=False
             )
             
-            embed.set_footer(text="GitHub Tracking • devBot - Powered by EGOS")
+            # Add owner avatar as thumbnail
+            if repo_data.get('owner', {}).get('avatar_url'):
+                embed.set_thumbnail(url=repo_data['owner']['avatar_url'])
+            
+            embed.set_footer(text="GitHub Tracking • Use /list-repos to manage notification settings")
             
             await channel.send(embed=embed)
             
         except Exception as e:
-            print(f"Error sending repo status: {e}")
-
-class RepoListView(discord.ui.View):
-    def __init__(self, bot, repos, user_id, guild_id):
-        super().__init__(timeout=300)
-        self.bot = bot
-        self.user_id = user_id
-        self.guild_id = guild_id
-        self.repos = repos
-        
-        # Add dropdown
-        self.add_item(RepoListDropdown(bot, repos, user_id, guild_id))
-
-class RepoListDropdown(discord.ui.Select):
-    def __init__(self, bot, repos, user_id, guild_id):
-        options = []
-        for repo in repos[:25]:  # Discord limits to 25 options
-            repo_name = repo['repo_name']
-            options.append(discord.SelectOption(
-                label=repo_name,
-                description=f"View details and toggle notifications",
-                value=repo_name
-            ))
-        
-        super().__init__(
-            placeholder="Select a repository to view details...",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
-        self.bot = bot
-        self.user_id = user_id
-        self.guild_id = guild_id
-        self.repos = repos
-    
-    async def callback(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This menu is not for you!", ephemeral=True)
-            return
-        
-        selected_repo = self.values[0]
-        
-        # Get repo details
-        repo_data = next((repo for repo in self.repos if repo['repo_name'] == selected_repo), None)
-        if not repo_data:
-            await interaction.response.send_message("Repository not found!", ephemeral=True)
-            return
-        
-        # Get user subscription status
-        subscription = await self.bot.db.connection.fetchrow(
-            "SELECT enabled FROM github_subscriptions WHERE user_id = $1 AND guild_id = $2 AND repo_name = $3",
-            str(self.user_id), self.guild_id, selected_repo
-        )
-        
-        is_subscribed = subscription and subscription['enabled'] if subscription else False
-        
-        # Get channel info
-        channel = interaction.guild.get_channel(int(repo_data['channel_id']))
-        channel_mention = channel.mention if channel else "Unknown Channel"
-        
-        # Get added by user
-        added_by_user = interaction.guild.get_member(int(repo_data['added_by']))
-        added_by_name = added_by_user.display_name if added_by_user else "Unknown User"
-        
-        embed = discord.Embed(
-            title=f"🐙 {selected_repo}",
-            description=f"Repository details and notification settings",
-            color=0x333333,
-            url=f"https://github.com/{selected_repo}"
-        )
-        
-        embed.add_field(name="Channel", value=channel_mention, inline=True)
-        embed.add_field(name="Added by", value=added_by_name, inline=True)
-        embed.add_field(name="Your notifications", value="🔔 Enabled" if is_subscribed else "🔕 Disabled", inline=True)
-        embed.add_field(name="Added", value=f"<t:{int(repo_data['created_at'].timestamp())}:R>", inline=True)
-        
-        # Create toggle button
-        view = RepoToggleView(self.bot, selected_repo, self.user_id, self.guild_id, is_subscribed)
-        
-        await interaction.response.edit_message(embed=embed, view=view)
-
-class RepoToggleView(discord.ui.View):
-    def __init__(self, bot, repo_name, user_id, guild_id, is_subscribed):
-        super().__init__(timeout=300)
-        self.bot = bot
-        self.repo_name = repo_name
-        self.user_id = user_id
-        self.guild_id = guild_id
-        self.is_subscribed = is_subscribed
-        
-        # Add toggle button
-        button_label = "🔕 Disable Notifications" if is_subscribed else "🔔 Enable Notifications"
-        button_style = discord.ButtonStyle.secondary if is_subscribed else discord.ButtonStyle.primary
-        
-        self.toggle_button = Button(label=button_label, style=button_style)
-        self.toggle_button.callback = self.toggle_notifications
-        self.add_item(self.toggle_button)
-        
-        # Add back button
-        back_button = Button(label="← Back to List", style=discord.ButtonStyle.secondary)
-        back_button.callback = self.back_to_list
-        self.add_item(back_button)
-    
-    async def toggle_notifications(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("You can only toggle your own notifications!", ephemeral=True)
-            return
-        
-        try:
-            new_status = not self.is_subscribed
-            
-            # Update subscription in database
-            await self.bot.db.connection.execute(
-                """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, enabled) 
-                   VALUES ($1, $2, $3, $4)
-                   ON CONFLICT (user_id, guild_id, repo_name) DO UPDATE SET enabled = $4""",
-                str(self.user_id), self.guild_id, self.repo_name, new_status
-            )
-            
-            # Update the view
-            self.is_subscribed = new_status
-            button_label = "🔕 Disable Notifications" if new_status else "🔔 Enable Notifications"
-            button_style = discord.ButtonStyle.secondary if new_status else discord.ButtonStyle.primary
-            
-            self.toggle_button.label = button_label
-            self.toggle_button.style = button_style
-            
-            # Update embed
-            embed = interaction.message.embeds[0]
-            embed.set_field_at(2, name="Your notifications", value="🔔 Enabled" if new_status else "🔕 Disabled", inline=True)
-            
-            await interaction.response.edit_message(embed=embed, view=self)
-            
-        except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to toggle notifications: {str(e)}")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    async def back_to_list(self, interaction: discord.Interaction):
-        if interaction.user.id != self.user_id:
-            await interaction.response.send_message("This menu is not for you!", ephemeral=True)
-            return
-        
-        # Get repos again and recreate the list view
-        repos = await self.bot.db.connection.fetch(
-            "SELECT * FROM github_tracked_repos WHERE guild_id = $1",
-            self.guild_id
-        )
-        
-        view = RepoListView(self.bot, repos, self.user_id, self.guild_id)
-        
-        embed = discord.Embed(
-            title="🐙 Tracked GitHub Repositories",
-            description=f"This server is tracking {len(repos)} repositories\n\nSelect a repository below to view details and toggle notifications:",
-            color=0x333333
-        )
-        
-        await interaction.response.edit_message(embed=embed, view=view)
+            logger.error(f"Error sending repo status: {e}")
 
 async def setup(bot):
     await bot.add_cog(GitHubIntegrations(bot))
+    print(f"🐙 Successfully loaded GitHub Integrations cog with real API")
