@@ -348,3 +348,4 @@ class TicketManager:
         except Exception as e:
             logger.error(f"Failed to send transcript for {ticket_id}: {e}")
             return False
+ 
