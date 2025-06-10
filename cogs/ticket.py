@@ -19,22 +19,16 @@ class TicketView(discord.ui.View):
     async def close_and_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
         try:
             # Check if user is admin or ticket creator
-            if self.bot.db.is_postgresql:
-                ticket = await self.bot.db.connection.fetchrow(
-                    "SELECT * FROM tickets WHERE ticket_id = $1", self.ticket_id
-                )
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM tickets WHERE ticket_id = ?", (self.ticket_id,)
-                )
-                ticket = await cursor.fetchone()
+            ticket = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM tickets WHERE ticket_id = $1", self.ticket_id
+            )
             
             if not ticket:
                 embed = EmbedBuilder.error("Error", "Ticket not found in database")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
             
-            ticket_user_id = ticket['user_id'] if self.bot.db.is_postgresql else ticket[3]
+            ticket_user_id = ticket['user_id']
             
             if not (self.bot.admin_manager.is_admin(interaction.user) or str(interaction.user.id) == ticket_user_id):
                 embed = EmbedBuilder.error("Permission Denied", "Only admins or the ticket creator can close tickets")
@@ -55,17 +49,10 @@ class TicketView(discord.ui.View):
             )
             
             # Update ticket status
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
-                    TicketStatus.CLOSED.value, datetime.utcnow(), self.ticket_id
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    "UPDATE tickets SET status = ?, updated_at = ? WHERE ticket_id = ?",
-                    (TicketStatus.CLOSED.value, datetime.utcnow(), self.ticket_id)
-                )
-                await self.bot.db.connection.commit()
+            await self.bot.db.connection.execute(
+                "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
+                TicketStatus.CLOSED.value, datetime.utcnow(), self.ticket_id
+            )
             
             if success:
                 embed = EmbedBuilder.success(
@@ -112,7 +99,7 @@ class TicketCommands(app_commands.Group):
         if not config:
             embed = EmbedBuilder.error(
                 "Ticket System Not Configured",
-                "The ticket system has not been set up. Please ask an administrator to run `/ticket-system-setup`"
+                "The ticket system has not been set up. Please ask an administrator to run `/setup-tickets`"
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
@@ -137,21 +124,12 @@ class TicketCommands(app_commands.Group):
                 return
             
             # Create ticket in database
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
-                    ticket_id, str(interaction.guild.id), str(interaction.user.id), 
-                    title, description, TicketStatus.OPEN.value, priority, str(channel.id), datetime.utcnow()
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (ticket_id, str(interaction.guild.id), str(interaction.user.id), 
-                     title, description, TicketStatus.OPEN.value, priority, str(channel.id), datetime.utcnow())
-                )
-                await self.bot.db.connection.commit()
+            await self.bot.db.connection.execute(
+                """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                ticket_id, str(interaction.guild.id), str(interaction.user.id), 
+                title, description, TicketStatus.OPEN.value, priority, str(channel.id), datetime.utcnow()
+            )
             
             # Create ticket embed for the channel
             embed = discord.Embed(
