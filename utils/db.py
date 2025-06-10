@@ -47,37 +47,13 @@ class DatabaseManager:
             raise
     
     async def _create_postgresql_tables(self):
-        """Create tables for PostgreSQL"""
-        
-        # Drop existing tables to start fresh
-        drop_tables = [
-            "DROP TABLE IF EXISTS github_subscriptions CASCADE",
-            "DROP TABLE IF EXISTS github_tracked_repos CASCADE", 
-            "DROP TABLE IF EXISTS keywords CASCADE",
-            "DROP TABLE IF EXISTS notifications CASCADE",
-            "DROP TABLE IF EXISTS meetings CASCADE",
-            "DROP TABLE IF EXISTS log_configs CASCADE",
-            "DROP TABLE IF EXISTS user_data CASCADE",
-            "DROP TABLE IF EXISTS workflows CASCADE",
-            "DROP TABLE IF EXISTS ticket_configs CASCADE",
-            "DROP TABLE IF EXISTS reminders CASCADE",
-            "DROP TABLE IF EXISTS tickets CASCADE",
-            "DROP TABLE IF EXISTS admin_roles CASCADE",
-            "DROP TABLE IF EXISTS users CASCADE"
-        ]
-        
-        for drop_sql in drop_tables:
-            try:
-                await self.connection.execute(drop_sql)
-                logger.info(f"✅ Dropped table: {drop_sql.split()[-2]}")
-            except Exception as e:
-                logger.warning(f"Could not drop table: {e}")
-        
-        # Create new tables
+        """Create tables for PostgreSQL - only if they don't exist"""
+    
+        # Create new tables only if they don't exist (preserve existing data)
         tables = [
             # Users table
             """
-            CREATE TABLE users (
+            CREATE TABLE IF NOT EXISTS users (
                 id SERIAL PRIMARY KEY,
                 discord_id TEXT UNIQUE NOT NULL,
                 username TEXT NOT NULL,
@@ -92,7 +68,7 @@ class DatabaseManager:
         
             # Admin roles table
             """
-            CREATE TABLE admin_roles (
+            CREATE TABLE IF NOT EXISTS admin_roles (
                 id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
                 role_id TEXT NOT NULL,
@@ -103,7 +79,7 @@ class DatabaseManager:
         
             # Tickets table
             """
-            CREATE TABLE tickets (
+            CREATE TABLE IF NOT EXISTS tickets (
                 id SERIAL PRIMARY KEY,
                 ticket_id TEXT UNIQUE NOT NULL,
                 guild_id TEXT NOT NULL,
@@ -121,7 +97,7 @@ class DatabaseManager:
         
             # Reminders table
             """
-            CREATE TABLE reminders (
+            CREATE TABLE IF NOT EXISTS reminders (
                 id SERIAL PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 guild_id TEXT,
@@ -137,7 +113,7 @@ class DatabaseManager:
         
             # Workflows table
             """
-            CREATE TABLE workflows (
+            CREATE TABLE IF NOT EXISTS workflows (
                 id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
                 guild_id TEXT NOT NULL,
@@ -152,7 +128,7 @@ class DatabaseManager:
         
             # User data table for flexible storage
             """
-            CREATE TABLE user_data (
+            CREATE TABLE IF NOT EXISTS user_data (
                 id SERIAL PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 guild_id TEXT,
@@ -166,7 +142,7 @@ class DatabaseManager:
         
             # Meetings table
             """
-            CREATE TABLE meetings (
+            CREATE TABLE IF NOT EXISTS meetings (
                 id SERIAL PRIMARY KEY,
                 meeting_id TEXT UNIQUE NOT NULL,
                 guild_id TEXT NOT NULL,
@@ -186,7 +162,7 @@ class DatabaseManager:
         
             # Notifications table
             """
-            CREATE TABLE notifications (
+            CREATE TABLE IF NOT EXISTS notifications (
                 id SERIAL PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 guild_id TEXT,
@@ -197,10 +173,10 @@ class DatabaseManager:
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """,
-            
+        
             # Keywords table for notifications
             """
-            CREATE TABLE keywords (
+            CREATE TABLE IF NOT EXISTS keywords (
                 id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
@@ -212,7 +188,7 @@ class DatabaseManager:
         
             # GitHub tracked repositories table
             """
-            CREATE TABLE github_tracked_repos (
+            CREATE TABLE IF NOT EXISTS github_tracked_repos (
                 id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
                 repo_name TEXT NOT NULL,
@@ -225,7 +201,7 @@ class DatabaseManager:
 
             # GitHub user subscriptions table  
             """
-            CREATE TABLE github_subscriptions (
+            CREATE TABLE IF NOT EXISTS github_subscriptions (
                 id SERIAL PRIMARY KEY,
                 user_id TEXT NOT NULL,
                 guild_id TEXT NOT NULL,
@@ -238,7 +214,7 @@ class DatabaseManager:
 
             # Log configs table
             """
-            CREATE TABLE log_configs (
+            CREATE TABLE IF NOT EXISTS log_configs (
                 id SERIAL PRIMARY KEY,
                 guild_id TEXT UNIQUE NOT NULL,
                 log_channel_id TEXT NOT NULL,
@@ -248,22 +224,22 @@ class DatabaseManager:
             )
             """
         ]
-    
-        # Create tables
+
+        # Create tables only if they don't exist
         for i, table_sql in enumerate(tables, 1):
             try:
                 async with asyncio.timeout(5):
                     await self.connection.execute(table_sql)
-                    table_name = table_sql.split("CREATE TABLE ")[1].split(" (")[0]
-                    logger.info(f"✅ Created table {i}/{len(tables)}: {table_name}")
+                    table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0]
+                    logger.info(f"✅ Ensured table {i}/{len(tables)} exists: {table_name}")
             except asyncio.TimeoutError:
                 logger.error(f"❌ Table creation timed out: table {i}")
                 raise
             except Exception as e:
-                logger.error(f"❌ Failed to create table {i}: {e}")
+                logger.error(f"❌ Failed to ensure table {i} exists: {e}")
                 raise
-    
-        # Create essential indexes
+
+        # Create essential indexes (only if they don't exist)
         essential_indexes = [
             "CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)",
             "CREATE INDEX IF NOT EXISTS idx_admin_roles_guild_id ON admin_roles(guild_id)",
@@ -276,16 +252,16 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_user_data_lookup ON user_data(user_id, guild_id, data_type)",
             "CREATE INDEX IF NOT EXISTS idx_log_configs_guild ON log_configs(guild_id)"
         ]
-    
-        logger.info("Creating essential indexes...")
+
+        logger.info("Creating essential indexes (if not exists)...")
         for index_sql in essential_indexes:
             try:
                 async with asyncio.timeout(3):
                     await self.connection.execute(index_sql)
             except Exception as e:
                 logger.warning(f"Failed to create index: {e}")
-    
-        logger.info("✅ PostgreSQL tables and indexes created successfully")
+
+        logger.info("✅ PostgreSQL tables and indexes ensured (data preserved)")
     
     async def get_user(self, discord_id: str) -> Optional[Dict[str, Any]]:
         """Get user from database"""
