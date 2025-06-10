@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from config.settings import Settings
+from utils.timezone_utils import utc_now, ensure_timezone_aware, now_for_db
 import logging
 
 logger = logging.getLogger(__name__)
@@ -38,7 +39,7 @@ class DatabaseManager:
         await self.create_tables()
     
     async def create_tables(self):
-        """Create all necessary database tables"""
+        """Create all necessary database tables with proper timezone handling"""
         try:
             await self._create_postgresql_tables()
             logger.info("✅ All database tables created successfully")
@@ -47,7 +48,7 @@ class DatabaseManager:
             raise
     
     async def _create_postgresql_tables(self):
-        """Create tables for PostgreSQL - only if they don't exist"""
+        """Create tables for PostgreSQL with TIMESTAMPTZ columns"""
     
         # Create new tables only if they don't exist (preserve existing data)
         tables = [
@@ -61,8 +62,8 @@ class DatabaseManager:
                 notion_token TEXT,
                 trello_token TEXT,
                 preferences JSONB DEFAULT '{}',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
             """,
         
@@ -72,12 +73,12 @@ class DatabaseManager:
                 id SERIAL PRIMARY KEY,
                 guild_id TEXT NOT NULL,
                 role_id TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(guild_id, role_id)
             )
             """,
         
-            # Tickets table
+            # Tickets table with proper timezone columns
             """
             CREATE TABLE IF NOT EXISTS tickets (
                 id SERIAL PRIMARY KEY,
@@ -90,8 +91,8 @@ class DatabaseManager:
                 status TEXT DEFAULT 'open',
                 priority TEXT DEFAULT 'medium',
                 channel_id TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
             """,
         
@@ -103,11 +104,11 @@ class DatabaseManager:
                 guild_id TEXT,
                 channel_id TEXT,
                 message TEXT NOT NULL,
-                remind_at TIMESTAMP NOT NULL,
+                remind_at TIMESTAMPTZ NOT NULL,
                 type TEXT DEFAULT 'personal',
                 recurring BOOLEAN DEFAULT FALSE,
                 send_dm BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
             """,
         
@@ -122,7 +123,7 @@ class DatabaseManager:
                 trigger_data JSONB DEFAULT '{}',
                 actions JSONB DEFAULT '[]',
                 status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
             """,
         
@@ -134,8 +135,8 @@ class DatabaseManager:
                 guild_id TEXT,
                 data_type TEXT NOT NULL,
                 data_content JSONB DEFAULT '{}',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, guild_id, data_type)
             )
             """,
@@ -149,14 +150,14 @@ class DatabaseManager:
                 creator_id TEXT NOT NULL,
                 title TEXT NOT NULL,
                 description TEXT,
-                scheduled_time TIMESTAMP NOT NULL,
+                scheduled_time TIMESTAMPTZ NOT NULL,
                 duration_minutes INTEGER DEFAULT 60,
                 attendees JSONB DEFAULT '[]',
                 status TEXT DEFAULT 'scheduled',
                 meeting_link TEXT,
                 voice_channel_id TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
             """,
         
@@ -170,7 +171,7 @@ class DatabaseManager:
                 title TEXT NOT NULL,
                 message TEXT NOT NULL,
                 is_read BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
             """,
         
@@ -181,7 +182,7 @@ class DatabaseManager:
                 guild_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
                 keyword TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(guild_id, user_id, keyword)
             )
             """,
@@ -194,7 +195,7 @@ class DatabaseManager:
                 repo_name TEXT NOT NULL,
                 channel_id TEXT NOT NULL,
                 added_by TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(guild_id, repo_name, channel_id)
             )
             """,
@@ -207,7 +208,7 @@ class DatabaseManager:
                 guild_id TEXT NOT NULL,
                 repo_name TEXT NOT NULL,
                 enabled BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, guild_id, repo_name)
             )
             """,
@@ -219,8 +220,8 @@ class DatabaseManager:
                 guild_id TEXT UNIQUE NOT NULL,
                 log_channel_id TEXT NOT NULL,
                 log_types JSONB DEFAULT '[]',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             )
             """
         ]
@@ -244,6 +245,7 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)",
             "CREATE INDEX IF NOT EXISTS idx_admin_roles_guild_id ON admin_roles(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_tickets_guild_id ON tickets(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)",
             "CREATE INDEX IF NOT EXISTS idx_reminders_remind_at ON reminders(remind_at)",
             "CREATE INDEX IF NOT EXISTS idx_workflows_guild_id ON workflows(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_meetings_guild_id ON meetings(guild_id)",
@@ -261,7 +263,7 @@ class DatabaseManager:
             except Exception as e:
                 logger.warning(f"Failed to create index: {e}")
 
-        logger.info("✅ PostgreSQL tables and indexes ensured (data preserved)")
+        logger.info("✅ PostgreSQL tables and indexes ensured with proper timezone handling")
     
     async def get_user(self, discord_id: str) -> Optional[Dict[str, Any]]:
         """Get user from database"""
@@ -269,17 +271,24 @@ class DatabaseManager:
             row = await self.connection.fetchrow(
                 "SELECT * FROM users WHERE discord_id = $1", discord_id
             )
-            return dict(row) if row else None
+            if row:
+                user_data = dict(row)
+                # Ensure datetime fields are timezone-aware
+                user_data['created_at'] = ensure_timezone_aware(user_data.get('created_at'))
+                user_data['updated_at'] = ensure_timezone_aware(user_data.get('updated_at'))
+                return user_data
+            return None
         except Exception as e:
             logger.error(f"Failed to get user {discord_id}: {e}")
             return None
     
     async def create_user(self, discord_id: str, username: str) -> bool:
-        """Create new user in database"""
+        """Create new user in database with timezone-aware timestamps"""
         try:
+            created_at = now_for_db()
             await self.connection.execute(
-                "INSERT INTO users (discord_id, username) VALUES ($1, $2) ON CONFLICT (discord_id) DO NOTHING",
-                discord_id, username
+                "INSERT INTO users (discord_id, username, created_at, updated_at) VALUES ($1, $2, $3, $4) ON CONFLICT (discord_id) DO NOTHING",
+                discord_id, username, created_at, created_at
             )
             return True
         except Exception as e:
@@ -295,6 +304,10 @@ class DatabaseManager:
             # Test table access
             count = await self.connection.fetchval("SELECT COUNT(*) FROM users")
             logger.info(f"✅ Users table accessible, contains {count} records")
+            
+            # Test timezone handling
+            test_time = now_for_db()
+            logger.info(f"✅ Timezone handling working: {test_time}")
             
             return True
             
@@ -312,12 +325,20 @@ class DatabaseManager:
                 logger.error(f"Error closing database connection: {e}")
 
     async def execute_with_retry(self, query, *args, max_retries=3):
-        """Execute query with retry logic"""
+        """Execute query with retry logic and proper timezone handling"""
         for attempt in range(max_retries):
             try:
                 async with self._connection_lock:
-                    if args:
-                        await self.connection.execute(query, *args)
+                    # Ensure any datetime arguments are timezone-aware
+                    processed_args = []
+                    for arg in args:
+                        if isinstance(arg, datetime):
+                            processed_args.append(ensure_timezone_aware(arg))
+                        else:
+                            processed_args.append(arg)
+                    
+                    if processed_args:
+                        await self.connection.execute(query, *processed_args)
                     else:
                         await self.connection.execute(query)
                     return

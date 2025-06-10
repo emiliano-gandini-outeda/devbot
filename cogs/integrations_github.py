@@ -5,7 +5,7 @@ from utils.helpers import EmbedBuilder
 import json
 import asyncio
 import aiohttp
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import logging
 from typing import Dict, List, Optional, Any
 from discord.ui import Select, View, Button
@@ -14,22 +14,43 @@ from config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
+def utc_now():
+    """Get current UTC time as timezone-aware datetime"""
+    return datetime.now(timezone.utc)
+
+def ensure_timezone_aware(dt):
+    """Ensure datetime is timezone-aware (UTC)"""
+    if dt is None:
+        return utc_now()
+    
+    if dt.tzinfo is None:
+        # Assume naive datetime is UTC and make it timezone-aware
+        return dt.replace(tzinfo=timezone.utc)
+    
+    # Convert to UTC if it has a different timezone
+    return dt.astimezone(timezone.utc)
+
+def parse_github_datetime(iso_string):
+    """Parse GitHub API datetime string to timezone-aware datetime"""
+    if iso_string is None:
+        return None
+    
+    # GitHub returns ISO format like "2023-12-01T10:30:00Z"
+    if iso_string.endswith('Z'):
+        iso_string = iso_string[:-1] + '+00:00'
+    
+    return datetime.fromisoformat(iso_string)
+
 def ensure_utc_datetime(dt):
     """Convert datetime to UTC timezone-aware datetime"""
     if dt is None:
-        return datetime.now(timezone.utc)
+        return utc_now()
     
     if isinstance(dt, str):
         # Handle ISO format strings from GitHub API
-        if dt.endswith('Z'):
-            dt = dt.replace('Z', '+00:00')
-        return datetime.fromisoformat(dt)
+        return parse_github_datetime(dt)
     
-    if dt.tzinfo is None:
-        # Assume naive datetime is UTC
-        return dt.replace(tzinfo=timezone.utc)
-    
-    return dt.astimezone(timezone.utc)
+    return ensure_timezone_aware(dt)
 
 class GitHubAPI:
     """GitHub API client with rate limiting and authentication"""
@@ -67,7 +88,7 @@ class GitHubAPI:
         """Handle GitHub API rate limiting"""
         if self.rate_limit_remaining <= 1:
             # Calculate time to wait until reset
-            now = datetime.now(timezone.utc).timestamp()
+            now = utc_now().timestamp()
             wait_time = max(0, self.rate_limit_reset - now) + 1  # Add 1 second buffer
             
             if wait_time > 0:
@@ -155,7 +176,7 @@ class GitHubAPI:
         params = {"per_page": per_page}
         if since:
             # Ensure since is timezone-aware
-            since_utc = ensure_utc_datetime(since)
+            since_utc = ensure_timezone_aware(since)
             params["since"] = since_utc.isoformat()
         
         return await self.request("GET", f"/repos/{owner}/{repo}/commits", params=params)
@@ -168,7 +189,7 @@ class GitHubAPI:
         """Get recent issues"""
         params = {"state": state, "per_page": per_page}
         if since:
-            since_utc = ensure_utc_datetime(since)
+            since_utc = ensure_timezone_aware(since)
             params["since"] = since_utc.isoformat()
         
         return await self.request("GET", f"/repos/{owner}/{repo}/issues", params=params)
@@ -343,14 +364,14 @@ class GitHubIntegrations(commands.Cog):
                     self.repo_cache[cache_key] = {
                         "channel_id": repo['channel_id'],
                         "added_by": repo['added_by'],
-                        "created_at": ensure_utc_datetime(repo['created_at']),
+                        "created_at": ensure_timezone_aware(repo['created_at']),
                         "state": {
                             "last_commit_sha": state['last_commit_sha'] or "",
                             "last_release_id": state['last_release_id'] or "",
                             "last_issue_number": state['last_issue_number'] or 0,
                             "last_pr_number": state['last_pr_number'] or 0,
                             "stars_count": state['stars_count'] or 0,
-                            "last_checked": ensure_utc_datetime(state['last_checked'])
+                            "last_checked": ensure_timezone_aware(state['last_checked'])
                         }
                     }
                     
@@ -381,7 +402,7 @@ class GitHubIntegrations(commands.Cog):
                         last_issue_number, last_pr_number, stars_count, last_checked)
                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                        ON CONFLICT (guild_id, repo_name) DO NOTHING""",
-                    guild_id, repo_name, "", "", 0, 0, 0, datetime.now(timezone.utc)
+                    guild_id, repo_name, "", "", 0, 0, 0, utc_now()
                 )
                 return
             
@@ -415,7 +436,7 @@ class GitHubIntegrations(commands.Cog):
             if pulls:
                 last_pr_number = pulls[0]['number']
             
-            # Save initial state
+            # Save initial state with timezone-aware datetime
             await self.bot.db.connection.execute(
                 """INSERT INTO github_repo_state 
                    (guild_id, repo_name, last_commit_sha, last_release_id, 
@@ -426,7 +447,7 @@ class GitHubIntegrations(commands.Cog):
                    last_issue_number = $5, last_pr_number = $6, 
                    stars_count = $7, last_checked = $8""",
                 guild_id, repo_name, last_commit_sha, last_release_id,
-                last_issue_number, last_pr_number, stars, datetime.now(timezone.utc)
+                last_issue_number, last_pr_number, stars, utc_now()
             )
             
             logger.info(f"✅ Initialized state for {repo_name}")
@@ -440,7 +461,7 @@ class GitHubIntegrations(commands.Cog):
                     last_issue_number, last_pr_number, stars_count, last_checked)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                    ON CONFLICT (guild_id, repo_name) DO NOTHING""",
-                guild_id, repo_name, "", "", 0, 0, 0, datetime.now(timezone.utc)
+                guild_id, repo_name, "", "", 0, 0, 0, utc_now()
             )
     
     async def cog_unload(self):
@@ -542,10 +563,10 @@ class GitHubIntegrations(commands.Cog):
                 
                 return
             
-            # Add to database
+            # Add to database with timezone-aware datetime
             await self.bot.db.connection.execute(
-                "INSERT INTO github_tracked_repos (guild_id, repo_name, channel_id, added_by) VALUES ($1, $2, $3, $4)",
-                str(interaction.guild.id), repo, str(channel.id), str(interaction.user.id)
+                "INSERT INTO github_tracked_repos (guild_id, repo_name, channel_id, added_by, created_at) VALUES ($1, $2, $3, $4, $5)",
+                str(interaction.guild.id), repo, str(channel.id), str(interaction.user.id), utc_now()
             )
             
             # Initialize repo state
@@ -554,10 +575,10 @@ class GitHubIntegrations(commands.Cog):
             # Set up default subscriptions for the user
             for event_type in RepoEventTypes.all():
                 await self.bot.db.connection.execute(
-                    """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, event_type, enabled)
-                       VALUES ($1, $2, $3, $4, $5)
+                    """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, event_type, enabled, created_at)
+                       VALUES ($1, $2, $3, $4, $5, $6)
                        ON CONFLICT (user_id, guild_id, repo_name, event_type) DO UPDATE SET enabled = $5""",
-                    str(interaction.user.id), str(interaction.guild.id), repo, event_type, True
+                    str(interaction.user.id), str(interaction.guild.id), repo, event_type, True, utc_now()
                 )
             
             # Add to cache
@@ -565,14 +586,14 @@ class GitHubIntegrations(commands.Cog):
             self.repo_cache[cache_key] = {
                 "channel_id": str(channel.id),
                 "added_by": str(interaction.user.id),
-                "created_at": datetime.now(timezone.utc),
+                "created_at": utc_now(),
                 "state": {
                     "last_commit_sha": "",
                     "last_release_id": "",
                     "last_issue_number": 0,
                     "last_pr_number": 0,
                     "stars_count": repository.get("stargazers_count", 0),
-                    "last_checked": datetime.now(timezone.utc)
+                    "last_checked": utc_now()
                 }
             }
             
@@ -581,7 +602,8 @@ class GitHubIntegrations(commands.Cog):
                 title="✅ Repository Tracked",
                 description=f"Now tracking `{repo}` in {channel.mention}",
                 color=0x2EA043,  # GitHub green
-                url=repository["html_url"]
+                url=repository["html_url"],
+                timestamp=utc_now()  # Use timezone-aware datetime
             )
             
             embed.add_field(
@@ -614,7 +636,6 @@ class GitHubIntegrations(commands.Cog):
             
             # Send initial status to the channel
             await self._send_repo_status(repo, channel, repository)
-            
         except Exception as e:
             logger.error(f"Error tracking repo: {e}")
             embed = EmbedBuilder.error("Error", f"Failed to track repository: {str(e)}")
@@ -715,7 +736,8 @@ class GitHubIntegrations(commands.Cog):
                 title="🐙 Tracked GitHub Repositories",
                 description=f"This server is tracking **{len(repos)}** repositories.\n\n"
                             "Select a repository below to view details and manage notifications:",
-                color=0x333333  # GitHub dark
+                color=0x333333,  # GitHub dark
+                timestamp=utc_now()  # Use timezone-aware datetime
             )
             
             # Add a summary of tracked repos
@@ -830,7 +852,7 @@ class GitHubIntegrations(commands.Cog):
                 'last_issue_number': state['last_issue_number'] or 0,
                 'last_pr_number': state['last_pr_number'] or 0,
                 'stars_count': state['stars_count'] or 0,
-                'last_checked': ensure_utc_datetime(state['last_checked'])
+                'last_checked': ensure_timezone_aware(state['last_checked'])
             }
             
             # Check for new commits
@@ -848,15 +870,15 @@ class GitHubIntegrations(commands.Cog):
             # Check for star changes
             await self._check_stars(owner, repo, current_state, channel, guild_id, repo_name)
             
-            # Update last checked time
+            # Update last checked time with timezone-aware datetime
             await self.bot.db.connection.execute(
                 "UPDATE github_repo_state SET last_checked = $1 WHERE guild_id = $2 AND repo_name = $3",
-                datetime.now(timezone.utc), guild_id, repo_name
+                utc_now(), guild_id, repo_name
             )
             
             # Update cache
             if cache_key in self.repo_cache:
-                self.repo_cache[cache_key]["state"]["last_checked"] = datetime.now(timezone.utc)
+                self.repo_cache[cache_key]["state"]["last_checked"] = utc_now()
             
         except Exception as e:
             logger.error(f"Error checking updates for {repo_name}: {e}")
@@ -1069,7 +1091,7 @@ class GitHubIntegrations(commands.Cog):
             sha = commit['sha'][:7]
             message = commit['commit']['message'].split('\n')[0]  # First line only
             author = commit['commit']['author']['name']
-            date = ensure_utc_datetime(commit['commit']['author']['date'])
+            date = ensure_timezone_aware(parse_github_datetime(commit['commit']['author']['date']))
             url = commit['html_url']
             
             # Truncate long commit messages
@@ -1082,7 +1104,7 @@ class GitHubIntegrations(commands.Cog):
                 description=f"**{message}**",
                 color=0x0366D6,  # GitHub blue
                 url=url,
-                timestamp=date
+                timestamp=date  # Use timezone-aware datetime
             )
             
             embed.add_field(name="Author", value=author, inline=True)
@@ -1123,12 +1145,15 @@ class GitHubIntegrations(commands.Cog):
             if len(body) > 500:
                 body = body[:497] + "..."
             
-            # Create embed
+            # Create embed with timezone-aware datetime
+            created_at = ensure_timezone_aware(parse_github_datetime(release.get('created_at')))
+            
             embed = discord.Embed(
                 title=f"🚀 New {'Pre-release' if is_prerelease else 'Release'} for {repo_name}",
                 description=f"**{name}**\n\n{body}" if body else f"**{name}**",
                 color=0x6F42C1,  # GitHub purple
-                url=url
+                url=url,
+                timestamp=created_at
             )
             
             embed.add_field(name="Tag", value=tag, inline=True)
@@ -1168,12 +1193,15 @@ class GitHubIntegrations(commands.Cog):
             if len(body) > 300:
                 body = body[:297] + "..."
             
-            # Create embed
+            # Create embed with timezone-aware datetime
+            created_at = ensure_timezone_aware(parse_github_datetime(issue.get('created_at')))
+            
             embed = discord.Embed(
                 title=f"❗ New Issue in {repo_name}",
                 description=f"**#{number}: {title}**\n\n{body}" if body else f"**#{number}: {title}**",
                 color=0xD73A49,  # GitHub red
-                url=url
+                url=url,
+                timestamp=created_at
             )
             
             embed.add_field(name="Author", value=author, inline=True)
@@ -1216,12 +1244,15 @@ class GitHubIntegrations(commands.Cog):
             if len(body) > 300:
                 body = body[:297] + "..."
             
-            # Create embed
+            # Create embed with timezone-aware datetime
+            created_at = ensure_timezone_aware(parse_github_datetime(pull.get('created_at')))
+            
             embed = discord.Embed(
                 title=f"🔄 New Pull Request in {repo_name}",
                 description=f"**#{number}: {title}**\n\n{body}" if body else f"**#{number}: {title}**",
                 color=0x28A745,  # GitHub green
-                url=url
+                url=url,
+                timestamp=created_at
             )
             
             embed.add_field(name="Author", value=author, inline=True)
@@ -1250,7 +1281,7 @@ class GitHubIntegrations(commands.Cog):
             if not subscribers:
                 return
             
-            # Create embed
+            # Create embed with timezone-aware datetime
             emoji = "⭐" if diff > 0 else "💫"
             title = f"{emoji} Star Update for {repo_name}"
             
@@ -1258,7 +1289,8 @@ class GitHubIntegrations(commands.Cog):
                 title=title,
                 description=f"**{'+' if diff > 0 else ''}{diff} stars**\nNow at {stars:,} total stars",
                 color=0xFFD700,  # Gold
-                url=f"https://github.com/{repo_name}"
+                url=f"https://github.com/{repo_name}",
+                timestamp=utc_now()
             )
             
             # Add mentions
@@ -1301,7 +1333,8 @@ class GitHubIntegrations(commands.Cog):
                 title=f"🐙 {repo_name}",
                 description=f"{description}\n\nNow tracking this repository for updates!",
                 color=0x333333,  # GitHub dark
-                url=repo_data['html_url']
+                url=repo_data['html_url'],
+                timestamp=utc_now()  # Use timezone-aware datetime
             )
             
             embed.add_field(name="Stars", value=f"⭐ {stars:,}", inline=True)
@@ -1331,9 +1364,6 @@ class GitHubIntegrations(commands.Cog):
             
         except Exception as e:
             logger.error(f"Error sending repo status: {e}")
-
-# Import missing timedelta
-from datetime import timedelta
 
 class RepoListView(discord.ui.View):
     def __init__(self, bot, repos, user_id, guild_id):
@@ -1408,12 +1438,16 @@ class RepoListDropdown(discord.ui.Select):
             title=f"🐙 {selected_repo}",
             description=f"Repository details and notification settings",
             color=0x333333,
-            url=f"https://github.com/{selected_repo}"
+            url=f"https://github.com/{selected_repo}",
+            timestamp=utc_now()  # Use timezone-aware datetime
         )
         
         embed.add_field(name="Channel", value=channel_mention, inline=True)
         embed.add_field(name="Stars", value=f"⭐ {stars:,}", inline=True)
-        embed.add_field(name="Added", value=f"<t:{int(ensure_utc_datetime(repo_data['created_at']).timestamp())}:R>", inline=True)
+        
+        # Format created_at with timezone-aware datetime
+        created_at = ensure_timezone_aware(repo_data['created_at'])
+        embed.add_field(name="Added", value=f"<t:{int(created_at.timestamp())}:R>", inline=True)
         
         # Add subscription status
         status_text = "\n".join([
@@ -1429,7 +1463,7 @@ class RepoListDropdown(discord.ui.Select):
         
         # Create toggle buttons view
         view = RepoSettingsView(self.bot, selected_repo, self.user_id, self.guild_id, subscriptions)
-        
+
         await interaction.response.edit_message(embed=embed, view=view)
 
 class RepoSettingsView(discord.ui.View):
@@ -1469,12 +1503,12 @@ class RepoSettingsView(discord.ui.View):
                 # Toggle subscription
                 new_status = not self.subscriptions.get(event_type, False)
                 
-                # Update database
+                # Update database with timezone-aware datetime
                 await self.bot.db.connection.execute(
-                    """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, event_type, enabled)
-                       VALUES ($1, $2, $3, $4, $5)
+                    """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, event_type, enabled, created_at)
+                       VALUES ($1, $2, $3, $4, $5, $6)
                        ON CONFLICT (user_id, guild_id, repo_name, event_type) DO UPDATE SET enabled = $5""",
-                    str(self.user_id), self.guild_id, self.repo_name, event_type, new_status
+                    str(self.user_id), self.guild_id, self.repo_name, event_type, new_status, utc_now()
                 )
                 
                 # Update local state
@@ -1528,7 +1562,8 @@ class RepoSettingsView(discord.ui.View):
             title="🐙 Tracked GitHub Repositories",
             description=f"This server is tracking **{len(repos)}** repositories.\n\n"
                         "Select a repository below to view details and manage notifications:",
-            color=0x333333
+            color=0x333333,
+            timestamp=utc_now()
         )
         
         # Add repo list

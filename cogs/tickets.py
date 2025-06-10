@@ -3,7 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder, generate_ticket_id
 from config.constants import TicketStatus, TicketPriority
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 import asyncio
 import io
@@ -12,6 +12,35 @@ from typing import Optional, Dict, Any, List
 import logging
 
 logger = logging.getLogger(__name__)
+
+def utc_now():
+    """Get current UTC time as timezone-aware datetime"""
+    return datetime.now(timezone.utc)
+
+def ensure_timezone_aware(dt):
+    """Ensure datetime is timezone-aware (UTC)"""
+    if dt is None:
+        return utc_now()
+    
+    if dt.tzinfo is None:
+        # Assume naive datetime is UTC and make it timezone-aware
+        return dt.replace(tzinfo=timezone.utc)
+    
+    # Convert to UTC if it has a different timezone
+    return dt.astimezone(timezone.utc)
+
+def parse_iso_datetime(iso_string):
+    """Parse ISO datetime string to timezone-aware datetime"""
+    if iso_string is None:
+        return None
+    
+    if isinstance(iso_string, str):
+        # Handle various ISO formats
+        if iso_string.endswith('Z'):
+            iso_string = iso_string[:-1] + '+00:00'
+        return datetime.fromisoformat(iso_string)
+    
+    return ensure_timezone_aware(iso_string)
 
 class TicketJoinRequestView(discord.ui.View):
     def __init__(self, bot, requesting_user: discord.Member, ticket_channel: discord.TextChannel):
@@ -42,14 +71,15 @@ class TicketJoinRequestView(discord.ui.View):
                 attach_files=True
             )
             
-            # Update embed
+            # Update embed with timezone-aware datetime
             embed = discord.Embed(
                 title="✅ Join Request Accepted",
                 description=f"{self.requesting_user.mention} has been granted write access to this ticket",
-                color=0x57F287
+                color=0x57F287,
+                timestamp=utc_now()
             )
             embed.add_field(name="Accepted by", value=interaction.user.mention, inline=True)
-            embed.add_field(name="Time", value=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+            embed.add_field(name="Time", value=utc_now().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
             
             # Disable buttons
             for item in self.children:
@@ -62,7 +92,8 @@ class TicketJoinRequestView(discord.ui.View):
                 dm_embed = discord.Embed(
                     title="🎫 Ticket Access Granted",
                     description=f"Your request to join the ticket has been accepted!",
-                    color=0x57F287
+                    color=0x57F287,
+                    timestamp=utc_now()
                 )
                 dm_embed.add_field(name="Channel", value=self.ticket_channel.mention, inline=True)
                 dm_embed.add_field(name="Accepted by", value=interaction.user.mention, inline=True)
@@ -85,14 +116,15 @@ class TicketJoinRequestView(discord.ui.View):
             await interaction.response.send_message("❌ Only ticket creators, assignees, or admins can deny join requests!", ephemeral=True)
             return
         
-        # Update embed
+        # Update embed with timezone-aware datetime
         embed = discord.Embed(
             title="❌ Join Request Denied",
             description=f"{self.requesting_user.mention}'s request to join this ticket has been denied",
-            color=0xED4245
+            color=0xED4245,
+            timestamp=utc_now()
         )
         embed.add_field(name="Denied by", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Time", value=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+        embed.add_field(name="Time", value=utc_now().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
         
         # Disable buttons
         for item in self.children:
@@ -105,7 +137,8 @@ class TicketJoinRequestView(discord.ui.View):
             dm_embed = discord.Embed(
                 title="🎫 Ticket Access Denied",
                 description=f"Your request to join the ticket has been denied.",
-                color=0xED4245
+                color=0xED4245,
+                timestamp=utc_now()
             )
             dm_embed.add_field(name="Denied by", value=interaction.user.mention, inline=True)
             await self.requesting_user.send(embed=dm_embed)
@@ -179,7 +212,7 @@ class TicketCloseView(discord.ui.View):
             # Send transcript
             transcript_sent = await self._send_transcript(interaction.guild, transcript, ticket_info)
             
-            # Update ticket status
+            # Update ticket status with timezone-aware datetime
             await self._update_ticket_status()
             
             # Send closure message
@@ -279,7 +312,7 @@ class TicketCloseView(discord.ui.View):
             transcript_header = f"""=== TICKET TRANSCRIPT ===
 Channel: {channel.name}
 Guild: {channel.guild.name}
-Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}
+Generated: {utc_now().strftime('%Y-%m-%d %H:%M:%S UTC')}
 Total Messages: {message_count}
 ========================
 
@@ -335,18 +368,18 @@ Total Messages: {message_count}
             # Create transcript file
             transcript_file = discord.File(
                 fp=io.StringIO(transcript),
-                filename=f"transcript_{self.ticket_id}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.txt"
+                filename=f"transcript_{self.ticket_id}_{utc_now().strftime('%Y%m%d_%H%M%S')}.txt"
             )
             
-            # Create embed
+            # Create embed with timezone-aware datetime
             embed = discord.Embed(
                 title=f"🎫 Ticket Transcript: {self.ticket_id}",
                 description=f"**Title:** {ticket_info.get('title', 'Unknown')}\n**Guild:** {guild.name}",
                 color=0x5865F2,
-                timestamp=datetime.now(timezone.utc)
+                timestamp=utc_now()
             )
             embed.add_field(name="📊 Stats", value=f"Lines: {len(transcript.split(chr(10)))}", inline=True)
-            embed.add_field(name="📅 Closed", value=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+            embed.add_field(name="📅 Closed", value=utc_now().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
             embed.set_footer(text="devBot - Powered by EGOS")
             
             await transcript_channel.send(embed=embed, file=transcript_file)
@@ -357,17 +390,17 @@ Total Messages: {message_count}
             return False
     
     async def _update_ticket_status(self):
-        """Update ticket status to closed"""
+        """Update ticket status to closed with timezone-aware datetime"""
         try:
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
                     "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
-                    TicketStatus.CLOSED.value, datetime.now(timezone.utc), self.ticket_id
+                    TicketStatus.CLOSED.value, utc_now(), self.ticket_id
                 )
             else:
                 await self.bot.db.connection.execute(
                     "UPDATE tickets SET status = ?, updated_at = ? WHERE ticket_id = ?",
-                    (TicketStatus.CLOSED.value, datetime.now(timezone.utc), self.ticket_id)
+                    (TicketStatus.CLOSED.value, utc_now(), self.ticket_id)
                 )
                 await self.bot.db.connection.commit()
         except Exception as e:
@@ -455,14 +488,16 @@ class TicketCommands(app_commands.Group):
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             
-            # Save ticket to database
+            # Save ticket to database with timezone-aware datetimes
             await self._save_ticket_to_db(ticket_id, interaction.guild.id, interaction.user.id, title, description, priority, channel.id)
             
-            # Create ticket embed
+            # Create ticket embed with timezone-aware datetime
+            created_at = utc_now()
             embed = discord.Embed(
                 title=f"🎫 Support Ticket: {ticket_id}",
                 description=f"**Issue Description:**\n{description}",
-                color=0x5865F2
+                color=0x5865F2,
+                timestamp=created_at
             )
             embed.add_field(name="📋 Title", value=title, inline=False)
             embed.add_field(name="⚡ Priority", value=priority.title(), inline=True)
@@ -470,7 +505,6 @@ class TicketCommands(app_commands.Group):
             embed.add_field(name="👤 Created by", value=interaction.user.mention, inline=True)
             embed.add_field(name="👀 Visibility", value="🌐 **Public & Read-Only**", inline=False)
             embed.add_field(name="ℹ️ Access Info", value="• Everyone can **read** this ticket\n• Only you, assignees, and admins can **write**\n• Use `/ticket join` to request write access", inline=False)
-            embed.timestamp = datetime.now(timezone.utc)
             embed.set_footer(text="devBot - Powered by EGOS")
             
             view = TicketCloseView(self.bot, ticket_id)
@@ -530,14 +564,15 @@ class TicketCommands(app_commands.Group):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Create join request
+        # Create join request with timezone-aware datetime
         embed = discord.Embed(
             title="🎫 Ticket Join Request",
             description=f"{interaction.user.mention} wants to join this ticket conversation",
-            color=0xFEE75C
+            color=0xFEE75C,
+            timestamp=utc_now()
         )
         embed.add_field(name="👤 User", value=f"{interaction.user.mention}\n`{interaction.user}`", inline=True)
-        embed.add_field(name="📅 Requested", value=datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+        embed.add_field(name="📅 Requested", value=utc_now().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
         embed.add_field(name="🔍 Current Access", value="👀 **Read Only**\n(Can see all messages)", inline=True)
         embed.add_field(name="📝 Requesting", value="💬 **Write Access**\n(Can participate in conversation)", inline=True)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
@@ -623,7 +658,8 @@ class TicketCommands(app_commands.Group):
             
             embed = discord.Embed(
                 title="🎫 Support Tickets",
-                color=0x5865F2
+                color=0x5865F2,
+                timestamp=utc_now()
             )
             embed.set_footer(text="devBot - Powered by EGOS")
             
@@ -635,6 +671,7 @@ class TicketCommands(app_commands.Group):
                     status = ticket['status']
                     priority = ticket['priority']
                     channel_id = ticket['channel_id']
+                    created_at = ensure_timezone_aware(ticket['created_at'])
                 else:
                     ticket_id = ticket[1]
                     user_id = ticket[3]
@@ -642,6 +679,7 @@ class TicketCommands(app_commands.Group):
                     status = ticket[7]
                     priority = ticket[8]
                     channel_id = ticket[9]
+                    created_at = ensure_timezone_aware(ticket[10])
                 
                 ticket_user = interaction.guild.get_member(int(user_id))
                 user_name = ticket_user.display_name if ticket_user else "Unknown"
@@ -662,7 +700,8 @@ class TicketCommands(app_commands.Group):
                           f"**User:** {user_name}\n"
                           f"**Priority:** {priority_emoji} {priority.title()}\n"
                           f"**Status:** {status.title()}\n"
-                          f"**Channel:** {channel_link}",
+                          f"**Channel:** {channel_link}\n"
+                          f"**Created:** <t:{int(created_at.timestamp())}:R>",
                     inline=True
                 )
             
@@ -685,17 +724,17 @@ class TicketCommands(app_commands.Group):
             return
         
         try:
-            # Update database
+            # Update database with timezone-aware datetime
             if self.bot.db.is_postgresql:
                 result = await self.bot.db.connection.execute(
                     "UPDATE tickets SET assignee_id = $1, updated_at = $2 WHERE ticket_id = $3 AND guild_id = $4",
-                    str(assignee.id), datetime.now(timezone.utc), ticket_id, str(interaction.guild.id)
+                    str(assignee.id), utc_now(), ticket_id, str(interaction.guild.id)
                 )
                 rows_affected = 1 if result == "UPDATE 1" else 0
             else:
                 result = await self.bot.db.connection.execute(
                     "UPDATE tickets SET assignee_id = ?, updated_at = ? WHERE ticket_id = ? AND guild_id = ?",
-                    (str(assignee.id), datetime.now(timezone.utc), ticket_id, str(interaction.guild.id))
+                    (str(assignee.id), utc_now(), ticket_id, str(interaction.guild.id))
                 )
                 await self.bot.db.connection.commit()
                 rows_affected = result.rowcount
@@ -746,16 +785,16 @@ class TicketCommands(app_commands.Group):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
             
-            # Remove assignment
+            # Remove assignment with timezone-aware datetime
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
                     "UPDATE tickets SET assignee_id = NULL, updated_at = $1 WHERE ticket_id = $2",
-                    datetime.now(timezone.utc), ticket_id
+                    utc_now(), ticket_id
                 )
             else:
                 await self.bot.db.connection.execute(
                     "UPDATE tickets SET assignee_id = NULL, updated_at = ? WHERE ticket_id = ?",
-                    (datetime.now(timezone.utc), ticket_id)
+                    (utc_now(), ticket_id)
                 )
                 await self.bot.db.connection.commit()
             
@@ -907,21 +946,24 @@ class TicketCommands(app_commands.Group):
             return None
     
     async def _save_ticket_to_db(self, ticket_id: str, guild_id: int, user_id: int, title: str, description: str, priority: str, channel_id: int):
-        """Save ticket to database"""
+        """Save ticket to database with timezone-aware datetimes"""
         try:
+            created_at = utc_now()
+            updated_at = utc_now()
+            
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
-                    """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                    """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at, updated_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
                     ticket_id, str(guild_id), str(user_id), title, description, 
-                    TicketStatus.OPEN.value, priority, str(channel_id), datetime.now(timezone.utc)
+                    TicketStatus.OPEN.value, priority, str(channel_id), created_at, updated_at
                 )
             else:
                 await self.bot.db.connection.execute(
-                    """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (ticket_id, str(guild_id), str(user_id), title, description, 
-                     TicketStatus.OPEN.value, priority, str(channel_id), datetime.now(timezone.utc))
+                     TicketStatus.OPEN.value, priority, str(channel_id), created_at, updated_at)
                 )
                 await self.bot.db.connection.commit()
         except Exception as e:
