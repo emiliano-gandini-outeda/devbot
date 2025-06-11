@@ -14,7 +14,6 @@ from discord.ui import Button, Select, View
 # from cogs.utils.embed_builder import EmbedBuilder
 from utils.helpers import EmbedBuilder
 from utils.helpers import (
-    FieldNotFound,
     get_expiry_date,
     get_role,
     get_ticket_channel,
