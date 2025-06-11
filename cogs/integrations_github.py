@@ -21,71 +21,29 @@ class GitHubIntegrations(commands.Cog):
         self.github_token = Settings.GITHUB_TOKEN
         self.session = None
         self.tracking_task = None
-        self.tracking_started = False
         
-        # Don't start tracking immediately - wait for proper initialization
-        logger.info("🐙 GitHub integration initialized, tracking will start after bot is ready")
-    
-    async def cog_load(self):
-        """Called when the cog is loaded - start tracking with delay"""
-        # Wait a bit longer to ensure all systems are ready
-        await asyncio.sleep(10)  # 10 second delay after cog load
-        await self.start_tracking()
+        # Start the tracking task
+        self.bot.loop.create_task(self.start_tracking())
     
     async def start_tracking(self):
-        """Initialize the tracking system with proper delays"""
-        if self.tracking_started:
-            return
-            
-        try:
-            # Wait for bot to be fully ready
-            await self.bot.wait_until_ready()
-            
-            # Additional delay to ensure database operations are complete
-            logger.info("🐙 Waiting for database operations to complete...")
-            await asyncio.sleep(15)  # 15 second delay to avoid DB conflicts
-            
-            # Test database connection first
-            if not self.bot.db or not self.bot.db.connection:
-                logger.error("❌ Database not available for GitHub tracking")
-                return
-            
-            # Test a simple query to ensure DB is ready
-            try:
-                await self.bot.db.connection.fetchval("SELECT 1")
-                logger.info("✅ Database connection verified for GitHub tracking")
-            except Exception as e:
-                logger.error(f"❌ Database not ready for GitHub tracking: {e}")
-                # Retry after another delay
-                await asyncio.sleep(30)
-                return await self.start_tracking()
-            
-            # Create HTTP session with GitHub headers
-            if not self.session:
-                self.session = aiohttp.ClientSession(
-                    headers={
-                        'Authorization': f'token {self.github_token}',
-                        'Accept': 'application/vnd.github.v3+json',
-                        'User-Agent': 'Discord-Bot-GitHub-Tracker'
-                    }
-                )
-                logger.info("✅ GitHub API session created")
-            
-            # Start the background tracking task
-            if not self.tracking_task or self.tracking_task.done():
-                self.tracking_task = self.bot.loop.create_task(self.check_repo_updates())
-                self.tracking_started = True
-                logger.info("✅ GitHub tracking system started successfully")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to start GitHub tracking: {e}")
-            # Retry after delay
-            await asyncio.sleep(60)
-            await self.start_tracking()
+        """Initialize the tracking system"""
+        await self.bot.wait_until_ready()
+        
+        # Create HTTP session with GitHub headers
+        self.session = aiohttp.ClientSession(
+            headers={
+                'Authorization': f'token {self.github_token}',
+                'Accept': 'application/vnd.github.v3+json',
+                'User-Agent': 'Discord-Bot-GitHub-Tracker'
+            }
+        )
+        
+        # Start the background tracking task
+        self.tracking_task = self.bot.loop.create_task(self.check_repo_updates())
+        logger.info("✅ GitHub tracking system started")
     
     async def cog_unload(self):
         """Clean up when cog is unloaded"""
-        self.tracking_started = False
         if self.session:
             await self.session.close()
         if self.tracking_task:
@@ -95,10 +53,6 @@ class GitHubIntegrations(commands.Cog):
         """Make a request to the GitHub API"""
         if not self.github_token:
             logger.error("GitHub token not configured")
-            return None
-        
-        if not self.session:
-            logger.error("GitHub session not initialized")
             return None
         
         url = f"https://api.github.com{endpoint}"
@@ -468,23 +422,19 @@ class GitHubIntegrations(commands.Cog):
                 logger.error(f"Error in repository update check: {e}")
                 await asyncio.sleep(300)  # Sleep 5 minutes on error
     
-    async def _check_single_repo_updates(self, repo_record, force_update=False):
+    async def _check_single_repo_updates(self, repo_record):
         """Check for updates to a specific repository"""
         guild_id = repo_record['guild_id']
         repo_name = repo_record['repo_name']
         channel_id = repo_record['channel_id']
         
-        logger.info(f"🔍 Checking updates for {repo_name} (force: {force_update})")
-        
         # Check if guild and channel still exist
         guild = self.bot.get_guild(int(guild_id))
         if not guild:
-            logger.warning(f"Guild {guild_id} not found for repo {repo_name}")
             return
         
         channel = guild.get_channel(int(channel_id))
         if not channel:
-            logger.warning(f"Channel {channel_id} not found for repo {repo_name}")
             return
         
         # Get current repo data from GitHub
@@ -500,39 +450,11 @@ class GitHubIntegrations(commands.Cog):
         )
         
         if not stored_data_record:
-            logger.warning(f"No stored data found for {repo_name}, initializing...")
-            # Initialize with current data if missing
-            initial_data = {
-                'stars': current_data['repo']['stargazers_count'],
-                'last_commit_sha': current_data['commits'][0]['sha'] if current_data['commits'] else '',
-                'last_commit_message': current_data['commits'][0]['commit']['message'] if current_data['commits'] else '',
-                'last_commit_author': current_data['commits'][0]['commit']['author']['name'] if current_data['commits'] else '',
-                'last_commit_date': current_data['commits'][0]['commit']['author']['date'] if current_data['commits'] else '',
-                'branches': [branch['name'] for branch in current_data['branches']],
-                'last_check': datetime.utcnow().isoformat(),
-                'recent_stargazers': [user['login'] for user in current_data['stargazers'][-5:]]
-            }
-            
-            await self.bot.db.connection.execute(
-                """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
-                   VALUES ($1, $2, $3, $4)""",
-                f"github_repo_{repo_name.replace('/', '_')}", guild_id, 'github_repo_data', json.dumps(initial_data)
-            )
-            
-            if force_update:
-                embed = EmbedBuilder.info(
-                    "Repository Initialized",
-                    f"✅ **{repo_name}** data has been initialized.\nFuture updates will be detected from this baseline."
-                )
-                await channel.send(embed=embed)
+            logger.warning(f"No stored data found for {repo_name}")
             return
         
         stored_data = json.loads(stored_data_record['data_content'])
         updates = []
-        
-        logger.info(f"📊 Comparing data for {repo_name}:")
-        logger.info(f"  Current stars: {current_data['repo']['stargazers_count']}, Stored: {stored_data.get('stars', 0)}")
-        logger.info(f"  Current commit: {current_data['commits'][0]['sha'][:8] if current_data['commits'] else 'None'}, Stored: {stored_data.get('last_commit_sha', '')[:8] if stored_data.get('last_commit_sha') else 'None'}")
         
         # Check for star changes
         current_stars = current_data['repo']['stargazers_count']
@@ -540,7 +462,6 @@ class GitHubIntegrations(commands.Cog):
         
         if current_stars != stored_stars:
             star_diff = current_stars - stored_stars
-            logger.info(f"⭐ Star change detected: {star_diff}")
             if star_diff > 0:
                 # Get new stargazers
                 recent_stargazers = [user['login'] for user in current_data['stargazers'][-abs(star_diff):]]
@@ -558,33 +479,51 @@ class GitHubIntegrations(commands.Cog):
                     'details': None
                 })
         
-        # Check for new commits
+        # Check for new commits - improved logic
         if current_data['commits']:
             current_commit = current_data['commits'][0]
             current_commit_sha = current_commit['sha']
             stored_commit_sha = stored_data.get('last_commit_sha', '')
             
-            if current_commit_sha != stored_commit_sha:
-                logger.info(f"📝 New commit detected: {current_commit_sha[:8]}")
-                commit_message = current_commit['commit']['message'].split('\n')[0]  # First line only
-                commit_author = current_commit['commit']['author']['name']
-                commit_date = datetime.fromisoformat(current_commit['commit']['author']['date'].replace('Z', '+00:00'))
+            # Debug logging
+            logger.info(f"Checking commits for {repo_name}: current={current_commit_sha[:8]}, stored={stored_commit_sha[:8] if stored_commit_sha else 'None'}")
+            
+            if current_commit_sha != stored_commit_sha and stored_commit_sha != '':
+                # Find all new commits since the last stored commit
+                new_commits = []
+                for commit in current_data['commits']:
+                    if commit['sha'] == stored_commit_sha:
+                        break  # Found the last stored commit, stop here
+                    new_commits.append(commit)
                 
-                # Try to get the actual branch name from the commit
-                branch_name = "main"  # Default
-                try:
-                    # Get branches that contain this commit
-                    branches_with_commit = await self.github_api_request(f"/repos/{repo_name}/commits/{current_commit_sha}/branches-where-head")
-                    if branches_with_commit and len(branches_with_commit) > 0:
-                        branch_name = branches_with_commit[0]['name']
-                except:
-                    pass  # Use default if API call fails
+                # Limit to showing max 3 commits to avoid spam
+                commits_to_show = new_commits[:3]
                 
-                updates.append({
-                    'type': 'commit',
-                    'message': f"📝 **New commit** on `{branch_name}`",
-                    'details': f"**{commit_message}**\nBy **{commit_author}** • <t:{int(commit_date.timestamp())}:R>"
-                })
+                for commit in commits_to_show:
+                    commit_message = commit['commit']['message'].split('\n')[0]  # First line only
+                    commit_author = commit['commit']['author']['name']
+                    commit_date = datetime.fromisoformat(commit['commit']['author']['date'].replace('Z', '+00:00'))
+                    
+                    # Try to get the actual branch name from the commit
+                    branch_name = "main"  # Default fallback
+                    
+                    updates.append({
+                        'type': 'commit',
+                        'message': f"📝 **New commit** on `{branch_name}`",
+                        'details': f"**{commit_message}**\nBy {commit_author} • <t:{int(commit_date.timestamp())}:R>\n[View commit](https://github.com/{repo_name}/commit/{commit['sha']})"
+                    })
+                
+                # If there were more commits, add a summary
+                if len(new_commits) > 3:
+                    updates.append({
+                        'type': 'commit',
+                        'message': f"📝 **+{len(new_commits) - 3} more commits**",
+                        'details': f"[View all commits](https://github.com/{repo_name}/commits)"
+                    })
+            
+            elif stored_commit_sha == '':
+                # First time tracking this repo, don't send commit notifications
+                logger.info(f"First time tracking {repo_name}, skipping initial commit notification")
         
         # Check for new branches
         current_branches = set(branch['name'] for branch in current_data['branches'])
@@ -593,7 +532,6 @@ class GitHubIntegrations(commands.Cog):
         deleted_branches = stored_branches - current_branches
         
         if new_branches:
-            logger.info(f"🌿 New branches detected: {list(new_branches)}")
             for branch_name in list(new_branches)[:3]:  # Show max 3 new branches
                 updates.append({
                     'type': 'branch',
@@ -602,7 +540,6 @@ class GitHubIntegrations(commands.Cog):
                 })
         
         if deleted_branches:
-            logger.info(f"🗑️ Deleted branches detected: {list(deleted_branches)}")
             for branch_name in list(deleted_branches)[:3]:  # Show max 3 deleted branches
                 updates.append({
                     'type': 'branch',
@@ -610,40 +547,33 @@ class GitHubIntegrations(commands.Cog):
                     'details': None
                 })
         
-        # Send updates if any found or if forced
-        if updates:
-            logger.info(f"📤 Sending {len(updates)} updates for {repo_name}")
-            await self._send_updates(repo_name, channel, guild_id, updates)
-        elif force_update:
-            # Send a "no updates" message for forced updates
-            embed = EmbedBuilder.info(
-                "Repository Up to Date",
-                f"✅ **{repo_name}** is up to date.\nNo new commits, stars, or branch changes detected."
-            )
-            await channel.send(embed=embed)
-        else:
-            logger.info(f"📭 No updates found for {repo_name}")
-        
-        # Update stored data
+        # Update stored data regardless of whether updates were sent
         new_stored_data = {
             'stars': current_stars,
-            'last_commit_sha': current_data['commits'][0]['sha'] if current_data['commits'] else '',
-            'last_commit_message': current_data['commits'][0]['commit']['message'] if current_data['commits'] else '',
-            'last_commit_author': current_data['commits'][0]['commit']['author']['name'] if current_data['commits'] else '',
-            'last_commit_date': current_data['commits'][0]['commit']['author']['date'] if current_data['commits'] else '',
+            'last_commit_sha': current_data['commits'][0]['sha'] if current_data['commits'] else stored_data.get('last_commit_sha', ''),
+            'last_commit_message': current_data['commits'][0]['commit']['message'] if current_data['commits'] else stored_data.get('last_commit_message', ''),
+            'last_commit_author': current_data['commits'][0]['commit']['author']['name'] if current_data['commits'] else stored_data.get('last_commit_author', ''),
+            'last_commit_date': current_data['commits'][0]['commit']['author']['date'] if current_data['commits'] else stored_data.get('last_commit_date', ''),
             'branches': list(current_branches),
             'last_check': datetime.utcnow().isoformat(),
             'recent_stargazers': [user['login'] for user in current_data['stargazers'][-5:]]
         }
-        
+
         await self.bot.db.connection.execute(
             """UPDATE user_data SET data_content = $1, updated_at = CURRENT_TIMESTAMP 
                WHERE user_id = $2 AND guild_id = $3 AND data_type = $4""",
             json.dumps(new_stored_data),
             f"github_repo_{repo_name.replace('/', '_')}", guild_id, 'github_repo_data'
         )
-        
-        logger.info(f"✅ Updated stored data for {repo_name}")
+
+        logger.info(f"Updated stored data for {repo_name}")
+
+        # Send updates if any
+        if updates:
+            logger.info(f"Sending {len(updates)} updates for {repo_name}")
+            await self._send_updates(repo_name, channel, guild_id, updates)
+        else:
+            logger.info(f"No updates found for {repo_name}")
     
     async def _send_updates(self, repo_name: str, channel: discord.TextChannel, guild_id: str, updates: List[Dict]):
         """Send update notifications to the channel"""
@@ -959,22 +889,32 @@ class RepoUpdateDropdown(discord.ui.Select):
                 await interaction.followup.send("GitHub integration not available!", ephemeral=True)
                 return
             
+            # Send initial feedback
+            embed = EmbedBuilder.info(
+                "Checking Repository",
+                f"🔍 Checking **{selected_repo}** for updates...\nThis may take a few seconds."
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        
             # Force check this specific repository
-            await github_cog._check_single_repo_updates(repo_data, force_update=True)
+            logger.info(f"Manual update requested for {selected_repo} by {interaction.user}")
+            await github_cog._check_single_repo_updates(repo_data)
             
+            # Send success feedback
             embed = EmbedBuilder.success(
                 "Repository Updated",
                 f"✅ **{selected_repo}** has been checked for updates!\n\n"
-                f"Check the tracking channel for any new notifications.\n"
-                f"If no updates were posted, the repository is up to date."
+                f"• If there were any changes, notifications have been sent to the tracking channel\n"
+                f"• If no updates were found, the repository is up to date\n"
+                f"• Check the tracking channel for any new notifications"
             )
             
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.edit_original_response(embed=embed)
             
         except Exception as e:
             logger.error(f"Error updating repo {selected_repo}: {e}")
             embed = EmbedBuilder.error("Update Failed", f"Failed to update repository: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.edit_original_response(embed=embed)
 
 class TrackRepoButtonView(discord.ui.View):
     def __init__(self, repo_name):
