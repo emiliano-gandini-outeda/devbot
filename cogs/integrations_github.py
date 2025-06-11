@@ -363,8 +363,39 @@ class GitHubIntegrations(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to list repositories: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
+    @app_commands.command(name="repo-update", description="Get immediate update for a tracked repository")
+    async def repo_update(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Get tracked repos for this guild
+            repos = await self.bot.db.connection.fetch(
+                "SELECT * FROM github_tracked_repos WHERE guild_id = $1 ORDER BY created_at DESC",
+                str(interaction.guild.id)
+            )
+            
+            if not repos:
+                embed = EmbedBuilder.info("No Repositories", "No GitHub repositories are being tracked in this server")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+            
+            # Create view with dropdown for repo selection
+            view = RepoUpdateView(self.bot, repos, interaction.user.id, str(interaction.guild.id))
+            
+            embed = discord.Embed(
+                title="🔄 Repository Update",
+                description=f"Select a repository to get an immediate update (overrides 15-minute delay):\n\n**{len(repos)}** repositories available",
+                color=0x333333  # GitHub dark
+            )
+            
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to load repositories: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+    
     async def check_repo_updates(self):
-        """Background task to check for repository updates every 30 minutes"""
+        """Background task to check for repository updates every 15 minutes"""
         await self.bot.wait_until_ready()
         
         while not self.bot.is_closed():
@@ -384,8 +415,8 @@ class GitHubIntegrations(commands.Cog):
                 
                 logger.info(f"✅ Finished checking {len(repos)} repositories")
                 
-                # Sleep for 30 minutes (1800 seconds)
-                await asyncio.sleep(1800)
+                # Sleep for 15 minutes (900 seconds) - reduced from 30 minutes
+                await asyncio.sleep(900)
                 
             except Exception as e:
                 logger.error(f"Error in repository update check: {e}")
@@ -470,13 +501,21 @@ class GitHubIntegrations(commands.Cog):
         current_branches = set(branch['name'] for branch in current_data['branches'])
         stored_branches = set(stored_data.get('branches', []))
         new_branches = current_branches - stored_branches
+        deleted_branches = stored_branches - current_branches
         
         if new_branches:
             for branch_name in list(new_branches)[:3]:  # Show max 3 new branches
-                # Try to find who created the branch (this is complex with GitHub API, simplified here)
                 updates.append({
                     'type': 'branch',
                     'message': f"🌿 **New branch created:** `{branch_name}`",
+                    'details': None
+                })
+        
+        if deleted_branches:
+            for branch_name in list(deleted_branches)[:3]:  # Show max 3 deleted branches
+                updates.append({
+                    'type': 'branch',
+                    'message': f"🗑️ **Branch deleted:** `{branch_name}`",
                     'details': None
                 })
         
@@ -526,7 +565,7 @@ class GitHubIntegrations(commands.Cog):
                 field_value = update['details'] if update['details'] else "No additional details"
                 embed.add_field(name=field_name, value=field_value, inline=False)
             
-            embed.set_footer(text="GitHub Tracking • Updates checked every 30 minutes")
+            embed.set_footer(text="GitHub Tracking • Updates checked every 15 minutes")
             
             # Prepare message content
             content = ""
@@ -537,11 +576,14 @@ class GitHubIntegrations(commands.Cog):
                     if len(subscribers) > 10:
                         content += f" and {len(subscribers) - 10} others"
             
+            # Create view with Track Repo button
+            view = TrackRepoButtonView(repo_name)
+            
             # Send the message
             if content:
-                await channel.send(content=content, embed=embed)
+                await channel.send(content=content, embed=embed, view=view)
             else:
-                await channel.send(embed=embed)
+                await channel.send(embed=embed, view=view)
                 
         except Exception as e:
             logger.error(f"Error sending updates for {repo_name}: {e}")
@@ -577,18 +619,18 @@ class GitHubIntegrations(commands.Cog):
             
             embed.add_field(
                 name="🔔 Notifications",
-                value="You'll receive updates about:\n• ⭐ Star changes\n• 📝 New commits\n• 🌿 New branches",
+                value="You'll receive updates about:\n• ⭐ Star changes\n• 📝 New commits\n• 🌿 New/deleted branches",
                 inline=False
             )
             
-            embed.set_footer(text="GitHub Tracking • Updates checked every 30 minutes")
+            embed.set_footer(text="GitHub Tracking • Updates checked every 15 minutes")
             
             await channel.send(embed=embed)
             
         except Exception as e:
             logger.error(f"Error sending repo status for {repo_name}: {e}")
 
-# UI Components (keeping the existing ones but updating for better functionality)
+# UI Components
 class RepoListView(discord.ui.View):
     def __init__(self, bot, repos, user_id, guild_id):
         super().__init__(timeout=300)
@@ -757,6 +799,140 @@ class RepoToggleView(discord.ui.View):
             )
         
         await interaction.response.edit_message(embed=embed, view=view)
+
+class RepoUpdateView(discord.ui.View):
+    def __init__(self, bot, repos, user_id, guild_id):
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.user_id = user_id
+        self.guild_id = guild_id
+        self.repos = repos
+        
+        # Add dropdown for repo selection
+        self.add_item(RepoUpdateDropdown(bot, repos, user_id, guild_id))
+
+class RepoUpdateDropdown(discord.ui.Select):
+    def __init__(self, bot, repos, user_id, guild_id):
+        options = []
+        for repo in repos[:25]:  # Discord limits to 25 options
+            repo_name = repo['repo_name']
+            options.append(discord.SelectOption(
+                label=repo_name,
+                description=f"Get immediate update for {repo_name}",
+                value=repo_name,
+                emoji="🔄"
+            ))
+        
+        super().__init__(
+            placeholder="Select a repository to update immediately...",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+        self.bot = bot
+        self.user_id = user_id
+        self.guild_id = guild_id
+        self.repos = repos
+    
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.user_id:
+            await interaction.response.send_message("This menu is not for you!", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        selected_repo = self.values[0]
+        
+        # Get repo details
+        repo_data = next((repo for repo in self.repos if repo['repo_name'] == selected_repo), None)
+        if not repo_data:
+            await interaction.followup.send("Repository not found!", ephemeral=True)
+            return
+        
+        try:
+            # Get the GitHub integration cog
+            github_cog = self.bot.get_cog('GitHubIntegrations')
+            if not github_cog:
+                await interaction.followup.send("GitHub integration not available!", ephemeral=True)
+                return
+            
+            # Force check this specific repository
+            await github_cog._check_single_repo_updates(repo_data)
+            
+            embed = EmbedBuilder.success(
+                "Repository Updated",
+                f"✅ **{selected_repo}** has been checked for updates!\n\n"
+                f"If there were any changes, notifications have been sent to the tracking channel.\n"
+                f"If no updates were found, the repository is up to date."
+            )
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.error(f"Error updating repo {selected_repo}: {e}")
+            embed = EmbedBuilder.error("Update Failed", f"Failed to update repository: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+class TrackRepoButtonView(discord.ui.View):
+    def __init__(self, repo_name):
+        super().__init__(timeout=None)  # Persistent view
+        self.repo_name = repo_name
+        
+        # Add Track Repo button
+        track_button = Button(
+            label="Track Repo",
+            style=discord.ButtonStyle.primary,
+            emoji="🐙"
+        )
+        track_button.callback = self.track_repo_callback
+        self.add_item(track_button)
+    
+    async def track_repo_callback(self, interaction: discord.Interaction):
+        try:
+            # Check if user is already tracking this repo
+            existing = await interaction.client.db.connection.fetchrow(
+                "SELECT enabled FROM github_subscriptions WHERE user_id = $1 AND guild_id = $2 AND repo_name = $3",
+                str(interaction.user.id), str(interaction.guild.id), self.repo_name
+            )
+            
+            if existing:
+                if existing['enabled']:
+                    embed = EmbedBuilder.info(
+                        "Already Tracking",
+                        f"You're already tracking **{self.repo_name}** with notifications enabled!"
+                    )
+                else:
+                    # Re-enable notifications
+                    await interaction.client.db.connection.execute(
+                        "UPDATE github_subscriptions SET enabled = TRUE WHERE user_id = $1 AND guild_id = $2 AND repo_name = $3",
+                        str(interaction.user.id), str(interaction.guild.id), self.repo_name
+                    )
+                    embed = EmbedBuilder.success(
+                        "Notifications Enabled",
+                        f"✅ Re-enabled notifications for **{self.repo_name}**!"
+                    )
+            else:
+                # Add new subscription
+                await interaction.client.db.connection.execute(
+                    """INSERT INTO github_subscriptions (user_id, guild_id, repo_name, enabled) 
+                       VALUES ($1, $2, $3, TRUE)""",
+                    str(interaction.user.id), str(interaction.guild.id), self.repo_name
+                )
+                embed = EmbedBuilder.success(
+                    "Now Tracking",
+                    f"✅ You're now tracking **{self.repo_name}**!\n\n"
+                    f"You'll receive notifications for:\n"
+                    f"• ⭐ Star changes\n"
+                    f"• 📝 New commits\n"
+                    f"• 🌿 New/deleted branches"
+                )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.error(f"Error in track repo button: {e}")
+            embed = EmbedBuilder.error("Error", f"Failed to track repository: {str(e)}")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(GitHubIntegrations(bot))
