@@ -82,6 +82,19 @@ class TicketJoinRequestView(discord.ui.View):
                 # If DM fails, send in channel
                 await self.ticket_channel.send(f"{self.requesting_user.mention} Your join request has been accepted!")
             
+            # Clean up request records for this user and ticket
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3 AND data_content->>'ticket_id' = $4",
+                    str(self.requesting_user.id), str(interaction.guild.id), 'ticket_join_request', ticket_id
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ? AND json_extract(data_content, '$.ticket_id') = ?",
+                    (str(self.requesting_user.id), str(interaction.guild.id), 'ticket_join_request', ticket_id)
+                )
+                await self.bot.db.connection.commit()
+            
         except Exception as e:
             await interaction.response.send_message(f"Failed to grant access: {str(e)}", ephemeral=True)
     
@@ -456,6 +469,24 @@ class TicketCommands(app_commands.Group):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
+        # Check if user has already made too many requests for this ticket
+        if self.bot.db.is_postgresql:
+            request_count = await self.bot.db.connection.fetchval(
+                "SELECT COUNT(*) FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3 AND data_content->>'ticket_id' = $4",
+                str(interaction.user.id), str(interaction.guild.id), 'ticket_join_request', ticket_id
+            )
+        else:
+            cursor = await self.bot.db.connection.execute(
+                "SELECT COUNT(*) FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ? AND json_extract(data_content, '$.ticket_id') = ?",
+                (str(interaction.user.id), str(interaction.guild.id), 'ticket_join_request', ticket_id)
+            )
+            request_count = (await cursor.fetchone())[0]
+
+        if request_count >= 5:
+            embed = EmbedBuilder.error("Request Limit Reached", "You have already made 5 join requests for this ticket. Please wait for a response.")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
         # Get ticket channel
         channel_id = ticket['channel_id']
         if not channel_id:
@@ -491,6 +522,27 @@ class TicketCommands(app_commands.Group):
         
         # Send request to ticket channel
         await channel.send(embed=embed, view=view)
+        
+        # Log the request to prevent spam
+        request_data = {
+            'ticket_id': ticket_id,
+            'requested_at': datetime.utcnow().isoformat(),
+            'channel_id': str(channel.id)
+        }
+
+        if self.bot.db.is_postgresql:
+            await self.bot.db.connection.execute(
+                """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
+                   VALUES ($1, $2, $3, $4)""",
+                str(interaction.user.id), str(interaction.guild.id), 'ticket_join_request', json.dumps(request_data)
+            )
+        else:
+            await self.bot.db.connection.execute(
+                """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
+                   VALUES (?, ?, ?, ?)""",
+                (str(interaction.user.id), str(interaction.guild.id), 'ticket_join_request', json.dumps(request_data))
+            )
+            await self.bot.db.connection.commit()
         
         # Notify user
         response_embed = EmbedBuilder.success(
