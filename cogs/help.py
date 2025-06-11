@@ -573,6 +573,7 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             setup_commands = [
                 "`/setup-tickets <category> <transcript_channel>` - Configure ticket system",
+                "`/setup-workflows <log_channel>` - Configure workflow logging system",
                 "`/setup-github-tracking <channel>` - Configure GitHub notifications",
                 "`/setup-logs <log_channel>` - Configure basic logging",
                 "`/setup-meetings <announcement_channel> <voice_channel>` - Configure meetings",

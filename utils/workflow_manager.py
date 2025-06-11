@@ -255,37 +255,68 @@ class WorkflowManager:
                 except Exception as e:
                     print(f"Error sending DM: {e}")
     
-    async def log_workflow_execution(self, guild: discord.Guild, workflow: Dict[str, Any], trigger_data: Dict[str, Any], log_channel_id: str):
+    async def log_workflow_execution(self, guild: discord.Guild, workflow: Dict[str, Any], trigger_data: Dict[str, Any], log_channel_id: str = None):
         """Log workflow execution"""
         try:
+            # If no specific log channel provided, get from workflow config
+            if not log_channel_id:
+                config_row = await self.bot.db.connection.fetch(
+                    "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                    str(guild.id), 'workflow_config'
+                )
+            
+                if config_row:
+                    config = json.loads(config_row['data_content'])
+                    log_channel_id = config.get('workflow_log_channel_id')
+        
+            if not log_channel_id:
+                return  # No log channel configured
+        
             log_channel = guild.get_channel(int(log_channel_id))
             if not log_channel:
                 return
-            
+        
             embed = discord.Embed(
                 title="⚙️ Workflow Executed",
                 color=0x5865F2,
                 timestamp=datetime.utcnow()
             )
-            
+        
             embed.add_field(name="Workflow", value=workflow.get('name', 'Unknown'), inline=True)
-            
+        
             trigger_type = workflow.get('trigger_type', 'Unknown')
             if trigger_type.startswith('message:'):
                 keyword = trigger_type.split(':', 1)[1]
                 embed.add_field(name="Trigger", value=f"Message: '{keyword}'", inline=True)
             else:
                 embed.add_field(name="Trigger", value=trigger_type, inline=True)
-            
+        
             if 'user_mention' in trigger_data:
                 embed.add_field(name="Triggered by", value=trigger_data['user_mention'], inline=True)
-            
+        
             if 'message_link' in trigger_data:
                 embed.add_field(name="Message", value=f"[Jump to message]({trigger_data['message_link']})", inline=False)
+        
+            # Add action summary
+            actions = workflow.get('actions', [])
+            if isinstance(actions, str):
+                actions = json.loads(actions)
+        
+            if actions:
+                action_summary = []
+                for action in actions:
+                    action_type = action.get('type', 'unknown').replace('_', ' ').title()
+                    action_summary.append(f"• {action_type}")
             
-            embed.set_footer(text="devBot")
+                embed.add_field(
+                    name="Actions Executed",
+                    value="\n".join(action_summary[:5]),  # Show max 5 actions
+                    inline=False
+                )
+        
+            embed.set_footer(text="devBot - Workflow System")
             await log_channel.send(embed=embed)
-            
+        
         except Exception as e:
             print(f"Error logging workflow execution: {e}")
     
