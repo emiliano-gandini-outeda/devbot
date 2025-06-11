@@ -10,7 +10,7 @@ class Setup(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
     
-    @app_commands.command(name="setup-tickets", description="Setup ticket system (Admin only)")
+    @app_commands.command(name="ticket-system-setup", description="Setup ticket system (Admin only)")
     @app_commands.describe(
         category="Category where ticket channels will be created",
         transcript_channel="Channel where ticket transcripts will be sent"
@@ -50,6 +50,48 @@ class Setup(commands.Cog):
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to setup ticket system: {str(e)}")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="setup-tracking", description="Setup GitHub repository tracking (Admin only)")
+    @app_commands.describe(
+        tracking_channel="Channel where GitHub repository updates will be sent"
+    )
+    async def setup_tracking(self, interaction: discord.Interaction, tracking_channel: discord.TextChannel):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup GitHub tracking")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        try:
+            # Save tracking config to database
+            config = {
+                'tracking_channel_id': str(tracking_channel.id),
+                'setup_by': str(interaction.user.id),
+                'setup_at': str(discord.utils.utcnow())
+            }
+            
+            # Delete existing config first, then insert new one
+            await self.bot.db.connection.execute(
+                "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
+                str(interaction.guild.id), 'github_tracking_config'
+            )
+            await self.bot.db.connection.execute(
+                "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
+                str(interaction.guild.id), 'github_tracking_config', json.dumps(config)
+            )
+            
+            embed = EmbedBuilder.success(
+                "GitHub Tracking Setup",
+                f"GitHub repository tracking has been configured!\n\n"
+                f"**Tracking Channel:** {tracking_channel.mention}\n\n"
+                f"All repository updates will be sent to this channel.\n"
+                f"Users can now track repositories using `/track-repo`"
+            )
+            
+            await interaction.response.send_message(embed=embed)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to setup GitHub tracking: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
     @app_commands.command(name="setup-logs", description="Setup logging channel (Admin only)")
