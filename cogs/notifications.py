@@ -48,7 +48,7 @@ class Notifications(commands.Cog):
                             embed.add_field(name="Author", value=message.author.mention, inline=True)
                             embed.add_field(name="Channel", value=message.channel.mention, inline=True)
                             embed.add_field(name="Jump to Message", value=f"[Click here]({message.jump_url})", inline=True)
-                            embed.set_footer(text="Railway Bot Keyword Notification")
+                            embed.set_footer(text="devBot Keyword Notification")
                             
                             await user.send(embed=embed)
                         except discord.Forbidden:
