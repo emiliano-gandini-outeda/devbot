@@ -91,34 +91,31 @@ class Notifications(commands.Cog):
         """Fetch keywords with retry logic for database conflicts"""
         for attempt in range(max_retries):
             try:
-                # Use read-only query with shorter timeout
-                async with asyncio.timeout(3):
+                # Use a shorter timeout for individual queries
+                async with asyncio.timeout(5):
                     keywords = await self.bot.db.connection.fetch(
                         "SELECT user_id, keyword FROM keywords WHERE guild_id = $1",
                         guild_id
                     )
-                return [dict(row) for row in keywords] if keywords else []
-                
+                    return [dict(row) for row in keywords] if keywords else []
+                    
             except asyncio.TimeoutError:
                 logger.warning(f"Database query timeout on attempt {attempt + 1} for guild {guild_id}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(0.2 * (attempt + 1))  # Shorter backoff
+                    await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
                     continue
-            else:
-                logger.error(f"All database query attempts timed out for guild {guild_id}")
-                return []
-                
+                else:
+                    logger.error(f"All database query attempts failed for guild {guild_id}")
+                    return []
+                    
             except Exception as e:
-                # Don't log as WARNING for first attempt, only for retries
-                log_level = logger.warning if attempt > 0 else logger.debug
-                log_level(f"Database error on attempt {attempt + 1} for guild {guild_id}: {e}")
-            
+                logger.warning(f"Database error on attempt {attempt + 1} for guild {guild_id}: {e}")
                 if attempt < max_retries - 1:
-                    await asyncio.sleep(0.2 * (attempt + 1))
+                    await asyncio.sleep(0.5 * (attempt + 1))
                     continue
-            else:
-                logger.error(f"All database attempts failed for guild {guild_id}: {e}")
-                return []
+                else:
+                    logger.error(f"All database attempts failed for guild {guild_id}: {e}")
+                    return []
     
     async def _process_keyword_notifications(self, message):
         """Process keyword notifications with optimized database access"""

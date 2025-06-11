@@ -11,93 +11,31 @@ logger = logging.getLogger(__name__)
 class DatabaseManager:
     def __init__(self):
         self.database_url = Settings.DATABASE_URL
-        self.connection_pool = None
-        self._pool_lock = asyncio.Lock()
-        self.is_postgresql = True
-        self._max_connections = 20
-        self._min_connections = 5
+        self.connection = None
+        self._connection_lock = asyncio.Lock()
+        self.is_postgresql = True  # Add this attribute
         
         logger.info(f"Database URL: {self.database_url[:50]}...")
     
     async def init_database(self):
-        """Initialize database connection pool and create tables"""
-        async with self._pool_lock:
+        """Initialize database connection and create tables"""
+        async with self._connection_lock:
             try:
-                # Create connection pool instead of single connection
-                async with asyncio.timeout(30):
-                    self.connection_pool = await asyncpg.create_pool(
-                        self.database_url,
-                        min_size=self._min_connections,
-                        max_size=self._max_connections,
-                        max_queries=50000,
-                        max_inactive_connection_lifetime=300,
-                        command_timeout=10
-                    )
-                logger.info(f"✅ Connected to PostgreSQL with pool ({self._min_connections}-{self._max_connections} connections)")
+                # Connect to PostgreSQL
+                async with asyncio.timeout(10):
+                    self.connection = await asyncpg.connect(self.database_url)
+                logger.info("✅ Connected to PostgreSQL database")
                 
-                # Test the pool
+                # Test the connection
                 async with asyncio.timeout(5):
-                    async with self.connection_pool.acquire() as conn:
-                        result = await conn.fetchval("SELECT version()")
-                        logger.info(f"PostgreSQL version: {result}")
+                    result = await self.connection.fetchval("SELECT version()")
+                    logger.info(f"PostgreSQL version: {result}")
             
             except Exception as e:
                 logger.error(f"❌ Failed to connect to PostgreSQL: {e}")
                 raise
         
         await self.create_tables()
-    
-    async def get_connection(self):
-        """Get a connection from the pool with proper error handling"""
-        if not self.connection_pool:
-            raise RuntimeError("Database pool not initialized")
-        
-        try:
-            return self.connection_pool.acquire()
-        except Exception as e:
-            logger.error(f"Failed to acquire database connection: {e}")
-            raise
-    
-    async def execute_query(self, query: str, *args, fetch_type: str = "execute"):
-        """Execute query with proper connection management and retry logic"""
-        max_retries = 3
-        
-        for attempt in range(max_retries):
-            try:
-                async with self.get_connection() as conn:
-                    # Use a transaction for consistency
-                    async with conn.transaction():
-                        if fetch_type == "fetch":
-                            return await conn.fetch(query, *args)
-                        elif fetch_type == "fetchrow":
-                            return await conn.fetchrow(query, *args)
-                        elif fetch_type == "fetchval":
-                            return await conn.fetchval(query, *args)
-                        else:
-                            return await conn.execute(query, *args)
-                            
-            except asyncpg.exceptions.InFailedSqlTransactionError:
-                # Transaction failed, retry with new connection
-                logger.warning(f"Transaction failed on attempt {attempt + 1}, retrying...")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(0.1 * (attempt + 1))
-                    continue
-                else:
-                    raise
-                    
-            except Exception as e:
-                logger.warning(f"Database query failed on attempt {attempt + 1}: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(0.1 * (attempt + 1))
-                    continue
-                else:
-                    raise
-    
-    # Add a property for backward compatibility
-    @property
-    def connection(self):
-        """Backward compatibility wrapper"""
-        return DatabaseConnectionWrapper(self)
     
     async def create_tables(self):
         """Create all necessary database tables"""
@@ -290,9 +228,13 @@ class DatabaseManager:
         # Create tables only if they don't exist
         for i, table_sql in enumerate(tables, 1):
             try:
-                await self.execute_query(table_sql)
-                table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0]
-                logger.info(f"✅ Ensured table {i}/{len(tables)} exists: {table_name}")
+                async with asyncio.timeout(5):
+                    await self.connection.execute(table_sql)
+                    table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0]
+                    logger.info(f"✅ Ensured table {i}/{len(tables)} exists: {table_name}")
+            except asyncio.TimeoutError:
+                logger.error(f"❌ Table creation timed out: table {i}")
+                raise
             except Exception as e:
                 logger.error(f"❌ Failed to ensure table {i} exists: {e}")
                 raise
@@ -306,7 +248,6 @@ class DatabaseManager:
             "CREATE INDEX IF NOT EXISTS idx_workflows_guild_id ON workflows(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_meetings_guild_id ON meetings(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_keywords_guild_user ON keywords(guild_id, user_id)",
-            "CREATE INDEX IF NOT EXISTS idx_keywords_guild_keyword ON keywords(guild_id, keyword)",
             "CREATE INDEX IF NOT EXISTS idx_github_repos_guild ON github_tracked_repos(guild_id)",
             "CREATE INDEX IF NOT EXISTS idx_user_data_lookup ON user_data(user_id, guild_id, data_type)",
             "CREATE INDEX IF NOT EXISTS idx_log_configs_guild ON log_configs(guild_id)"
@@ -315,7 +256,8 @@ class DatabaseManager:
         logger.info("Creating essential indexes (if not exists)...")
         for index_sql in essential_indexes:
             try:
-                await self.execute_query(index_sql)
+                async with asyncio.timeout(3):
+                    await self.connection.execute(index_sql)
             except Exception as e:
                 logger.warning(f"Failed to create index: {e}")
 
@@ -324,10 +266,8 @@ class DatabaseManager:
     async def get_user(self, discord_id: str) -> Optional[Dict[str, Any]]:
         """Get user from database"""
         try:
-            row = await self.execute_query(
-                "SELECT * FROM users WHERE discord_id = $1", 
-                discord_id, 
-                fetch_type="fetchrow"
+            row = await self.connection.fetchrow(
+                "SELECT * FROM users WHERE discord_id = $1", discord_id
             )
             return dict(row) if row else None
         except Exception as e:
@@ -337,7 +277,7 @@ class DatabaseManager:
     async def create_user(self, discord_id: str, username: str) -> bool:
         """Create new user in database"""
         try:
-            await self.execute_query(
+            await self.connection.execute(
                 "INSERT INTO users (discord_id, username) VALUES ($1, $2) ON CONFLICT (discord_id) DO NOTHING",
                 discord_id, username
             )
@@ -349,11 +289,11 @@ class DatabaseManager:
     async def test_connection(self):
         """Test database connection and basic operations"""
         try:
-            result = await self.execute_query("SELECT 1", fetch_type="fetchval")
+            result = await self.connection.fetchval("SELECT 1")
             logger.info(f"✅ PostgreSQL connection test successful: {result}")
             
             # Test table access
-            count = await self.execute_query("SELECT COUNT(*) FROM users", fetch_type="fetchval")
+            count = await self.connection.fetchval("SELECT COUNT(*) FROM users")
             logger.info(f"✅ Users table accessible, contains {count} records")
             
             return True
@@ -363,33 +303,28 @@ class DatabaseManager:
             return False
     
     async def close(self):
-        """Close database connection pool"""
-        if self.connection_pool:
+        """Close database connection"""
+        if self.connection:
             try:
-                await self.connection_pool.close()
-                logger.info("✅ Database connection pool closed")
+                await self.connection.close()
+                logger.info("✅ Database connection closed")
             except Exception as e:
-                logger.error(f"Error closing database connection pool: {e}")
+                logger.error(f"Error closing database connection: {e}")
 
-
-class DatabaseConnectionWrapper:
-    """Wrapper to maintain backward compatibility with existing code"""
-    
-    def __init__(self, db_manager: DatabaseManager):
-        self.db_manager = db_manager
-    
-    async def fetch(self, query: str, *args):
-        """Fetch multiple rows"""
-        return await self.db_manager.execute_query(query, *args, fetch_type="fetch")
-    
-    async def fetchrow(self, query: str, *args):
-        """Fetch single row"""
-        return await self.db_manager.execute_query(query, *args, fetch_type="fetchrow")
-    
-    async def fetchval(self, query: str, *args):
-        """Fetch single value"""
-        return await self.db_manager.execute_query(query, *args, fetch_type="fetchval")
-    
-    async def execute(self, query: str, *args):
-        """Execute query"""
-        return await self.db_manager.execute_query(query, *args, fetch_type="execute")
+    async def execute_with_retry(self, query, *args, max_retries=3):
+        """Execute query with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                async with self._connection_lock:
+                    if args:
+                        await self.connection.execute(query, *args)
+                    else:
+                        await self.connection.execute(query)
+                    return
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Database operation failed, retrying... (attempt {attempt + 1})")
+                    await asyncio.sleep(0.1 * (attempt + 1))
+                    continue
+                else:
+                    raise e
