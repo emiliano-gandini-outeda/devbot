@@ -46,11 +46,11 @@ class Logging(commands.Cog):
             }
             
             await self.bot.db.connection.execute(
-                """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
-                   VALUES ($1, $1, $2, $3)
-                   ON CONFLICT (user_id, guild_id, data_type) DO UPDATE SET
-                   data_content = $3, updated_at = CURRENT_TIMESTAMP""",
-                str(interaction.guild.id), 'logging_config', json.dumps(config)
+                """INSERT INTO log_configs (guild_id, log_channel_id, log_types)
+                   VALUES ($1, $2, $3)
+                   ON CONFLICT (guild_id) DO UPDATE SET
+                   log_channel_id = $2, log_types = $3, updated_at = CURRENT_TIMESTAMP""",
+                str(interaction.guild.id), str(log_channel.id), json.dumps(event_list)
             )
             
             embed = EmbedBuilder.success(
@@ -268,21 +268,25 @@ class Logging(commands.Cog):
         try:
             # Get logging configuration
             if self.bot.db.is_postgresql:
-                config_row = await self.bot.db.connection.fetch(
-                    "SELECT config_value FROM guild_configs WHERE guild_id = $1 AND config_key = $2",
-                    str(guild.id), 'logging'
+                config_row = await self.bot.db.connection.fetchrow(
+                    "SELECT log_types, log_channel_id FROM log_configs WHERE guild_id = $1",
+                    str(guild.id)
                 )
             else:
                 cursor = await self.bot.db.connection.execute(
-                    "SELECT config_value FROM guild_configs WHERE guild_id = ? AND config_key = ?",
-                    (str(guild.id), 'logging')
+                    "SELECT log_types, log_channel_id FROM log_configs WHERE guild_id = ?",
+                    (str(guild.id),)
                 )
                 config_row = await cursor.fetchone()
             
             if not config_row:
                 return
             
-            config = json.loads(config_row['config_value'] if self.bot.db.is_postgresql else config_row[0])
+            config = {
+                'enabled': True,
+                'events': json.loads(config_row['log_types'] if self.bot.db.is_postgresql else config_row[0]),
+                'log_channel_id': config_row['log_channel_id'] if self.bot.db.is_postgresql else config_row[1]
+            }
             
             if not config.get('enabled', False) or event_type not in config.get('events', []):
                 return
