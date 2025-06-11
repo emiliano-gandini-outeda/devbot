@@ -36,7 +36,7 @@ class GoogleIntegrations(commands.Cog):
             
             embed = discord.Embed(
                 title="🔗 Connect Google Account",
-                description="Click the link below to connect your Google account. This will give Railway Bot read-only access to your Google Calendar.",
+                description="Click the link below to connect your Google account. This will give  devBot read-only access to your Google Calendar.",
                 color=0x4285F4  # Google blue
             )
             
@@ -101,7 +101,7 @@ class GoogleIntegrations(commands.Cog):
                     inline=False
                 )
             
-            embed.set_footer(text="Google Calendar • Railway Bot")
+            embed.set_footer(text="Google Calendar • devBot")
             
             await interaction.followup.send(embed=embed, ephemeral=True)
             

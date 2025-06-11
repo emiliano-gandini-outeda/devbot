@@ -62,6 +62,12 @@ class HelpDropdown(discord.ui.Select):
                 description="Data export and privacy controls",
                 emoji="🔒",
                 value="privacy"
+            ),
+            discord.SelectOption(
+                label="📅 Meetings",
+                description="Meeting scheduling and management",
+                emoji="📅",
+                value="meetings"
             )
         ]
         
@@ -84,6 +90,13 @@ class HelpDropdown(discord.ui.Select):
                     description="Server logging configuration",
                     emoji="📊",
                     value="logging"
+                )
+                ,
+                discord.SelectOption(
+                    label="⚙️ Setup Commands",
+                    description="Server configuration and setup",
+                    emoji="⚙️",
+                    value="setup"
                 )
             ])
         
@@ -112,7 +125,9 @@ class HelpDropdown(discord.ui.Select):
             "privacy": self.get_privacy_embed(),
             "admin": self.get_admin_embed(),
             "workflows": self.get_workflows_embed(),
-            "logging": self.get_logging_embed()
+            "logging": self.get_logging_embed(),
+            "meetings": self.get_meetings_embed(),
+            "setup": self.get_setup_embed()
         }
         return embeds.get(category, self.get_basic_embed())
     
@@ -124,13 +139,14 @@ class HelpDropdown(discord.ui.Select):
         )
         
         commands = [
-            "`/help` - Show this help menu",
-            "`/user-permissions [user]` - Show user permissions",
-            "`/role-info <role>` - Show role information",
-            "`/see-user [user]` - View user information",
-            "`/privacy-export-data` - Export your personal data",
-            "`/privacy-policy` - View privacy policy",
-            "`/terms-of-service` - View terms of service"
+            "`/help` - Show this help menu with interactive categories",
+            "`/user-permissions [user]` - Show user permissions in current channel", 
+            "`/role-info <role>` - Show detailed information about a role",
+            "`/see-user [user]` - View comprehensive user information and stats",
+            "`/privacy-export-data` - Export your personal data in JSON format",
+            "`/privacy-get-data` - View summary of your stored data",
+            "`/privacy-policy` - View the bot's privacy policy",
+            "`/terms-of-service` - View the bot's terms of service"
         ]
         
         embed.add_field(
@@ -144,16 +160,17 @@ class HelpDropdown(discord.ui.Select):
     def get_tickets_embed(self) -> discord.Embed:
         embed = discord.Embed(
             title="🎫 Ticket System",
-            description="Support ticket management commands",
+            description="Comprehensive support ticket management",
             color=0x5865F2
         )
         
         user_commands = [
             "`/ticket create <title> <description> [priority]` - Create a new support ticket",
-            "`/ticket join [ticket_id]` - Request to join a ticket",
-            "`/ticket private` - Make ticket private (assigned users only)",
-            "`/ticket public` - Make ticket public (everyone can read)",
-            "`/ticket list [status] [user]` - List tickets"
+            "`/ticket join [ticket_id]` - Request to join an existing ticket", 
+            "`/ticket close [ticket_id]` - Close a ticket with transcript",
+            "`/ticket private` - Make current ticket private (assigned users only)",
+            "`/ticket public` - Make current ticket public (everyone can read)",
+            "`/ticket list [status] [user]` - List tickets with optional filters"
         ]
         
         embed.add_field(
@@ -164,8 +181,8 @@ class HelpDropdown(discord.ui.Select):
         
         if self.is_admin:
             admin_commands = [
-                "`/ticket-system-setup <category> <transcript_channel>` - Setup ticket system",
-                "`/ticket assign <ticket_id> <assignee>` - Assign ticket to user"
+                "`/setup-tickets <category> <transcript_channel>` - Configure ticket system",
+                "`/ticket assign <ticket_id> <assignee>` - Assign ticket to specific user"
             ]
             
             embed.add_field(
@@ -173,6 +190,12 @@ class HelpDropdown(discord.ui.Select):
                 value="\n".join(admin_commands),
                 inline=False
             )
+        
+        embed.add_field(
+            name="Features",
+            value="• Public/private ticket visibility\n• Join request system with approval\n• Automatic transcripts\n• Priority levels (low, medium, high)",
+            inline=False
+        )
         
         return embed
     
@@ -184,9 +207,11 @@ class HelpDropdown(discord.ui.Select):
         )
         
         commands = [
-            "`/create-thread <message_id> <name>` - Create thread from message",
-            "`/rename-thread <new_name>` - Rename current thread",
-            "`/search-messages <query> [limit]` - Search messages in channel"
+            "`/create-thread <message_id> <name>` - Create thread from existing message",
+            "`/rename-thread <new_name>` - Rename the current thread",
+            "`/search-messages <query> [limit]` - Search messages in current channel",
+            "`/pin-message <message_id>` - Pin a message by its ID",
+            "`/unpin-message <message_id>` - Unpin a message by its ID"
         ]
         
         embed.add_field(
@@ -197,8 +222,8 @@ class HelpDropdown(discord.ui.Select):
         
         if self.is_admin:
             embed.add_field(
-                name="Admin Commands",
-                value="`/archive-thread` - Archive current thread",
+                name="Admin Commands", 
+                value="`/archive-thread` - Archive current thread with transcript",
                 inline=False
             )
         
@@ -212,9 +237,9 @@ class HelpDropdown(discord.ui.Select):
         )
         
         commands = [
-            "`/remind <time> <message>` - Set personal reminder",
-            "`/list-reminders` - List your active reminders",
-            "`/delete-reminder <number>` - Delete a reminder"
+            "`/remind <time> <message> [send_dm]` - Set personal reminder with DM option",
+            "`/list-reminders` - List all your active reminders with details", 
+            "`/delete-reminder <number>` - Delete a reminder by its list number"
         ]
         
         embed.add_field(
@@ -224,9 +249,14 @@ class HelpDropdown(discord.ui.Select):
         )
         
         if self.is_admin:
+            admin_commands = [
+                "`/remind-channel <time> <message> [channel]` - Set channel-wide reminder",
+                "`/setup-reminders <reminder_channel>` - Configure reminder fallback channel"
+            ]
+            
             embed.add_field(
                 name="Admin Commands",
-                value="`/remind-channel <time> <message> [channel]` - Set channel reminder",
+                value="\n".join(admin_commands),
                 inline=False
             )
         
@@ -246,9 +276,9 @@ class HelpDropdown(discord.ui.Select):
         )
         
         commands = [
-            "`/add-keyword <keyword>` - Add keyword to monitor",
-            "`/remove-keyword <keyword>` - Remove keyword from monitoring",
-            "`/list-keywords` - List your monitored keywords"
+            "`/add-keyword <keyword>` - Add keyword to monitor for mentions",
+            "`/remove-keyword <keyword>` - Remove keyword from monitoring list",
+            "`/list-keywords` - List all your monitored keywords in this server"
         ]
         
         embed.add_field(
@@ -273,38 +303,72 @@ class HelpDropdown(discord.ui.Select):
         )
         
         google_commands = [
-            "`/google-connect` - Connect your Google account",
-            "`/calendar-events [count]` - Show upcoming calendar events"
+            "`/google-connect` - Connect your Google account for calendar access (Coming Soon)",
+            "`/calendar-events [count]` - Show your upcoming Google Calendar events (Coming Soon)",
+            "`/create-event <title> <date> <time> [duration]` - Create new calendar event (Coming Soon)"
         ]
         
         github_commands = [
-            "`/track-repo <repo>` - Track GitHub repository",
-            "`/list-repos` - List tracked repositories with toggle options",
+            "`/track-repo <repo>` - Track GitHub repository for updates",
+            "`/list-repos` - List tracked repositories with toggle options", 
             "`/untrack-repo <repo>` - Stop tracking a repository"
         ]
         
-        embed.add_field(name="📅 Google Calendar", value="\n".join(google_commands), inline=False)
+        notion_commands = [
+            "`/notion-databases` - List your Notion databases (Coming Soon)",
+            "`/create-note <title> <content> [database_id]` - Create note in Notion (Coming Soon)",
+            "`/notion-search <query>` - Search your Notion workspace (Coming Soon)"
+        ]
+        
+        trello_commands = [
+            "`/trello-boards` - List your Trello boards (Coming Soon)",
+            "`/create-task <board_id> <list_name> <task_name> [description]` - Create Trello task (Coming Soon)",
+            "`/board-cards <board_id>` - View cards in a Trello board (Coming Soon)"
+        ]
+        
+        embed.add_field(name="📅 Google Calendar (WIP)", value="\n".join(google_commands), inline=False)
         embed.add_field(name="🐙 GitHub", value="\n".join(github_commands), inline=False)
+        embed.add_field(name="📝 Notion (WIP)", value="\n".join(notion_commands), inline=False)
+        embed.add_field(name="📋 Trello (WIP)", value="\n".join(trello_commands), inline=False)
+        
+        if self.is_admin:
+            embed.add_field(
+                name="🔧 Admin Setup",
+                value="`/setup-github-tracking <channel>` - Configure GitHub notifications channel",
+                inline=False
+            )
         
         return embed
     
     def get_ai_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="🤖 AI Features",
+            title="🤖 AI Features (WIP)",
             description="AI-powered productivity and analysis tools",
             color=0x5865F2
         )
         
         commands = [
-            "`/summarize [count] [user]` - Summarize recent messages",
-            "`/translate <text> <target_language>` - Translate text",
-            "`/ask-ai <question>` - Ask AI assistant",
-            "`/analyze-tone [count]` - Analyze message tone/sentiment"
+            "`/summarize [count] [user]` - Summarize recent messages (max 50 messages) (Coming Soon)",
+            "`/translate <text> <target_language>` - Translate text to another language (Coming Soon)",
+            "`/ask-ai <question>` - Ask the AI assistant a question (Coming Soon)",
+            "`/analyze-tone [count]` - Analyze tone/sentiment of recent messages (Coming Soon)"
         ]
         
         embed.add_field(
             name="Available Commands",
             value="\n".join(commands),
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Features",
+            value="• Message summarization with user filtering\n• Multi-language translation support\n• AI-powered question answering\n• Sentiment analysis and tone detection",
+            inline=False
+        )
+        
+        embed.add_field(
+            name="Note",
+            value="AI features use mock implementations for demonstration. Real implementations would integrate with OpenAI or similar services.",
             inline=False
         )
         
@@ -318,9 +382,9 @@ class HelpDropdown(discord.ui.Select):
         )
         
         commands = [
-            "`/user-permissions [user]` - Show user permissions",
-            "`/role-info <role>` - Show role information",
-            "`/see-user [user]` - View user information"
+            "`/user-permissions [user]` - Show user permissions in current channel",
+            "`/role-info <role>` - Show detailed role information and stats", 
+            "`/see-user [user]` - View comprehensive user information"
         ]
         
         embed.add_field(
@@ -351,11 +415,11 @@ class HelpDropdown(discord.ui.Select):
         )
         
         commands = [
-            "`/privacy-export-data` - Request export of your personal data",
-            "`/privacy-delete-data` - Request deletion of your personal data",
+            "`/privacy-export-data` - Export all your personal data in JSON format",
+            "`/privacy-delete-data [data_type]` - Delete your data (tickets/reminders/keywords/all)",
+            "`/privacy-get-data` - View summary of your stored data",
             "`/privacy-policy` - View the bot's privacy policy",
-            "`/terms-of-service` - View the bot's terms of service",
-            "`/privacy-get-data` - View summary of your stored data"
+            "`/terms-of-service` - View the bot's terms of service"
         ]
         
         embed.add_field(
@@ -374,11 +438,12 @@ class HelpDropdown(discord.ui.Select):
         )
         
         admin_commands = [
-            "`/add-admin-role <role>` - Add role to admin list",
-            "`/remove-admin-role <role>` - Remove role from admin list",
-            "`/list-admin-roles` - List all admin roles",
-            "`/admin-panel` - View bot status and configuration",
-            "`/get-data <user>` - Get user's data in JSON format"
+            "`/add-admin-role <role>` - Add role to admin permissions list",
+            "`/remove-admin-role <role>` - Remove role from admin permissions",
+            "`/list-admin-roles` - List all roles with admin access",
+            "`/admin-panel` - View bot status and server configuration dashboard",
+            "`/get-data <user>` - Export user's data in JSON format (Admin only)",
+            "`/create-admin-meeting <name> <time> <description> <voice_channel>` - Create admin meeting with ping options"
         ]
         
         embed.add_field(
@@ -396,18 +461,37 @@ class HelpDropdown(discord.ui.Select):
             color=0x5865F2
         )
         
-        commands = [
-            "`/create-workflow <name> <trigger>` - Create workflow",
-            "`/list-workflows` - List all server workflows",
-            "`/toggle-workflow <workflow_name>` - Enable/disable workflow"
-        ]
+        if self.is_admin:
+            admin_commands = [
+                "`/create-workflow <name> <trigger> [trigger_channel] [log_channel]` - Create automation workflow",
+                "`/list-workflows` - List all server workflows with status",
+                "`/toggle-workflow <workflow_name>` - Enable/disable a workflow"
+            ]
         
-        embed.add_field(
-            name="Available Commands",
-            value="\n".join(commands),
-            inline=False
-        )
+            embed.add_field(
+                name="Admin Commands",
+                value="\n".join(admin_commands),
+                inline=False
+            )
         
+            embed.add_field(
+                name="Trigger Types",
+                value="• `message` - When a message is sent\n• `member_join` - When a member joins\n• `thread_create` - When a thread is created\n• `channel_create` - When a channel is created\n• `message:text` - When specific text is mentioned",
+                inline=False
+            )
+        
+            embed.add_field(
+                name="Features",
+                value="• Custom trigger conditions\n• Channel-specific triggers\n• Workflow logging\n• Enable/disable workflows\n• Action chaining support",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="Access Denied",
+                value="Workflow management is only available to administrators.",
+                inline=False
+            )
+    
         return embed
     
     def get_logging_embed(self) -> discord.Embed:
@@ -418,9 +502,16 @@ class HelpDropdown(discord.ui.Select):
         )
         
         if self.is_admin:
+            admin_commands = [
+                "`/logging-setup <log_channel> [events]` - Configure server logging system",
+                "`/export-data [data_type]` - Export server data (tickets/reminders/all)",
+                "`/delete-data <data_type> <confirm>` - Delete server data (requires CONFIRM)",
+                "`/setup-logs <log_channel>` - Setup basic logging channel"
+            ]
+            
             embed.add_field(
                 name="Admin Commands",
-                value="`/logging-setup <log_channel>` - Configure logging channel",
+                value="\n".join(admin_commands),
                 inline=False
             )
         
@@ -429,6 +520,82 @@ class HelpDropdown(discord.ui.Select):
             value="• Message deletions and edits\n• Channel creation, deletion, updates\n• Role creation, deletion, assignments\n• Command usage",
             inline=False
         )
+        
+        return embed
+
+    def get_meetings_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="📅 Meetings",
+            description="Meeting scheduling and management system",
+            color=0x5865F2
+        )
+        
+        commands = [
+            "`/create-meeting <name> <time> <description> <voice_channel>` - Schedule a new meeting",
+            "`/join-meeting <meeting_id>` - Join a scheduled meeting by ID",
+            "`/list-meetings` - List all upcoming scheduled meetings"
+        ]
+        
+        embed.add_field(
+            name="Available Commands",
+            value="\n".join(commands),
+            inline=False
+        )
+        
+        if self.is_admin:
+            admin_commands = [
+                "`/setup-meetings <announcement_channel> <voice_channel>` - Configure meeting system",
+                "`/create-admin-meeting <name> <time> <description> <voice_channel>` - Create admin meeting with ping options (@everyone/@here)"
+            ]
+            
+            embed.add_field(
+                name="Admin Commands", 
+                value="\n".join(admin_commands),
+                inline=False
+            )
+        
+        embed.add_field(
+            name="Time Format Examples",
+            value="`1h` = 1 hour\n`30m` = 30 minutes\n`2d` = 2 days\n`1h30m` = 1 hour 30 minutes",
+            inline=False
+        )
+        
+        return embed
+
+    def get_setup_embed(self) -> discord.Embed:
+        embed = discord.Embed(
+            title="⚙️ Setup Commands",
+            description="Server configuration and setup commands (Admin only)",
+            color=0x5865F2
+        )
+        
+        if self.is_admin:
+            setup_commands = [
+                "`/setup-tickets <category> <transcript_channel>` - Configure ticket system",
+                "`/setup-github-tracking <channel>` - Configure GitHub notifications",
+                "`/setup-logs <log_channel>` - Configure basic logging",
+                "`/setup-meetings <announcement_channel> <voice_channel>` - Configure meetings",
+                "`/setup-reminders <reminder_channel>` - Configure reminder fallback channel",
+                "`/setup-threads <thread_log_channel>` - Configure thread logging"
+            ]
+            
+            embed.add_field(
+                name="Setup Commands",
+                value="\n".join(setup_commands),
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Note",
+                value="These commands configure various bot features for your server. Run them once to enable the corresponding functionality.",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="Access Denied",
+                value="Setup commands are only available to administrators.",
+                inline=False
+            )
         
         return embed
 
@@ -455,7 +622,7 @@ class Help(commands.Cog):
             title="🤖 Bot Help Menu",
             description="Welcome to the devBot help system! Use the dropdown menu below to explore different command categories.\n\n"
                        f"**Your Access Level:** {'Administrator' if is_admin else 'User'}\n"
-                       f"**Total Categories:** {12 if is_admin else 9}",
+                       f"**Total Categories:** {14 if is_admin else 10}",
             color=0x5865F2
         )
         

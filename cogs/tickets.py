@@ -195,7 +195,7 @@ class DenialReasonModal(discord.ui.Modal):
             )
             embed.add_field(name="Denied by", value=self.denier.display_name, inline=True)
             embed.add_field(name="Reason", value=self.reason_input.value, inline=False)
-            embed.set_footer(text="Railway Bot")
+            embed.set_footer(text="devBot")
             
             try:
                 await self.requester.send(embed=embed)
@@ -396,7 +396,7 @@ class TicketCommands(app_commands.Group):
             embed.add_field(name="Visibility", value="🌐 Public (Read-only)", inline=True)
             embed.add_field(name="Close Ticket", value="Use `/ticket close` to close this ticket", inline=False)
             embed.timestamp = datetime.utcnow()
-            embed.set_footer(text="Railway Bot")
+            embed.set_footer(text="devBot")
             
             # Send initial message in ticket channel (no view needed)
             await channel.send(f"Welcome {interaction.user.mention}! Your ticket has been created.", embed=embed)
@@ -566,7 +566,7 @@ class TicketCommands(app_commands.Group):
                 color=0x5865F2,
                 timestamp=datetime.utcnow()
             )
-            embed.set_footer(text="Railway Bot")
+            embed.set_footer(text="devBot")
             
             await transcript_channel.send(embed=embed, file=transcript_file)
             print(f"Transcript sent successfully for ticket {ticket_id}")
@@ -667,7 +667,7 @@ class TicketCommands(app_commands.Group):
         if denial_count > 0:
             embed.add_field(name="Previous Denials", value=f"{denial_count}/3", inline=True)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        embed.set_footer(text="Railway Bot")
+        embed.set_footer(text="devBot")
         
         view = TicketJoinRequestView(self.bot, interaction.user, channel)
         
@@ -846,7 +846,7 @@ class TicketCommands(app_commands.Group):
                 title="🎫 Support Tickets",
                 color=0x5865F2
             )
-            embed.set_footer(text="Railway Bot")
+            embed.set_footer(text="devBot")
             
             for ticket in tickets:
                 ticket_id = ticket['ticket_id']
