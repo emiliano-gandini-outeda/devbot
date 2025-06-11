@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder
 import json
+from datetime import datetime
 
 class Setup(commands.Cog):
     """Server setup and configuration commands"""
@@ -10,7 +11,7 @@ class Setup(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
     
-    @app_commands.command(name="ticket-system-setup", description="Setup ticket system (Admin only)")
+    @app_commands.command(name="setup-tickets", description="Setup ticket system (Admin only)")
     @app_commands.describe(
         category="Category where ticket channels will be created",
         transcript_channel="Channel where ticket transcripts will be sent"
@@ -52,47 +53,46 @@ class Setup(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to setup ticket system: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="setup-tracking", description="Setup GitHub repository tracking (Admin only)")
-    @app_commands.describe(
-        tracking_channel="Channel where GitHub repository updates will be sent"
-    )
-    async def setup_tracking(self, interaction: discord.Interaction, tracking_channel: discord.TextChannel):
+    @app_commands.command(name="setup-github-tracking", description="Configure GitHub tracking channel (Admin Only)")
+    @app_commands.describe(channel="Channel where GitHub notifications will be sent")
+    async def setup_github_tracking(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer()
+        
+        # Check if user is admin
         if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
-            embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup GitHub tracking")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            embed = EmbedBuilder.error(
+                "Permission Denied",
+                "Only administrators can configure GitHub tracking."
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
             return
         
         try:
-            # Save tracking config to database
-            config = {
-                'tracking_channel_id': str(tracking_channel.id),
-                'setup_by': str(interaction.user.id),
-                'setup_at': str(discord.utils.utcnow())
+            # Store tracking configuration
+            config_data = {
+                'tracking_channel_id': str(channel.id),
+                'configured_by': str(interaction.user.id),
+                'configured_at': datetime.utcnow().isoformat()
             }
             
-            # Delete existing config first, then insert new one
             await self.bot.db.connection.execute(
-                "DELETE FROM user_data WHERE user_id = $1 AND data_type = $2",
-                str(interaction.guild.id), 'github_tracking_config'
-            )
-            await self.bot.db.connection.execute(
-                "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $1, $2, $3)",
-                str(interaction.guild.id), 'github_tracking_config', json.dumps(config)
+                """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (user_id, guild_id, data_type) 
+                   DO UPDATE SET data_content = $4, updated_at = CURRENT_TIMESTAMP""",
+                str(interaction.guild.id), str(interaction.guild.id), 'github_tracking_config', json.dumps(config_data)
             )
             
             embed = EmbedBuilder.success(
-                "GitHub Tracking Setup",
-                f"GitHub repository tracking has been configured!\n\n"
-                f"**Tracking Channel:** {tracking_channel.mention}\n\n"
-                f"All repository updates will be sent to this channel.\n"
-                f"Users can now track repositories using `/track-repo`"
+                "GitHub Tracking Configured",
+                f"GitHub notifications will be sent to {channel.mention}\n\n"
+                f"Users can now use `/track-repo` to start tracking repositories."
             )
-            
-            await interaction.response.send_message(embed=embed)
+            await interaction.followup.send(embed=embed)
             
         except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to setup GitHub tracking: {str(e)}")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+            embed = EmbedBuilder.error("Configuration Error", f"Failed to configure tracking: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
     
     @app_commands.command(name="setup-logs", description="Setup logging channel (Admin only)")
     @app_commands.describe(log_channel="Channel where logs will be sent")

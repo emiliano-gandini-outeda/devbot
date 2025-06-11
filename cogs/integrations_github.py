@@ -135,47 +135,6 @@ class GitHubIntegrations(commands.Cog):
             logger.error(f"Error getting repo data for {repo_name}: {e}")
             return None
     
-    @app_commands.command(name="setup-github-tracking", description="Configure GitHub tracking channel (Admin Only)")
-    @app_commands.describe(channel="Channel where GitHub notifications will be sent")
-    async def setup_github_tracking(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        await interaction.response.defer()
-        
-        # Check if user is admin
-        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
-            embed = EmbedBuilder.error(
-                "Permission Denied",
-                "Only administrators can configure GitHub tracking."
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-        
-        try:
-            # Store tracking configuration
-            config_data = {
-                'tracking_channel_id': str(channel.id),
-                'configured_by': str(interaction.user.id),
-                'configured_at': datetime.utcnow().isoformat()
-            }
-            
-            await self.bot.db.connection.execute(
-                """INSERT INTO user_data (user_id, guild_id, data_type, data_content) 
-                   VALUES ($1, $2, $3, $4)
-                   ON CONFLICT (user_id, guild_id, data_type) 
-                   DO UPDATE SET data_content = $4, updated_at = CURRENT_TIMESTAMP""",
-                str(interaction.guild.id), str(interaction.guild.id), 'github_tracking_config', json.dumps(config_data)
-            )
-            
-            embed = EmbedBuilder.success(
-                "GitHub Tracking Configured",
-                f"GitHub notifications will be sent to {channel.mention}\n\n"
-                f"Users can now use `/track-repo` to start tracking repositories."
-            )
-            await interaction.followup.send(embed=embed)
-            
-        except Exception as e:
-            embed = EmbedBuilder.error("Configuration Error", f"Failed to configure tracking: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-    
     @app_commands.command(name="track-repo", description="Track a GitHub repository for updates")
     @app_commands.describe(
         repo="Repository name (format: owner/repo)",
@@ -1085,4 +1044,3 @@ class TrackRepoButtonView(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(GitHubIntegrations(bot))
- 
