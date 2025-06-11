@@ -53,6 +53,61 @@ class Setup(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to setup ticket system: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
+    @app_commands.command(name="setup-workflows", description="Setup workflow logging system (Admin only)")
+    @app_commands.describe(
+        log_channel="Channel where workflow execution logs will be sent"
+    )
+    async def setup_workflows(self, interaction: discord.Interaction, log_channel: discord.TextChannel):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup the workflow system")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        try:
+            config = {
+                'workflow_log_channel_id': str(log_channel.id),
+                'setup_by': str(interaction.user.id),
+                'setup_at': str(discord.utils.utcnow())
+            }
+            
+            # Store in user_data table
+            await self.bot.db.connection.execute(
+                """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
+                   VALUES ($1, $1, $2, $3)
+                   ON CONFLICT (user_id, guild_id, data_type) DO UPDATE SET
+                   data_content = $3, updated_at = CURRENT_TIMESTAMP""",
+                str(interaction.guild.id), 'workflow_config', json.dumps(config)
+            )
+            
+            embed = EmbedBuilder.success(
+                "Workflow System Setup",
+                f"Workflow system has been configured successfully!\n\n"
+                f"**Workflow Log Channel:** {log_channel.mention}\n\n"
+                f"✅ **All workflow executions will now be logged in {log_channel.mention}**\n\n"
+                f"Admins can now:\n"
+                f"• Create workflows using `/create-workflow`\n"
+                f"• Add actions using `/add-workflow-action`\n"
+                f"• View workflow logs in the designated channel"
+            )
+            
+            await interaction.response.send_message(embed=embed)
+            
+            # Send test log
+            test_embed = discord.Embed(
+                title="⚙️ Workflow System Activated",
+                description="Workflow logging has been successfully configured!",
+                color=0x57F287
+            )
+            test_embed.add_field(name="Setup by", value=interaction.user.mention, inline=True)
+            test_embed.add_field(name="Log Channel", value=log_channel.mention, inline=True)
+            test_embed.set_footer(text="devBot - Workflow System")
+            
+            await log_channel.send(embed=test_embed)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to setup workflow system: {str(e)}")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+    
     @app_commands.command(name="setup-github-tracking", description="Configure GitHub tracking channel (Admin Only)")
     @app_commands.describe(channel="Channel where GitHub notifications will be sent")
     async def setup_github_tracking(self, interaction: discord.Interaction, channel: discord.TextChannel):

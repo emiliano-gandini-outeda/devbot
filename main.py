@@ -15,6 +15,7 @@ from config.settings import Settings
 from utils.db import DatabaseManager
 from utils.admin import AdminManager
 from utils.logging_manager import LoggingManager
+from utils.workflow_manager import WorkflowManager
 
 # Configure logging
 logging.basicConfig(
@@ -53,6 +54,7 @@ class DiscordBot(commands.Bot):
         self.admin_manager = None
         self.logging_manager = None
         self.ticket_manager = None
+        self.workflow_manager = None
         self.startup_complete = False
     
     async def setup_hook(self):
@@ -100,6 +102,18 @@ class DiscordBot(commands.Bot):
                     logger.warning("⚠️ Skipping logging manager initialization (no database)")
             except Exception as e:
                 logger.warning(f"⚠️ Logging manager initialization failed: {e}")
+
+            # Initialize workflow manager
+            logger.info("⚙️ Initializing workflow manager...")
+            try:
+                if self.db:
+                    self.workflow_manager = WorkflowManager(self)
+                    await self.workflow_manager.load_workflows()
+                    logger.info("✅ Workflow manager initialized")
+                else:
+                    logger.warning("⚠️ Skipping workflow manager initialization (no database)")
+            except Exception as e:
+                logger.warning(f"⚠️ Workflow manager initialization failed: {e}")
 
             # Initialize ticket manager
             logger.info("🎫 Initializing ticket manager...")
@@ -247,6 +261,42 @@ class DiscordBot(commands.Bot):
         except Exception as e:
             logger.error(f"Failed to set bot status: {e}")
     
+    async def on_message(self, message):
+        """Handle message events for workflow triggers"""
+        # Process commands first
+        await self.process_commands(message)
+        
+        # Process workflow triggers
+        if self.workflow_manager:
+            try:
+                await self.workflow_manager.process_message_triggers(message)
+            except Exception as e:
+                logger.error(f"Error processing workflow message triggers: {e}")
+    
+    async def on_member_join(self, member):
+        """Handle member join events for workflow triggers"""
+        if self.workflow_manager:
+            try:
+                await self.workflow_manager.process_member_join_triggers(member)
+            except Exception as e:
+                logger.error(f"Error processing workflow member join triggers: {e}")
+    
+    async def on_thread_create(self, thread):
+        """Handle thread creation events for workflow triggers"""
+        if self.workflow_manager:
+            try:
+                await self.workflow_manager.process_thread_create_triggers(thread)
+            except Exception as e:
+                logger.error(f"Error processing workflow thread create triggers: {e}")
+    
+    async def on_guild_channel_create(self, channel):
+        """Handle channel creation events for workflow triggers"""
+        if self.workflow_manager:
+            try:
+                await self.workflow_manager.process_channel_create_triggers(channel)
+            except Exception as e:
+                logger.error(f"Error processing workflow channel create triggers: {e}")
+    
     async def on_guild_join(self, guild):
         """Called when the bot joins a new guild"""
         logger.info(f"📥 Joined new guild: {guild.name} (ID: {guild.id}) with {guild.member_count} members")
@@ -384,4 +434,3 @@ if __name__ == "__main__":
         logger.error(f"❌ Fatal error: {e}")
         logger.exception("Full traceback:")
         sys.exit(1)
- 

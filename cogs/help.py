@@ -278,7 +278,8 @@ class HelpDropdown(discord.ui.Select):
         commands = [
             "`/add-keyword <keyword>` - Add keyword to monitor for mentions",
             "`/remove-keyword <keyword>` - Remove keyword from monitoring list",
-            "`/list-keywords` - List all your monitored keywords in this server"
+            "`/list-keywords` - List all your monitored keywords in this server",
+            "`/clear-keywords` - Remove all your keywords from this server"
         ]
         
         embed.add_field(
@@ -289,7 +290,7 @@ class HelpDropdown(discord.ui.Select):
         
         embed.add_field(
             name="How It Works",
-            value="• Get notified when your keywords are mentioned\n• Notifications sent via DM\n• Keywords are case-insensitive",
+            value="• Get notified when your keywords are mentioned\n• Notifications sent via DM\n• Keywords are case-insensitive\n• Maximum 20 keywords per server",
             inline=False
         )
         
@@ -464,6 +465,7 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             admin_commands = [
                 "`/create-workflow <name> <trigger> [trigger_channel] [log_channel]` - Create automation workflow",
+                "`/add-workflow-action <workflow_name>` - Add an action to an existing workflow",
                 "`/list-workflows` - List all server workflows with status",
                 "`/toggle-workflow <workflow_name>` - Enable/disable a workflow"
             ]
@@ -476,13 +478,13 @@ class HelpDropdown(discord.ui.Select):
         
             embed.add_field(
                 name="Trigger Types",
-                value="• `message` - When a message is sent\n• `member_join` - When a member joins\n• `thread_create` - When a thread is created\n• `channel_create` - When a channel is created\n• `message:text` - When specific text is mentioned",
+                value="• `message:text` - When a message contains specific text (case insensitive)\n• `member_join` - When a member joins\n• `thread_create` - When a thread is created\n• `channel_create` - When a channel is created",
                 inline=False
             )
         
             embed.add_field(
-                name="Features",
-                value="• Custom trigger conditions\n• Channel-specific triggers\n• Workflow logging\n• Enable/disable workflows\n• Action chaining support",
+                name="Available Actions",
+                value="• Send a message (with ping support)\n• Send an embed (with up to 3 fields)\n• Delete the trigger message\n• Timeout the user (60s, 5m, 10m, 1h, 1d, 1w)\n• Add role to user\n• Create channel\n• Send DM to user",
                 inline=False
             )
         else:
@@ -572,6 +574,7 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             setup_commands = [
                 "`/setup-tickets <category> <transcript_channel>` - Configure ticket system",
+                "`/setup-workflows <log_channel>` - Configure workflow logging system",
                 "`/setup-github-tracking <channel>` - Configure GitHub notifications",
                 "`/setup-logs <log_channel>` - Configure basic logging",
                 "`/setup-meetings <announcement_channel> <voice_channel>` - Configure meetings",
