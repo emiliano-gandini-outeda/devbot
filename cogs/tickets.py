@@ -1,357 +1,414 @@
-"""
-Ticket System Discord Interface
-Handles all Discord slash commands and user interactions
-"""
+import asyncio
+import json
+import logging
+import os
+import re
+from datetime import datetime
+from typing import Optional
+import io
 
 import discord
+from discord import ButtonStyle, Interaction, SelectOption, app_commands
 from discord.ext import commands
-from discord import app_commands
-from utils.helpers import EmbedBuilder
-from utils.ticket_manager import TicketManager
-from datetime import datetime, timezone
-import json
-import asyncio
-from typing import Optional
+from discord.ui import Button, Select, View
+
+# Import everything from helpers.py only
+from utils.helpers import (
+    EmbedBuilder,
+    TicketStatus,
+    TicketPriority,
+    generate_ticket_id,
+    get_ticket_channel,
+    get_ticket_owner,
+    is_support_staff,
+    has_permissions,
+    send_dm,
+    log_to_channel,
+    FieldNotFound
+)
+
+log = logging.getLogger(__name__)
+
 
 class TicketJoinRequestView(discord.ui.View):
-    """View for handling ticket join requests"""
-    
     def __init__(self, bot, requesting_user: discord.Member, ticket_channel: discord.TextChannel):
         super().__init__(timeout=300)
         self.bot = bot
         self.requesting_user = requesting_user
         self.ticket_channel = ticket_channel
     
-    @discord.ui.button(label="✅ Approve", style=discord.ButtonStyle.success)
-    async def approve_join(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success)
+    async def accept_request(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Check if user can accept (must be assignee or admin, not the requester)
+        if interaction.user.id == self.requesting_user.id:
+            await interaction.response.send_message("You cannot accept your own join request!", ephemeral=True)
+            return
+        
+        # Get ticket info to check if user is assignee
+        ticket_id = self.ticket_channel.topic.split("|")[0].replace("Support ticket:", "").strip()
+        
+        ticket = await self.bot.db.connection.fetchrow(
+            "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+        )
+        
+        if not ticket:
+            await interaction.response.send_message("Ticket not found!", ephemeral=True)
+            return
+        
+        # Check if user is admin or assignee
+        is_admin = self.bot.admin_manager.is_admin(interaction.user)
+        assignee_id = ticket['assignee_id']
+        user_id = ticket['user_id']
+        is_assignee = str(interaction.user.id) == assignee_id
+        is_creator = str(interaction.user.id) == user_id
+        
+        if not (is_admin or is_assignee or is_creator):
+            await interaction.response.send_message("Only ticket assignees, creators, or admins can accept join requests!", ephemeral=True)
+            return
+        
         try:
-            # Check if user can approve
-            if not await self._can_approve(interaction.user):
-                await interaction.response.send_message("❌ Only ticket assignees or admins can approve join requests", ephemeral=True)
-                return
-            
-            # Get ticket manager
-            ticket_manager = self.bot.get_cog('Tickets').ticket_manager
-            
-            # Get ticket ID from channel topic
-            ticket_id = self.ticket_channel.topic.split("|")[0].replace("Support ticket:", "").strip()
-            
-            # Assign user to ticket
-            success = await ticket_manager.assign_user_to_ticket(ticket_id, str(self.requesting_user.id))
-            if not success:
-                await interaction.response.send_message("❌ Failed to assign user to ticket", ephemeral=True)
-                return
-            
-            # Grant write permissions
-            await self.ticket_channel.set_permissions(self.requesting_user, read_messages=True, send_messages=True)
-            
-            # Update embed
-            embed = discord.Embed(
-                title="✅ Join Request Approved",
-                description=f"{self.requesting_user.mention} has been granted write access to this ticket",
-                color=0x57F287,
-                timestamp=datetime.now(timezone.utc)
+            # Grant permissions to the requesting user
+            await self.ticket_channel.set_permissions(
+                self.requesting_user, 
+                read_messages=True, 
+                send_messages=True
             )
-            embed.add_field(name="Approved by", value=interaction.user.mention, inline=True)
             
-            # Disable buttons
+            # Update the embed to show accepted
+            embed = discord.Embed(
+                title="✅ Join Request Accepted",
+                description=f"{self.requesting_user.mention} has been granted access to this ticket",
+                color=0x57F287
+            )
+            embed.add_field(name="Accepted by", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Time", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+            
+            # Disable all buttons
             for item in self.children:
                 item.disabled = True
             
             await interaction.response.edit_message(embed=embed, view=self)
             
-            # Welcome message
-            await self.ticket_channel.send(f"🎉 {self.requesting_user.mention} Welcome to the ticket conversation! You can now participate.")
+            # Send notification to the requesting user
+            try:
+                dm_embed = discord.Embed(
+                    title="🎫 Ticket Access Granted",
+                    description=f"Your request to join ticket {ticket_id} has been accepted!",
+                    color=0x57F287
+                )
+                dm_embed.add_field(name="Ticket", value=self.ticket_channel.mention, inline=True)
+                dm_embed.add_field(name="Accepted by", value=interaction.user.mention, inline=True)
+                
+                await self.requesting_user.send(embed=dm_embed)
+            except:
+                # If DM fails, send in channel
+                await self.ticket_channel.send(f"{self.requesting_user.mention} Your join request has been accepted!")
             
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Error approving join request: {str(e)}", ephemeral=True)
-    
-    @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger)
-    async def deny_join(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            # Check if user can deny
-            if not await self._can_approve(interaction.user):
-                await interaction.response.send_message("❌ Only ticket assignees or admins can deny join requests", ephemeral=True)
-                return
-            
-            # Update embed
-            embed = discord.Embed(
-                title="❌ Join Request Denied",
-                description=f"{self.requesting_user.mention}'s request to join this ticket was denied",
-                color=0xED4245,
-                timestamp=datetime.now(timezone.utc)
-            )
-            embed.add_field(name="Denied by", value=interaction.user.mention, inline=True)
-            
-            # Disable buttons
-            for item in self.children:
-                item.disabled = True
-            
-            await interaction.response.edit_message(embed=embed, view=self)
-            
-        except Exception as e:
-            await interaction.response.send_message(f"❌ Error denying join request: {str(e)}", ephemeral=True)
-    
-    async def _can_approve(self, user: discord.Member) -> bool:
-        """Check if user can approve join requests"""
-        try:
-            # Check if admin
-            if hasattr(self.bot, 'admin_manager') and self.bot.admin_manager and self.bot.admin_manager.is_admin(user):
-                return True
-            
-            # Get ticket ID and check if user is assigned
-            ticket_id = self.ticket_channel.topic.split("|")[0].replace("Support ticket:", "").strip()
-            ticket_manager = self.bot.get_cog('Tickets').ticket_manager
-            ticket = await ticket_manager.get_ticket(ticket_id)
-            
-            if ticket:
-                return ticket_manager.can_manage_ticket(user, ticket)
-            
-            return False
-            
-        except Exception:
-            return False
-
-class TicketCloseView(discord.ui.View):
-    """View for closing tickets with transcript generation"""
-    
-    def __init__(self, bot, ticket_id: str):
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.ticket_id = ticket_id
-    
-    @discord.ui.button(label="🔒 Close & Generate Transcript", style=discord.ButtonStyle.danger)
-    async def close_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            # Get ticket manager
-            ticket_manager = self.bot.get_cog('Tickets').ticket_manager
-            
-            # Get ticket
-            ticket = await ticket_manager.get_ticket(self.ticket_id)
-            if not ticket:
-                await interaction.response.send_message("❌ Ticket not found", ephemeral=True)
-                return
-            
-            # Check permissions
-            if not ticket_manager.can_manage_ticket(interaction.user, ticket):
-                await interaction.response.send_message("❌ Only ticket assignees or admins can close tickets", ephemeral=True)
-                return
-            
-            await interaction.response.defer()
-            
-            # Create transcript
-            transcript = await ticket_manager.create_transcript(interaction.channel)
-            
-            # Send transcript
-            transcript_sent = await ticket_manager.send_transcript(interaction.guild, transcript, self.ticket_id, interaction.user)
-            
-            # Update ticket status
-            await ticket_manager.update_ticket_status(self.ticket_id, 'closed')
-            
-            # Send closure message
-            if transcript_sent:
-                embed = EmbedBuilder.success(
-                    "🎫 Ticket Closed Successfully", 
-                    f"**Ticket {self.ticket_id}** has been closed and transcript saved.\n\n"
-                    f"📄 **Transcript:** Successfully sent to transcript channel\n"
-                    f"⏰ **Channel Deletion:** This channel will be deleted in 10 seconds."
+            # Clean up denial records since request was accepted
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3",
+                    str(self.requesting_user.id), str(interaction.guild.id), f'ticket_join_denial_{ticket_id}'
                 )
             else:
-                embed = EmbedBuilder.warning(
-                    "⚠️ Ticket Closed with Issues", 
-                    f"**Ticket {self.ticket_id}** has been closed.\n\n"
-                    f"❌ **Transcript:** Could not be saved - check transcript channel configuration\n"
-                    f"⏰ **Channel Deletion:** This channel will be deleted in 10 seconds."
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ?",
+                    (str(self.requesting_user.id), str(interaction.guild.id), f'ticket_join_denial_{ticket_id}')
                 )
-            
-            await interaction.followup.send(embed=embed)
-            
-            # Delete channel after delay
-            await asyncio.sleep(10)
-            try:
-                await interaction.channel.delete(reason=f"Ticket {self.ticket_id} closed and transcribed")
-            except Exception as e:
-                print(f"Could not delete channel: {e}")
+                await self.bot.db.connection.commit()
             
         except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to close ticket: {str(e)}")
-            try:
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            except:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-
-class TicketSetupModal(discord.ui.Modal):
-    """Modal for ticket system setup"""
+            await interaction.response.send_message(f"Failed to grant access: {str(e)}", ephemeral=True)
     
-    def __init__(self, bot):
-        super().__init__(title="Ticket System Setup")
+    @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.danger)
+    async def deny_request(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Check if user can deny (must be assignee or admin, not the requester)
+        if interaction.user.id == self.requesting_user.id:
+            await interaction.response.send_message("You cannot deny your own join request!", ephemeral=True)
+            return
+        
+        # Get ticket info to check if user is assignee
+        ticket_id = self.ticket_channel.topic.split("|")[0].replace("Support ticket:", "").strip()
+        
+        ticket = await self.bot.db.connection.fetchrow(
+            "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+        )
+        
+        if not ticket:
+            await interaction.response.send_message("Ticket not found!", ephemeral=True)
+            return
+        
+        # Check if user is admin or assignee
+        is_admin = self.bot.admin_manager.is_admin(interaction.user)
+        assignee_id = ticket['assignee_id']
+        user_id = ticket['user_id']
+        is_assignee = str(interaction.user.id) == assignee_id
+        is_creator = str(interaction.user.id) == user_id
+        
+        if not (is_admin or is_assignee or is_creator):
+            await interaction.response.send_message("Only ticket assignees, creators, or admins can deny join requests!", ephemeral=True)
+            return
+        
+        # Show modal for denial reason
+        modal = DenialReasonModal(self.bot, self.requesting_user, interaction.user, ticket_id)
+        await interaction.response.send_modal(modal)
+        
+        # Update the embed to show denied
+        embed = discord.Embed(
+            title="❌ Join Request Denied",
+            description=f"{self.requesting_user.mention}'s request to join this ticket has been denied",
+            color=0xED4245
+        )
+        embed.add_field(name="Denied by", value=interaction.user.mention, inline=True)
+        embed.add_field(name="Time", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+        
+        # Disable all buttons
+        for item in self.children:
+            item.disabled = True
+        
+        await interaction.edit_original_response(embed=embed, view=self)
+
+class DenialReasonModal(discord.ui.Modal):
+    def __init__(self, bot, requester: discord.Member, denier: discord.Member, ticket_id: str):
+        super().__init__(title="Denial Reason")
         self.bot = bot
+        self.requester = requester
+        self.denier = denier
+        self.ticket_id = ticket_id
         
-        self.category_input = discord.ui.TextInput(
-            label="Ticket Category ID",
-            placeholder="Enter the category ID where ticket channels will be created",
+        self.reason_input = discord.ui.TextInput(
+            label="Reason for denial",
+            placeholder="Please provide a reason for denying this request...",
+            style=discord.TextStyle.paragraph,
             required=True,
-            max_length=20
+            max_length=500
         )
-        self.add_item(self.category_input)
-        
-        self.transcript_input = discord.ui.TextInput(
-            label="Transcript Channel ID",
-            placeholder="Enter the channel ID where transcripts will be sent",
-            required=True,
-            max_length=20
-        )
-        self.add_item(self.transcript_input)
+        self.add_item(self.reason_input)
     
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            # Validate category
-            category = interaction.guild.get_channel(int(self.category_input.value))
-            if not category or not isinstance(category, discord.CategoryChannel):
-                await interaction.response.send_message("❌ Invalid category ID. Please provide a valid category channel ID.", ephemeral=True)
-                return
+            # Send DM to requester with denial reason
+            embed = discord.Embed(
+                title="❌ Ticket Join Request Denied",
+                description=f"Your request to join ticket {self.ticket_id} was denied.",
+                color=0xED4245
+            )
+            embed.add_field(name="Denied by", value=self.denier.display_name, inline=True)
+            embed.add_field(name="Reason", value=self.reason_input.value, inline=False)
+            embed.set_footer(text="Railway Bot")
             
-            # Validate transcript channel
-            transcript_channel = interaction.guild.get_channel(int(self.transcript_input.value))
-            if not transcript_channel or not isinstance(transcript_channel, discord.TextChannel):
-                await interaction.response.send_message("❌ Invalid transcript channel ID. Please provide a valid text channel ID.", ephemeral=True)
-                return
+            try:
+                await self.requester.send(embed=embed)
+                response_msg = f"Request denied and {self.requester.mention} has been notified with the reason."
+            except discord.Forbidden:
+                response_msg = f"Request denied but couldn't send DM to {self.requester.mention}."
             
-            # Save configuration
-            ticket_manager = self.bot.get_cog('Tickets').ticket_manager
-            config = {
-                'category_id': str(category.id),
-                'transcript_channel_id': str(transcript_channel.id),
-                'setup_by': str(interaction.user.id),
-                'setup_at': ticket_manager.current_timestamp()
-            }
+            # Track the denial
+            try:
+                if self.bot.db.is_postgresql:
+                    # Get existing denials for this user+ticket combination
+                    existing_record = await self.bot.db.connection.fetchrow(
+                        "SELECT data_content FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3",
+                        str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}'
+                    )
+                    
+                    if existing_record:
+                        # Update existing record with new denial
+                        denials_data = json.loads(existing_record['data_content'])
+                        denials_data['denials'].append({
+                            'denied_at': datetime.utcnow().isoformat(),
+                            'denied_by': str(self.denier.id),
+                            'reason': self.reason_input.value
+                        })
+                        denials_data['count'] = len(denials_data['denials'])
+                        
+                        await self.bot.db.connection.execute(
+                            "UPDATE user_data SET data_content = $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2 AND guild_id = $3 AND data_type = $4",
+                            json.dumps(denials_data), str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}'
+                        )
+                        current_denials = denials_data['count']
+                    else:
+                        # Create new denial record
+                        denials_data = {
+                            'ticket_id': self.ticket_id,
+                            'count': 1,
+                            'denials': [{
+                                'denied_at': datetime.utcnow().isoformat(),
+                                'denied_by': str(self.denier.id),
+                                'reason': self.reason_input.value
+                            }]
+                        }
+                        
+                        await self.bot.db.connection.execute(
+                            "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $2, $3, $4)",
+                            str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}', json.dumps(denials_data)
+                        )
+                        current_denials = 1
+                else:
+                    # SQLite version
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT data_content FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ?",
+                        (str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}')
+                    )
+                    existing_record = await cursor.fetchone()
+                    
+                    if existing_record:
+                        # Update existing record with new denial
+                        denials_data = json.loads(existing_record[0])
+                        denials_data['denials'].append({
+                            'denied_at': datetime.utcnow().isoformat(),
+                            'denied_by': str(self.denier.id),
+                            'reason': self.reason_input.value
+                        })
+                        denials_data['count'] = len(denials_data['denials'])
+                        
+                        await self.bot.db.connection.execute(
+                            "UPDATE user_data SET data_content = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND guild_id = ? AND data_type = ?",
+                            (json.dumps(denials_data), str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}')
+                        )
+                        current_denials = denials_data['count']
+                    else:
+                        # Create new denial record
+                        denials_data = {
+                            'ticket_id': self.ticket_id,
+                            'count': 1,
+                            'denials': [{
+                                'denied_at': datetime.utcnow().isoformat(),
+                                'denied_by': str(self.denier.id),
+                                'reason': self.reason_input.value
+                            }]
+                        }
+                        
+                        await self.bot.db.connection.execute(
+                            "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES (?, ?, ?, ?)",
+                            (str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}', json.dumps(denials_data))
+                        )
+                        current_denials = 1
+                    
+                    await self.bot.db.connection.commit()
+                
+                # Check if user has reached denial limit
+                if current_denials >= 3:
+                    response_msg += f"\n⚠️ {self.requester.mention} has been denied 3 times and can no longer request to join this ticket."
+                    
+            except Exception as e:
+                print(f"Error tracking denial: {e}")
             
-            success = await ticket_manager.save_ticket_config(str(interaction.guild.id), config)
+            embed_response = EmbedBuilder.success("Request Denied", response_msg)
+            await interaction.response.send_message(embed=embed_response, ephemeral=True)
             
-            if success:
-                embed = EmbedBuilder.success(
-                    "✅ Ticket System Configured",
-                    f"**Ticket Category:** {category.mention}\n"
-                    f"**Transcript Channel:** {transcript_channel.mention}\n\n"
-                    f"✅ **The ticket system is now ready!**\n"
-                    f"Users can create tickets using `/ticket create`"
-                )
-                await interaction.response.send_message(embed=embed)
-            else:
-                await interaction.response.send_message("❌ Failed to save ticket configuration. Please try again.", ephemeral=True)
-            
-        except ValueError:
-            await interaction.response.send_message("❌ Invalid channel IDs. Please provide valid numeric channel IDs.", ephemeral=True)
         except Exception as e:
-            await interaction.response.send_message(f"❌ Error setting up ticket system: {str(e)}", ephemeral=True)
+            await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
 
-class Tickets(commands.Cog):
-    """Support ticket system with enhanced features"""
+class TicketCommands(app_commands.Group):
+    """Ticket system commands"""
     
     def __init__(self, bot):
+        super().__init__(name="ticket", description="Support ticket system")
         self.bot = bot
-        self.ticket_manager = TicketManager(bot)
     
-    @app_commands.command(name="setup-tickets", description="Setup the ticket system (Admin only)")
-    async def setup_tickets(self, interaction: discord.Interaction):
-        """Setup ticket system configuration"""
-        if not (hasattr(self.bot, 'admin_manager') and self.bot.admin_manager and self.bot.admin_manager.is_admin(interaction.user)):
-            embed = EmbedBuilder.error("Permission Denied", "Only administrators can setup the ticket system")
+    @app_commands.command(name="create", description="Create a new support ticket")
+    @app_commands.describe(
+        title="Ticket title",
+        description="Detailed description of the issue",
+        priority="Ticket priority (low, medium, high)"
+    )
+    async def create_ticket(self, interaction: discord.Interaction, title: str, description: str, priority: str = "medium"):
+        # Check if ticket system is configured
+        try:
+            config_row = await self.bot.db.connection.fetchrow(
+                "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                str(interaction.guild.id), 'ticket_config'
+            )
+            
+            if not config_row:
+                embed = EmbedBuilder.error(
+                    "Ticket System Not Configured",
+                    "The ticket system has not been set up. Please ask an administrator to run `/ticket-system-setup`"
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            config = json.loads(config_row['data_content'])
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to check ticket configuration: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        modal = TicketSetupModal(self.bot)
-        await interaction.response.send_modal(modal)
-    
-    @app_commands.command(name="ticket", description="Create a new support ticket")
-    @app_commands.describe(
-        title="Brief title for your ticket",
-        description="Detailed description of your issue",
-        priority="Priority level (low, medium, high)"
-    )
-    @app_commands.choices(priority=[
-        app_commands.Choice(name="Low", value="low"),
-        app_commands.Choice(name="Medium", value="medium"),
-        app_commands.Choice(name="High", value="high")
-    ])
-    async def create_ticket(self, interaction: discord.Interaction, title: str, description: str, priority: str = "medium"):
-        """Create a new support ticket"""
-        # Check if ticket system is configured
-        config = await self.ticket_manager.get_ticket_config(str(interaction.guild.id))
-        if not config:
-            embed = EmbedBuilder.error(
-                "Ticket System Not Configured",
-                "The ticket system has not been set up. Please ask an administrator to run `/setup-tickets`"
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
+        valid_priorities = ["low", "medium", "high"]
+        if priority not in valid_priorities:
+            priority = "medium"
+        
+        ticket_id = generate_ticket_id()
         
         await interaction.response.defer()
         
         try:
-            # Check if user already has an open ticket
-            existing_tickets = await self.ticket_manager.get_user_tickets(str(interaction.guild.id), str(interaction.user.id), "open")
-            if existing_tickets:
-                ticket = existing_tickets[0]
-                channel = interaction.guild.get_channel(int(ticket['channel_id']))
-                embed = EmbedBuilder.warning(
-                    "Existing Ticket Found",
-                    f"You already have an open ticket: {channel.mention if channel else 'Channel not found'}\n"
-                    "Please use your existing ticket or close it before creating a new one."
-                )
+            # Get category
+            category_id = config.get('category_id')
+            category = interaction.guild.get_channel(int(category_id)) if category_id else None
+            
+            if not category:
+                embed = EmbedBuilder.error("Error", "Ticket category not found. Please reconfigure the ticket system.")
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
             
-            # Create ticket
-            ticket_data = await self.ticket_manager.create_ticket(interaction.guild, interaction.user, title, description, priority)
+            # Create ticket channel with PUBLIC READ-ONLY permissions by default
+            overwrites = {
+                interaction.guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
+                interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
+                interaction.guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_channels=True)
+            }
             
-            if not ticket_data:
-                embed = EmbedBuilder.error("Error", "Failed to create ticket. Please check bot permissions and configuration.")
-                await interaction.followup.send(embed=embed, ephemeral=True)
-                return
+            # Add admin roles with write permissions
+            if self.bot.admin_manager:
+                admin_role_ids = self.bot.admin_manager.get_admin_roles(str(interaction.guild.id))
+                for role_id in admin_role_ids:
+                    role = interaction.guild.get_role(int(role_id))
+                    if role:
+                        overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
             
-            # Get the created channel
-            channel = interaction.guild.get_channel(int(ticket_data['channel_id']))
+            channel = await category.create_text_channel(
+                name=f"ticket-{ticket_id}",
+                topic=f"Support ticket: {ticket_id} | Created by: {interaction.user}",
+                overwrites=overwrites
+            )
+            
+            # Create ticket in database
+            await self.bot.db.connection.execute(
+                """INSERT INTO tickets (ticket_id, guild_id, user_id, title, description, status, priority, channel_id, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                ticket_id, str(interaction.guild.id), str(interaction.user.id), 
+                title, description, TicketStatus.OPEN.value, priority, str(channel.id), datetime.utcnow()
+            )
             
             # Create ticket embed for the channel
             embed = discord.Embed(
-                title=f"🎫 Support Ticket: {ticket_data['ticket_id']}",
-                description=f"**Issue Description:**\n{description}",
-                color=0x5865F2,
-                timestamp=datetime.now(timezone.utc)
+                title=f"🎫 Ticket: {ticket_id}",
+                description=description,
+                color=0x5865F2
             )
-            embed.add_field(name="📋 Title", value=title, inline=False)
-            embed.add_field(name="⚡ Priority", value=priority.title(), inline=True)
-            embed.add_field(name="📊 Status", value="🟢 Open", inline=True)
-            embed.add_field(name="👤 Created by", value=interaction.user.mention, inline=True)
-            embed.add_field(name="👀 Visibility", value="🌐 **Public & Read-Only**", inline=False)
-            embed.add_field(name="ℹ️ Access Info", value="• Everyone can **read** this ticket\n• Only you, assignees, and admins can **write**\n• Use `/ticket-join` to request write access", inline=False)
-            embed.set_footer(text="devBot - Powered by EGOS")
+            embed.add_field(name="Title", value=title, inline=False)
+            embed.add_field(name="Priority", value=priority.title(), inline=True)
+            embed.add_field(name="Status", value="Open", inline=True)
+            embed.add_field(name="Created by", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Visibility", value="🌐 Public (Read-only)", inline=True)
+            embed.add_field(name="Close Ticket", value="Use `/ticket close` to close this ticket", inline=False)
+            embed.timestamp = datetime.utcnow()
+            embed.set_footer(text="Railway Bot")
             
-            view = TicketCloseView(self.bot, ticket_data['ticket_id'])
-            
-            # Send welcome message
-            await channel.send(
-                f"🎫 **Welcome {interaction.user.mention}!** Your support ticket has been created.\n\n"
-                f"🌐 **This ticket is PUBLIC and READ-ONLY by default:**\n"
-                f"• ✅ Everyone can see and read this conversation\n"
-                f"• ❌ Only you, assignees, and admins can respond\n"
-                f"• 💬 Others can request to join using `/ticket-join`\n\n"
-                f"📝 **You can participate** since you created this ticket.",
-                embed=embed, 
-                view=view
-            )
+            # Send initial message in ticket channel (no view needed)
+            await channel.send(f"Welcome {interaction.user.mention}! Your ticket has been created.", embed=embed)
             
             # Respond to user
             embed_response = EmbedBuilder.success(
-                "🎫 Public Ticket Created Successfully",
-                f"**Ticket ID:** `{ticket_data['ticket_id']}`\n"
-                f"**Channel:** {channel.mention}\n"
-                f"**Priority:** {priority.title()}\n"
-                f"**Visibility:** 🌐 **Public & Read-Only**\n\n"
-                f"✅ **Your ticket is now visible to everyone** in the server\n"
-                f"💬 **Only you, assignees, and admins** can respond\n"
-                f"🔧 **Use `/ticket-private`** if you need to make it private later"
+                "Ticket Created",
+                f"Your ticket **{ticket_id}** has been created!\n"
+                f"Channel: {channel.mention}\n"
+                f"Priority: {priority.title()}\n"
+                f"Visibility: Public (everyone can read, only you and admins can write)\n"
+                f"Use `/ticket close` to close the ticket when resolved."
             )
             await interaction.followup.send(embed=embed_response, ephemeral=True)
             
@@ -359,141 +416,426 @@ class Tickets(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to create ticket: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="ticket-join", description="Request to join a ticket conversation")
-    @app_commands.describe(ticket_id="ID of the ticket to join (optional if in ticket channel)")
-    async def ticket_join(self, interaction: discord.Interaction, ticket_id: Optional[str] = None):
-        """Request to join a ticket conversation"""
-        # Get ticket ID from channel if not provided
+    @app_commands.command(name="close", description="Close a ticket with transcript")
+    @app_commands.describe(ticket_id="ID of the ticket to close (optional, not needed if in ticket channel)")
+    async def close_ticket(self, interaction: discord.Interaction, ticket_id: str = None):
+        # If no ticket ID provided, check if we're in a ticket channel
         if not ticket_id:
             if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
                 embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels or with a ticket ID")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
+            
+            # Extract ticket ID from channel topic
             ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket:", "").strip()
         
-        # Get ticket
-        ticket = await self.ticket_manager.get_ticket(ticket_id)
+        try:
+            # Check permissions
+            ticket = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+            )
+            
+            if not ticket:
+                embed = EmbedBuilder.error("Error", "Ticket not found")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            ticket_user_id = ticket['user_id']
+            assignee_id = ticket['assignee_id']
+            channel_id = ticket['channel_id']
+            
+            # Check if user is admin, ticket creator, or assignee
+            is_admin = self.bot.admin_manager.is_admin(interaction.user)
+            is_creator = str(interaction.user.id) == ticket_user_id
+            is_assignee = assignee_id and str(interaction.user.id) == assignee_id
+            
+            if not (is_admin or is_creator or is_assignee):
+                embed = EmbedBuilder.error("Permission Denied", "Only admins, ticket creator, or assignees can close tickets")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            # Get the ticket channel
+            if channel_id:
+                channel = interaction.guild.get_channel(int(channel_id))
+            else:
+                channel = interaction.channel if interaction.channel.topic and "Support ticket:" in interaction.channel.topic else None
+            
+            if not channel:
+                embed = EmbedBuilder.error("Channel Not Found", "The ticket channel no longer exists")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            await interaction.response.defer()
+            
+            # Create transcript
+            transcript = await self.create_transcript(channel)
+            
+            # Get ticket creator
+            ticket_user = interaction.guild.get_member(int(ticket_user_id))
+            
+            # Send transcript
+            success = await self.send_transcript(
+                interaction.guild, transcript, ticket_id, ticket_user or interaction.user
+            )
+            
+            # Update ticket status
+            await self.bot.db.connection.execute(
+                "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
+                TicketStatus.CLOSED.value, datetime.utcnow(), ticket_id
+            )
+            
+            if success:
+                embed = EmbedBuilder.success(
+                    "Ticket Closed", 
+                    f"Ticket {ticket_id} has been closed and transcript saved.\n"
+                    f"This channel will be deleted in 10 seconds."
+                )
+            else:
+                embed = EmbedBuilder.warning(
+                    "Ticket Closed", 
+                    f"Ticket {ticket_id} has been closed but transcript could not be saved.\n"
+                    f"This channel will be deleted in 10 seconds."
+                )
+            
+            await interaction.followup.send(embed=embed)
+            
+            # Delete channel after 10 seconds
+            await asyncio.sleep(10)
+            try:
+                await channel.delete(reason=f"Ticket {ticket_id} closed")
+            except:
+                pass
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to close ticket: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    async def create_transcript(self, channel: discord.TextChannel) -> str:
+        """Create a transcript of the ticket channel"""
+        try:
+            messages = []
+            async for message in channel.history(limit=None, oldest_first=True):
+                timestamp = message.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')
+                content = message.content or "[No content]"
+                
+                if message.attachments:
+                    attachments = "\n".join([f"Attachment: {att.filename}" for att in message.attachments])
+                    content += f"\n{attachments}"
+                
+                messages.append(f"[{timestamp}] {message.author}: {content}")
+            
+            return "\n".join(messages)
+            
+        except Exception as e:
+            print(f"Error creating transcript: {e}")
+            return f"Error creating transcript: {str(e)}"
+    
+    async def send_transcript(self, guild: discord.Guild, transcript: str, ticket_id: str, user: discord.Member) -> bool:
+        """Send transcript to the configured channel"""
+        try:
+            config_row = await self.bot.db.connection.fetchrow(
+                "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                str(guild.id), 'ticket_config'
+            )
+            
+            if not config_row:
+                print(f"No ticket config found for guild {guild.id}")
+                return False
+            
+            config = json.loads(config_row['data_content'])
+            transcript_channel_id = config.get('transcript_channel_id')
+            
+            if not transcript_channel_id:
+                print(f"No transcript_channel_id in config for guild {guild.id}")
+                return False
+            
+            transcript_channel = guild.get_channel(int(transcript_channel_id))
+            if not transcript_channel:
+                print(f"Transcript channel {transcript_channel_id} not found in guild {guild.id}")
+                return False
+            
+            # Create transcript file
+            transcript_file = discord.File(
+                fp=io.StringIO(transcript),
+                filename=f"transcript_{ticket_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.txt"
+            )
+            
+            embed = discord.Embed(
+                title=f"🎫 Ticket Transcript: {ticket_id}",
+                description=f"Ticket closed by {user.mention}",
+                color=0x5865F2,
+                timestamp=datetime.utcnow()
+            )
+            embed.set_footer(text="Railway Bot")
+            
+            await transcript_channel.send(embed=embed, file=transcript_file)
+            print(f"Transcript sent successfully for ticket {ticket_id}")
+            return True
+            
+        except Exception as e:
+            print(f"Error sending transcript: {e}")
+            return False
+    
+    @app_commands.command(name="join", description="Request to join a ticket")
+    @app_commands.describe(ticket_id="ID of the ticket to join (optional, not needed if in ticket channel)")
+    async def ticket_join(self, interaction: discord.Interaction, ticket_id: str = None):
+        # If no ticket ID provided, check if we're in a ticket channel
+        if not ticket_id:
+            if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
+                embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels or with a ticket ID")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            # Extract ticket ID from channel topic
+            ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket:", "").strip()
+        
+        # Get ticket information
+        ticket = await self.bot.db.connection.fetchrow(
+            "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+        )
+        
         if not ticket:
-            embed = EmbedBuilder.error("Not Found", f"Ticket {ticket_id} not found")
+            embed = EmbedBuilder.error("Not Found", f"Ticket with ID {ticket_id} not found")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        channel = interaction.guild.get_channel(int(ticket['channel_id']))
+        # Check if user has been denied too many times for this ticket
+        if self.bot.db.is_postgresql:
+            denial_record = await self.bot.db.connection.fetchrow(
+                "SELECT data_content FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3",
+                str(interaction.user.id), str(interaction.guild.id), f'ticket_join_denial_{ticket_id}'
+            )
+            denial_count = 0
+            if denial_record:
+                denials_data = json.loads(denial_record['data_content'])
+                denial_count = denials_data.get('count', 0)
+        else:
+            cursor = await self.bot.db.connection.execute(
+                "SELECT data_content FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ?",
+                (str(interaction.user.id), str(interaction.guild.id), f'ticket_join_denial_{ticket_id}')
+            )
+            denial_record = await cursor.fetchone()
+            denial_count = 0
+            if denial_record:
+                denials_data = json.loads(denial_record[0])
+                denial_count = denials_data.get('count', 0)
+
+        # Check if user has been denied too many times
+        if denial_count >= 3:
+            embed = EmbedBuilder.error(
+                "Access Denied", 
+                f"You have been denied access to ticket {ticket_id} too many times ({denial_count} denials). You cannot make more join requests for this ticket."
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Get ticket channel
+        channel_id = ticket['channel_id']
+        if not channel_id:
+            embed = EmbedBuilder.error("Channel Not Found", "The ticket channel no longer exists")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        channel = interaction.guild.get_channel(int(channel_id))
         if not channel:
-            embed = EmbedBuilder.error("Channel Not Found", f"Ticket {ticket_id} channel has been deleted")
+            embed = EmbedBuilder.error("Channel Not Found", "The ticket channel no longer exists")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
         # Check if user already has access
-        if self.ticket_manager.can_access_ticket(interaction.user, ticket):
-            embed = EmbedBuilder.warning("Already Assigned", "You already have access to this ticket conversation")
+        permissions = channel.permissions_for(interaction.user)
+        if permissions.send_messages:
+            embed = EmbedBuilder.warning("Already Joined", "You already have access to this ticket")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Create join request
+        # Respond to user first to avoid timeout
+        response_embed = EmbedBuilder.success(
+            "Request Sent",
+            f"Your request to join ticket {ticket_id} has been sent. You'll be notified if it's accepted."
+        )
+        await interaction.response.send_message(embed=response_embed, ephemeral=True)
+        
+        # Create join request embed
         embed = discord.Embed(
             title="🎫 Ticket Join Request",
-            description=f"{interaction.user.mention} wants to join this ticket conversation",
-            color=0xFEE75C,
-            timestamp=datetime.now(timezone.utc)
+            description=f"{interaction.user.mention} wants to join this ticket",
+            color=0xFEE75C
         )
-        embed.add_field(name="👤 User", value=f"{interaction.user.mention}\n`{interaction.user}`", inline=True)
-        embed.add_field(name="📅 Requested", value=f"<t:{int(datetime.now(timezone.utc).timestamp())}:R>", inline=True)
-        embed.add_field(name="🔍 Current Access", value="👀 **Read Only**\n(Can see all messages)", inline=True)
-        embed.add_field(name="📝 Requesting", value="💬 **Write Access**\n(Can participate in conversation)", inline=True)
+        embed.add_field(name="User", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
+        embed.add_field(name="Requested", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+        if denial_count > 0:
+            embed.add_field(name="Previous Denials", value=f"{denial_count}/3", inline=True)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
-        embed.set_footer(text="Only ticket assignees or admins can approve • devBot - Powered by EGOS")
+        embed.set_footer(text="Railway Bot")
         
         view = TicketJoinRequestView(self.bot, interaction.user, channel)
         
         # Send request to ticket channel
         await channel.send(embed=embed, view=view)
-        
-        # Notify user
-        response_embed = EmbedBuilder.success(
-            "📤 Join Request Sent",
-            f"Your request to join ticket **{ticket_id}** has been sent.\n\n"
-            f"👀 **Current Access:** You can read all messages\n"
-            f"⏳ **Pending:** Write access (ability to respond)\n"
-            f"✅ **Approval:** Ticket assignees or admins can approve"
-        )
-        await interaction.response.send_message(embed=response_embed, ephemeral=True)
     
-    @app_commands.command(name="ticket-private", description="Make ticket private (only assigned users can read)")
+    @app_commands.command(name="private", description="Make ticket private (only assigned users can read)")
     async def ticket_private(self, interaction: discord.Interaction):
-        """Make ticket private"""
+        # Check if this is a ticket channel
         if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
             embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket:", "").strip()
-        ticket = await self.ticket_manager.get_ticket(ticket_id)
+        # Check permissions
+        if not self.bot.admin_manager.is_admin(interaction.user):
+            # Check if user is ticket creator or assignee
+            ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket: ", "").strip()
+            
+            ticket = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+            )
+            
+            if not ticket:
+                embed = EmbedBuilder.error("Error", "Ticket not found")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            user_id = ticket['user_id']
+            assignee_id = ticket['assignee_id']
+            
+            if str(interaction.user.id) not in [user_id, assignee_id]:
+                embed = EmbedBuilder.error("Permission Denied", "Only ticket creator, assignee, or admins can change visibility")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
         
-        if not ticket or not self.ticket_manager.can_manage_ticket(interaction.user, ticket):
-            embed = EmbedBuilder.error("Permission Denied", "Only ticket assignees or admins can change visibility")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        success = await self.ticket_manager.set_ticket_visibility(interaction.channel, private=True)
+        success = await self.set_ticket_visibility(interaction.channel, private=True)
         
         if success:
-            embed = EmbedBuilder.success("🔒 Ticket Set to Private", "This ticket is now **private** - only assigned users and admins can read it")
+            embed = EmbedBuilder.success("Ticket Set to Private", "🔒 This ticket is now private - only assigned users and admins can read it")
         else:
             embed = EmbedBuilder.error("Error", "Failed to set ticket visibility")
         
         await interaction.response.send_message(embed=embed)
     
-    @app_commands.command(name="ticket-public", description="Make ticket public (everyone can read)")
+    @app_commands.command(name="public", description="Make ticket public (everyone can read)")
     async def ticket_public(self, interaction: discord.Interaction):
-        """Make ticket public"""
+        # Check if this is a ticket channel
         if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
             embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket:", "").strip()
-        ticket = await self.ticket_manager.get_ticket(ticket_id)
+        # Check permissions (same as ticket-private)
+        if not self.bot.admin_manager.is_admin(interaction.user):
+            ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket: ", "").strip()
+            
+            ticket = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+            )
+            
+            if not ticket:
+                embed = EmbedBuilder.error("Error", "Ticket not found")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            user_id = ticket['user_id']
+            assignee_id = ticket['assignee_id']
+            
+            if str(interaction.user.id) not in [user_id, assignee_id]:
+                embed = EmbedBuilder.error("Permission Denied", "Only ticket creator, assignee, or admins can change visibility")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
         
-        if not ticket or not self.ticket_manager.can_manage_ticket(interaction.user, ticket):
-            embed = EmbedBuilder.error("Permission Denied", "Only ticket assignees or admins can change visibility")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        success = await self.ticket_manager.set_ticket_visibility(interaction.channel, private=False)
+        success = await self.set_ticket_visibility(interaction.channel, private=False)
         
         if success:
-            embed = EmbedBuilder.success("🌐 Ticket Set to Public", "This ticket is now **public** - everyone can read it (but only assigned users can write)")
+            embed = EmbedBuilder.success("Ticket Set to Public", "🌐 This ticket is now public - everyone can read it (but only assigned users can write)")
         else:
             embed = EmbedBuilder.error("Error", "Failed to set ticket visibility")
         
         await interaction.response.send_message(embed=embed)
     
-    @app_commands.command(name="ticket-list", description="List tickets")
+    async def set_ticket_visibility(self, channel: discord.TextChannel, private: bool = True) -> bool:
+        """Set ticket visibility (private or public)"""
+        try:
+            guild = channel.guild
+            
+            if private:
+                # Private: Only assignees and admins can read
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(read_messages=False, send_messages=False)
+                }
+            else:
+                # Public: Everyone can read, but only assignees can write
+                overwrites = {
+                    guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False)
+                }
+            
+            # Always allow bot to manage
+            overwrites[guild.me] = discord.PermissionOverwrite(
+                read_messages=True, 
+                send_messages=True, 
+                manage_channels=True
+            )
+            
+            # Get ticket info to preserve creator and assignee permissions
+            if channel.topic and "Support ticket:" in channel.topic:
+                ticket_id = channel.topic.split("|")[0].replace("Support ticket:", "").strip()
+                
+                ticket = await self.bot.db.connection.fetchrow(
+                    "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+                )
+                
+                if ticket:
+                    # Creator permissions
+                    user_id = ticket['user_id']
+                    creator = guild.get_member(int(user_id))
+                    if creator:
+                        overwrites[creator] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                    
+                    # Assignee permissions
+                    assignee_id = ticket['assignee_id']
+                    if assignee_id:
+                        assignee = guild.get_member(int(assignee_id))
+                        if assignee:
+                            overwrites[assignee] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            
+            # Admin role permissions
+            if self.bot.admin_manager:
+                admin_role_ids = self.bot.admin_manager.get_admin_roles(str(guild.id))
+                for role_id in admin_role_ids:
+                    role = guild.get_role(int(role_id))
+                    if role:
+                        overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            
+            await channel.edit(overwrites=overwrites)
+            return True
+            
+        except Exception as e:
+            print(f"Error setting ticket visibility: {e}")
+            return False
+    
+    @app_commands.command(name="list", description="List all tickets")
     @app_commands.describe(
         status="Filter by status (open, closed, all)",
         user="Filter by user (mention or ID)"
     )
-    @app_commands.choices(status=[
-        app_commands.Choice(name="All", value="all"),
-        app_commands.Choice(name="Open", value="open"),
-        app_commands.Choice(name="Closed", value="closed")
-    ])
-    async def list_tickets(self, interaction: discord.Interaction, status: str = "all", user: Optional[discord.Member] = None):
-        """List tickets with filters"""
+    async def list_tickets(self, interaction: discord.Interaction, status: str = "all", user: discord.Member = None):
         await interaction.response.defer()
         
         try:
+            query = "SELECT * FROM tickets WHERE guild_id = $1"
+            params = [str(interaction.guild.id)]
+            param_count = 1
+            
+            if status != "all":
+                param_count += 1
+                query += f" AND status = ${param_count}"
+                params.append(status)
+            
             if user:
-                if status == "all":
-                    tickets = await self.ticket_manager.get_user_tickets(str(interaction.guild.id), str(user.id))
-                else:
-                    tickets = await self.ticket_manager.get_user_tickets(str(interaction.guild.id), str(user.id), status)
-            else:
-                if status == "all":
-                    tickets = await self.ticket_manager.get_guild_tickets(str(interaction.guild.id))
-                else:
-                    tickets = await self.ticket_manager.get_guild_tickets(str(interaction.guild.id), status)
+                param_count += 1
+                query += f" AND user_id = ${param_count}"
+                params.append(str(user.id))
+            
+            query += " ORDER BY created_at DESC LIMIT 10"
+            tickets = await self.bot.db.connection.fetch(query, *params)
             
             if not tickets:
                 embed = EmbedBuilder.info("No Tickets", "No tickets found matching your criteria")
@@ -502,24 +844,22 @@ class Tickets(commands.Cog):
             
             embed = discord.Embed(
                 title="🎫 Support Tickets",
-                color=0x5865F2,
-                timestamp=datetime.now(timezone.utc)
+                color=0x5865F2
             )
-            embed.set_footer(text="devBot - Powered by EGOS")
+            embed.set_footer(text="Railway Bot")
             
-            for ticket in tickets[:10]:  # Limit to 10 tickets
+            for ticket in tickets:
                 ticket_id = ticket['ticket_id']
                 user_id = ticket['user_id']
                 title = ticket['title']
-                ticket_status = ticket['status']
+                status = ticket['status']
                 priority = ticket['priority']
                 channel_id = ticket['channel_id']
-                created_at = ticket['created_at']
                 
                 ticket_user = interaction.guild.get_member(int(user_id))
                 user_name = ticket_user.display_name if ticket_user else "Unknown"
                 
-                status_emoji = "🟢" if ticket_status == "open" else "🔴"
+                status_emoji = "🟢" if status == "open" else "🔴"
                 priority_emoji = {"low": "🔵", "medium": "🟡", "high": "🔴"}.get(priority, "🟡")
                 
                 # Create channel link if channel exists
@@ -534,9 +874,8 @@ class Tickets(commands.Cog):
                     value=f"**Title:** {title}\n"
                           f"**User:** {user_name}\n"
                           f"**Priority:** {priority_emoji} {priority.title()}\n"
-                          f"**Status:** {ticket_status.title()}\n"
-                          f"**Channel:** {channel_link}\n"
-                          f"**Created:** <t:{created_at}:R>",
+                          f"**Status:** {status.title()}\n"
+                          f"**Channel:** {channel_link}",
                     inline=True
                 )
             
@@ -546,41 +885,41 @@ class Tickets(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to fetch tickets: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="ticket-assign", description="Assign a user to a ticket (Admin only)")
+    @app_commands.command(name="assign", description="Assign a ticket to a user (Admin only)")
     @app_commands.describe(
         ticket_id="Ticket ID to assign",
-        user="User to assign to the ticket"
+        assignee="User to assign the ticket to"
     )
-    async def assign_ticket(self, interaction: discord.Interaction, ticket_id: str, user: discord.Member):
-        """Assign a user to a ticket"""
-        if not (hasattr(self.bot, 'admin_manager') and self.bot.admin_manager and self.bot.admin_manager.is_admin(interaction.user)):
+    async def assign_ticket(self, interaction: discord.Interaction, ticket_id: str, assignee: discord.Member):
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
             embed = EmbedBuilder.error("Permission Denied", "Only administrators can assign tickets")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
         try:
-            # Check if ticket exists
-            ticket = await self.ticket_manager.get_ticket(ticket_id)
-            if not ticket:
+            result = await self.bot.db.connection.execute(
+                "UPDATE tickets SET assignee_id = $1, updated_at = $2 WHERE ticket_id = $3 AND guild_id = $4",
+                str(assignee.id), datetime.utcnow(), ticket_id, str(interaction.guild.id)
+            )
+            
+            if "UPDATE 0" in str(result):
                 embed = EmbedBuilder.error("Not Found", f"Ticket {ticket_id} not found")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
             
-            # Assign user
-            success = await self.ticket_manager.assign_user_to_ticket(ticket_id, str(user.id))
-            if not success:
-                embed = EmbedBuilder.error("Error", "Failed to assign user to ticket")
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
+            # Add assignee to ticket channel permissions
+            ticket = await self.bot.db.connection.fetchrow(
+                "SELECT channel_id FROM tickets WHERE ticket_id = $1", ticket_id
+            )
             
-            # Update channel permissions
-            channel = interaction.guild.get_channel(int(ticket['channel_id']))
-            if channel:
-                await channel.set_permissions(user, read_messages=True, send_messages=True)
+            if ticket and ticket['channel_id']:
+                channel = interaction.guild.get_channel(int(ticket['channel_id']))
+                if channel:
+                    await channel.set_permissions(assignee, read_messages=True, send_messages=True)
             
             embed = EmbedBuilder.success(
                 "Ticket Assigned",
-                f"Ticket **{ticket_id}** has been assigned to {user.mention}"
+                f"Ticket **{ticket_id}** has been assigned to {assignee.mention}"
             )
             await interaction.response.send_message(embed=embed)
             
@@ -588,6 +927,18 @@ class Tickets(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to assign ticket: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
 
+class Tickets(commands.Cog):
+    """Support ticket system"""
+    
+    def __init__(self, bot):
+        self.bot = bot
+        self.ticket_commands = TicketCommands(bot)
+        self.bot.tree.add_command(self.ticket_commands)
+    
+    async def cog_load(self):
+        """Called when the cog is loaded"""
+        # No need to restore views since we're using commands now
+        print("Ticket system loaded - using command-based closing")
+
 async def setup(bot):
     await bot.add_cog(Tickets(bot))
-    print(f"🎫 Successfully loaded Tickets cog")
