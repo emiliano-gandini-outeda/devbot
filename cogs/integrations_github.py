@@ -107,9 +107,9 @@ class GitHubIntegrations(commands.Cog):
             logger.error(f"Error getting repo data for {repo_name}: {e}")
             return None
     
-    @app_commands.command(name="setup-tracking", description="Configure GitHub tracking channel (Admin Only)")
+    @app_commands.command(name="setup-github-tracking", description="Configure GitHub tracking channel (Admin Only)")
     @app_commands.describe(channel="Channel where GitHub notifications will be sent")
-    async def setup_tracking(self, interaction: discord.Interaction, channel: discord.TextChannel):
+    async def setup_github_tracking(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await interaction.response.defer()
         
         # Check if user is admin
@@ -193,7 +193,7 @@ class GitHubIntegrations(commands.Cog):
             if not config:
                 embed = EmbedBuilder.error(
                     "GitHub Tracking Not Configured",
-                    "GitHub tracking has not been set up. Please ask an administrator to run `/setup-tracking`"
+                    "GitHub tracking has not been set up. Please ask an administrator to run `/setup-github-tracking`"
                 )
                 await interaction.followup.send(embed=embed, ephemeral=True)
                 return
