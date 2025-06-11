@@ -2,7 +2,10 @@ import discord
 from datetime import datetime, timedelta
 import re
 from typing import Optional, Union
-import asyncio
+import random
+import string
+import json
+from enum import Enum
 
 class EmbedBuilder:
     """Helper class for creating consistent embeds"""
@@ -98,6 +101,17 @@ class TimeParser:
         
         return " ".join(parts) if parts else "< 1m"
 
+# Ticket system constants
+class TicketStatus(Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+    PENDING = "pending"
+
+class TicketPriority(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
 def format_user_mention(user_id: Union[str, int]) -> str:
     """Format a user ID as a Discord mention"""
     return f"<@{user_id}>"
@@ -126,127 +140,141 @@ def is_valid_discord_id(discord_id: Union[str, int]) -> bool:
 
 def generate_ticket_id() -> str:
     """Generate a unique ticket ID"""
-    import random
-    import string
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
 
 def generate_meeting_id() -> str:
     """Generate a unique meeting ID"""
-    import random
-    import string
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
 
-# Additional functions needed for tickets.py
-class FieldNotFound(Exception):
-    """Exception raised when a required field is not found"""
-    pass
+# Ticket system helper functions
+async def get_ticket_channel(bot, guild_id: int, user_id: int = None, ticket_id: str = None) -> Optional[discord.TextChannel]:
+    """Get a ticket channel by user ID or ticket ID"""
+    try:
+        if ticket_id:
+            # Find by ticket ID
+            ticket = await bot.db.connection.fetchrow(
+                "SELECT channel_id FROM tickets WHERE ticket_id = $1 AND guild_id = $2",
+                ticket_id, str(guild_id)
+            )
+            if ticket and ticket['channel_id']:
+                guild = bot.get_guild(guild_id)
+                if guild:
+                    return guild.get_channel(int(ticket['channel_id']))
+        elif user_id:
+            # Find by user ID (open tickets only)
+            ticket = await bot.db.connection.fetchrow(
+                "SELECT channel_id FROM tickets WHERE user_id = $1 AND guild_id = $2 AND status = 'open'",
+                str(user_id), str(guild_id)
+            )
+            if ticket and ticket['channel_id']:
+                guild = bot.get_guild(guild_id)
+                if guild:
+                    return guild.get_channel(int(ticket['channel_id']))
+    except Exception as e:
+        print(f"Error getting ticket channel: {e}")
+    return None
+
+async def get_ticket_owner(bot, channel_id: int) -> Optional[str]:
+    """Get the owner (creator) of a ticket by channel ID"""
+    try:
+        ticket = await bot.db.connection.fetchrow(
+            "SELECT user_id FROM tickets WHERE channel_id = $1",
+            str(channel_id)
+        )
+        return ticket['user_id'] if ticket else None
+    except Exception as e:
+        print(f"Error getting ticket owner: {e}")
+        return None
+
+def is_support_staff(guild: discord.Guild, user: discord.Member) -> bool:
+    """Check if a user is support staff (has manage_channels permission)"""
+    return user.guild_permissions.manage_channels or user.guild_permissions.administrator
 
 def has_permissions(**perms):
     """Decorator to check if user has required permissions"""
     def decorator(func):
         async def wrapper(self, ctx, *args, **kwargs):
             if not any(getattr(ctx.author.guild_permissions, perm, False) for perm in perms):
-                embed = EmbedBuilder.error("Permission Denied", "You don't have permission to use this command.")
+                embed = EmbedBuilder.error(
+                    "Permission Denied",
+                    f"You need one of these permissions: {', '.join(perms)}"
+                )
                 await ctx.send(embed=embed)
                 return
             return await func(self, ctx, *args, **kwargs)
         return wrapper
     return decorator
 
-async def get_ticket_channel(bot, guild_id: int, user_id: int = None, ticket_id: str = None) -> Optional[discord.TextChannel]:
-    """Get ticket channel by user ID or ticket ID"""
-    try:
-        guild = bot.get_guild(guild_id)
-        if not guild:
-            return None
-        
-        if ticket_id:
-            # Search by ticket ID in channel topic
-            for channel in guild.text_channels:
-                if channel.topic and ticket_id in channel.topic:
-                    return channel
-        
-        if user_id:
-            # Search by user ID in channel topic
-            for channel in guild.text_channels:
-                if channel.topic and str(user_id) in channel.topic:
-                    return channel
-        
-        return None
-    except Exception:
-        return None
-
-async def get_ticket_owner(bot, channel_id: int) -> Optional[str]:
-    """Get ticket owner user ID from channel"""
-    try:
-        channel = bot.get_channel(channel_id)
-        if not channel or not channel.topic:
-            return None
-        
-        # Extract user ID from topic
-        if "User ID:" in channel.topic:
-            user_id = channel.topic.split("User ID:")[1].strip().split()[0]
-            return user_id
-        
-        return None
-    except Exception:
-        return None
-
-async def get_ticket_type(bot, channel_id: int) -> Optional[str]:
-    """Get ticket type from channel"""
-    # This is a simplified implementation
-    return "general"
-
-def get_role(guild: discord.Guild, role_identifier: Union[str, int]) -> Optional[discord.Role]:
-    """Get role by ID or name"""
-    try:
-        if isinstance(role_identifier, int) or role_identifier.isdigit():
-            return guild.get_role(int(role_identifier))
-        else:
-            return discord.utils.get(guild.roles, name=role_identifier)
-    except Exception:
-        return None
-
-def is_support_staff(guild: discord.Guild, user: discord.Member) -> bool:
-    """Check if user is support staff"""
-    # Check if user has manage_channels permission or is admin
-    return user.guild_permissions.manage_channels or user.guild_permissions.administrator
-
-async def log_to_channel(bot, guild_id: int, message: str, log_type: str = "general"):
-    """Log message to configured log channel"""
-    try:
-        # This is a simplified implementation
-        # In a real implementation, you'd get the log channel from config
-        pass
-    except Exception:
-        pass
-
-async def send_dm(user: discord.Member, embed: discord.Embed = None, content: str = None):
-    """Send DM to user"""
+async def send_dm(user: discord.Member, embed: discord.Embed = None, content: str = None) -> bool:
+    """Send a DM to a user, return True if successful"""
     try:
         if embed:
             await user.send(embed=embed)
         elif content:
             await user.send(content)
+        return True
     except discord.Forbidden:
-        # User has DMs disabled
-        pass
-    except Exception:
-        pass
+        return False
+    except Exception as e:
+        print(f"Error sending DM: {e}")
+        return False
 
-def get_expiry_date(time_str: str) -> Optional[datetime]:
-    """Get expiry date from time string"""
-    duration = TimeParser.parse_duration(time_str)
-    if duration:
-        return datetime.utcnow() + duration
+async def log_to_channel(bot, guild_id: int, message: str, log_type: str = "general") -> bool:
+    """Log a message to the configured log channel"""
+    try:
+        # Get log channel from config
+        config_row = await bot.db.connection.fetchrow(
+            "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+            str(guild_id), 'log_config'
+        )
+        
+        if not config_row:
+            return False
+        
+        config = json.loads(config_row['data_content'])
+        log_channel_id = config.get('log_channel_id')
+        
+        if not log_channel_id:
+            return False
+        
+        guild = bot.get_guild(guild_id)
+        if not guild:
+            return False
+        
+        log_channel = guild.get_channel(int(log_channel_id))
+        if not log_channel:
+            return False
+        
+        embed = EmbedBuilder.info(f"{log_type.title()} Log", message)
+        await log_channel.send(embed=embed)
+        return True
+        
+    except Exception as e:
+        print(f"Error logging to channel: {e}")
+        return False
+
+# Exception classes
+class FieldNotFound(Exception):
+    """Raised when a required field is not found"""
+    pass
+
+# Placeholder functions for compatibility
+async def get_expiry_date(*args, **kwargs):
+    """Placeholder function"""
     return None
 
-def parse_expiry_date(date_str: str) -> Optional[datetime]:
-    """Parse expiry date string"""
-    return get_expiry_date(date_str)
+async def parse_expiry_date(*args, **kwargs):
+    """Placeholder function"""
+    return None
 
-async def update_expiry_date(bot, item_id: str, new_date: datetime):
-    """Update expiry date for an item"""
-    # This is a placeholder implementation
-    pass
- 
+async def update_expiry_date(*args, **kwargs):
+    """Placeholder function"""
+    return None
+
+def get_role(*args, **kwargs):
+    """Placeholder function"""
+    return None
+
+def get_ticket_type(*args, **kwargs):
+    """Placeholder function"""
+    return None
