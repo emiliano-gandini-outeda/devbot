@@ -52,6 +52,7 @@ class DiscordBot(commands.Bot):
         self.db = None
         self.admin_manager = None
         self.logging_manager = None
+        self.ticket_manager = None
         self.startup_complete = False
     
     async def setup_hook(self):
@@ -100,6 +101,19 @@ class DiscordBot(commands.Bot):
             except Exception as e:
                 logger.warning(f"⚠️ Logging manager initialization failed: {e}")
 
+            # Initialize ticket manager
+            logger.info("🎫 Initializing ticket manager...")
+            try:
+                if self.db:
+                    from utils.ticket_manager import TicketManager
+                    self.ticket_manager = TicketManager(self)
+                    await self.ticket_manager.load_ticket_configs()
+                    logger.info("✅ Ticket manager initialized")
+                else:
+                    logger.warning("⚠️ Skipping ticket manager initialization (no database)")
+            except Exception as e:
+                logger.warning(f"⚠️ Ticket manager initialization failed: {e}")
+
             # Load cogs
             logger.info("🔧 Loading cogs...")
             try:
@@ -121,7 +135,7 @@ class DiscordBot(commands.Bot):
             'cogs.admin',
             'cogs.help',
             'cogs.setup',
-            'cogs.tickets',
+            'cogs.tickets',  # This should work with our new tickets.py
             'cogs.reminders',
             'cogs.workflows',
             'cogs.roles',
