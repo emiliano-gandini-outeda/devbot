@@ -12,8 +12,8 @@ from discord.ext import commands, tasks
 from discord.ui import Button, Select, View
 
 # from cogs.utils.embed_builder import EmbedBuilder
-from utils.embed_builder import EmbedBuilder
-from utils.helper import (
+from utils.helpers import EmbedBuilder
+from utils.helpers import (
     FieldNotFound,
     get_expiry_date,
     get_role,
