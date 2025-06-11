@@ -384,3 +384,4 @@ if __name__ == "__main__":
         logger.error(f"❌ Fatal error: {e}")
         logger.exception("Full traceback:")
         sys.exit(1)
+ 
