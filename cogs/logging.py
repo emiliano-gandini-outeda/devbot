@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder
 import json
+import io  # Add this import
 from datetime import datetime
 
 class Logging(commands.Cog):
@@ -122,12 +123,12 @@ class Logging(commands.Cog):
             # Create JSON file
             export_json = json.dumps(export_data, indent=2, default=str)
             
-            # Create file
+            # Create file using io.StringIO instead of discord.utils.StringIO
             filename = f"{interaction.guild.name}_{data_type}_export_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.json"
             
             # Send file
             file = discord.File(
-                fp=discord.utils.StringIO(export_json),
+                fp=io.StringIO(export_json),  # Fixed: Use io.StringIO
                 filename=filename
             )
             

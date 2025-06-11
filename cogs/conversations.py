@@ -4,6 +4,7 @@ from discord import app_commands
 from utils.helpers import EmbedBuilder
 import json
 import asyncio
+import io  # Add this import
 from datetime import datetime
 
 class Conversations(commands.Cog):
@@ -164,8 +165,9 @@ class Conversations(commands.Cog):
                 
                 transcript_text += "\n"
             
+            # Fixed: Use io.StringIO instead of discord.utils.StringIO
             transcript_file = discord.File(
-                fp=discord.utils.StringIO(transcript_text),
+                fp=io.StringIO(transcript_text),
                 filename=f"transcript_{interaction.channel.name}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.txt"
             )
             
