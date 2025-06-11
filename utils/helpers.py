@@ -2,6 +2,7 @@ import discord
 from datetime import datetime, timedelta
 import re
 from typing import Optional, Union
+import asyncio
 
 class EmbedBuilder:
     """Helper class for creating consistent embeds"""
@@ -134,3 +135,117 @@ def generate_meeting_id() -> str:
     import random
     import string
     return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+# Additional functions needed for tickets.py
+class FieldNotFound(Exception):
+    """Exception raised when a required field is not found"""
+    pass
+
+def has_permissions(**perms):
+    """Decorator to check if user has required permissions"""
+    def decorator(func):
+        async def wrapper(self, ctx, *args, **kwargs):
+            if not any(getattr(ctx.author.guild_permissions, perm, False) for perm in perms):
+                embed = EmbedBuilder.error("Permission Denied", "You don't have permission to use this command.")
+                await ctx.send(embed=embed)
+                return
+            return await func(self, ctx, *args, **kwargs)
+        return wrapper
+    return decorator
+
+async def get_ticket_channel(bot, guild_id: int, user_id: int = None, ticket_id: str = None) -> Optional[discord.TextChannel]:
+    """Get ticket channel by user ID or ticket ID"""
+    try:
+        guild = bot.get_guild(guild_id)
+        if not guild:
+            return None
+        
+        if ticket_id:
+            # Search by ticket ID in channel topic
+            for channel in guild.text_channels:
+                if channel.topic and ticket_id in channel.topic:
+                    return channel
+        
+        if user_id:
+            # Search by user ID in channel topic
+            for channel in guild.text_channels:
+                if channel.topic and str(user_id) in channel.topic:
+                    return channel
+        
+        return None
+    except Exception:
+        return None
+
+async def get_ticket_owner(bot, channel_id: int) -> Optional[str]:
+    """Get ticket owner user ID from channel"""
+    try:
+        channel = bot.get_channel(channel_id)
+        if not channel or not channel.topic:
+            return None
+        
+        # Extract user ID from topic
+        if "User ID:" in channel.topic:
+            user_id = channel.topic.split("User ID:")[1].strip().split()[0]
+            return user_id
+        
+        return None
+    except Exception:
+        return None
+
+async def get_ticket_type(bot, channel_id: int) -> Optional[str]:
+    """Get ticket type from channel"""
+    # This is a simplified implementation
+    return "general"
+
+def get_role(guild: discord.Guild, role_identifier: Union[str, int]) -> Optional[discord.Role]:
+    """Get role by ID or name"""
+    try:
+        if isinstance(role_identifier, int) or role_identifier.isdigit():
+            return guild.get_role(int(role_identifier))
+        else:
+            return discord.utils.get(guild.roles, name=role_identifier)
+    except Exception:
+        return None
+
+def is_support_staff(guild: discord.Guild, user: discord.Member) -> bool:
+    """Check if user is support staff"""
+    # Check if user has manage_channels permission or is admin
+    return user.guild_permissions.manage_channels or user.guild_permissions.administrator
+
+async def log_to_channel(bot, guild_id: int, message: str, log_type: str = "general"):
+    """Log message to configured log channel"""
+    try:
+        # This is a simplified implementation
+        # In a real implementation, you'd get the log channel from config
+        pass
+    except Exception:
+        pass
+
+async def send_dm(user: discord.Member, embed: discord.Embed = None, content: str = None):
+    """Send DM to user"""
+    try:
+        if embed:
+            await user.send(embed=embed)
+        elif content:
+            await user.send(content)
+    except discord.Forbidden:
+        # User has DMs disabled
+        pass
+    except Exception:
+        pass
+
+def get_expiry_date(time_str: str) -> Optional[datetime]:
+    """Get expiry date from time string"""
+    duration = TimeParser.parse_duration(time_str)
+    if duration:
+        return datetime.utcnow() + duration
+    return None
+
+def parse_expiry_date(date_str: str) -> Optional[datetime]:
+    """Parse expiry date string"""
+    return get_expiry_date(date_str)
+
+async def update_expiry_date(bot, item_id: str, new_date: datetime):
+    """Update expiry date for an item"""
+    # This is a placeholder implementation
+    pass
