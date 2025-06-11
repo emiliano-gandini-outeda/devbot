@@ -104,16 +104,16 @@ class TicketJoinRequestView(discord.ui.View):
                 # If DM fails, send in channel
                 await self.ticket_channel.send(f"{self.requesting_user.mention} Your join request has been accepted!")
             
-            # Clean up request records for this user and ticket
+            # Clean up denial records since request was accepted
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
                     "DELETE FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3 AND data_content->>'ticket_id' = $4",
-                    str(self.requesting_user.id), str(interaction.guild.id), 'ticket_join_request', ticket_id
+                    str(self.requesting_user.id), str(interaction.guild.id), 'ticket_join_denial', ticket_id
                 )
             else:
                 await self.bot.db.connection.execute(
                     "DELETE FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ? AND json_extract(data_content, '$.ticket_id') = ?",
-                    (str(self.requesting_user.id), str(interaction.guild.id), 'ticket_join_request', ticket_id)
+                    (str(self.requesting_user.id), str(interaction.guild.id), 'ticket_join_denial', ticket_id)
                 )
                 await self.bot.db.connection.commit()
             
@@ -202,6 +202,51 @@ class DenialReasonModal(discord.ui.Modal):
                 response_msg = f"Request denied and {self.requester.mention} has been notified with the reason."
             except discord.Forbidden:
                 response_msg = f"Request denied but couldn't send DM to {self.requester.mention}."
+            
+            # Track the denial
+            denial_data = {
+                'ticket_id': self.ticket_id,
+                'denied_at': datetime.utcnow().isoformat(),
+                'denied_by': str(self.denier.id),
+                'reason': self.reason_input.value
+            }
+            
+            try:
+                if self.bot.db.is_postgresql:
+                    # Get current denial count
+                    current_denials = await self.bot.db.connection.fetchval(
+                        "SELECT COUNT(*) FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3 AND data_content->>'ticket_id' = $4",
+                        str(self.requester.id), str(interaction.guild.id), 'ticket_join_denial', self.ticket_id
+                    )
+                    
+                    # Insert new denial record
+                    await self.bot.db.connection.execute(
+                        """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
+                           VALUES ($1, $2, $3, $4)""",
+                        str(self.requester.id), str(interaction.guild.id), 'ticket_join_denial', json.dumps(denial_data)
+                    )
+                else:
+                    # Get current denial count
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT COUNT(*) FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ? AND json_extract(data_content, '$.ticket_id') = ?",
+                        (str(self.requester.id), str(interaction.guild.id), 'ticket_join_denial', self.ticket_id)
+                    )
+                    current_denials = (await cursor.fetchone())[0]
+                    
+                    # Insert new denial record
+                    await self.bot.db.connection.execute(
+                        """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
+                           VALUES (?, ?, ?, ?)""",
+                        (str(self.requester.id), str(interaction.guild.id), 'ticket_join_denial', json.dumps(denial_data))
+                    )
+                    await self.bot.db.connection.commit()
+                
+                # Check if user has reached denial limit
+                if current_denials + 1 >= 3:
+                    response_msg += f"\n⚠️ {self.requester.mention} has been denied 3 times and can no longer request to join this ticket."
+                    
+            except Exception as e:
+                print(f"Error tracking denial: {e}")
             
             embed_response = EmbedBuilder.success("Request Denied", response_msg)
             await interaction.response.send_message(embed=embed_response, ephemeral=True)
@@ -491,21 +536,25 @@ class TicketCommands(app_commands.Group):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
-        # Check if user has already made too many requests for this ticket
+        # Check if user has been denied too many times for this ticket
         if self.bot.db.is_postgresql:
-            request_count = await self.bot.db.connection.fetchval(
+            denial_count = await self.bot.db.connection.fetchval(
                 "SELECT COUNT(*) FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3 AND data_content->>'ticket_id' = $4",
-                str(interaction.user.id), str(interaction.guild.id), 'ticket_join_request', ticket_id
+                str(interaction.user.id), str(interaction.guild.id), 'ticket_join_denial', ticket_id
             )
         else:
             cursor = await self.bot.db.connection.execute(
                 "SELECT COUNT(*) FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ? AND json_extract(data_content, '$.ticket_id') = ?",
-                (str(interaction.user.id), str(interaction.guild.id), 'ticket_join_request', ticket_id)
+                (str(interaction.user.id), str(interaction.guild.id), 'ticket_join_denial', ticket_id)
             )
-            request_count = (await cursor.fetchone())[0]
+            denial_count = (await cursor.fetchone())[0]
 
-        if request_count >= 5:
-            embed = EmbedBuilder.error("Request Limit Reached", "You have already made 5 join requests for this ticket. Please wait for a response.")
+        # Check if user has been denied too many times
+        if denial_count >= 3:
+            embed = EmbedBuilder.error(
+                "Access Denied", 
+                f"You have been denied access to ticket {ticket_id} too many times ({denial_count} denials). You cannot make more join requests for this ticket."
+            )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
@@ -532,8 +581,7 @@ class TicketCommands(app_commands.Group):
         # Respond to user first to avoid timeout
         response_embed = EmbedBuilder.success(
             "Request Sent",
-            f"Your request to join ticket {ticket_id} has been sent. You'll be notified if it's accepted.\n"
-            f"Requests made: {request_count + 1}/5"
+            f"Your request to join ticket {ticket_id} has been sent. You'll be notified if it's accepted."
         )
         await interaction.response.send_message(embed=response_embed, ephemeral=True)
         
@@ -545,6 +593,8 @@ class TicketCommands(app_commands.Group):
         )
         embed.add_field(name="User", value=f"{interaction.user.mention} ({interaction.user})", inline=True)
         embed.add_field(name="Requested", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
+        if denial_count > 0:
+            embed.add_field(name="Previous Denials", value=f"{denial_count}/3", inline=True)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         embed.set_footer(text="Railway Bot")
         
@@ -552,33 +602,6 @@ class TicketCommands(app_commands.Group):
         
         # Send request to ticket channel
         await channel.send(embed=embed, view=view)
-        
-        # Log the request to prevent spam - use UPSERT to handle duplicates
-        request_data = {
-            'ticket_id': ticket_id,
-            'requested_at': datetime.utcnow().isoformat(),
-            'channel_id': str(channel.id)
-        }
-
-        try:
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
-                       VALUES ($1, $2, $3, $4)
-                       ON CONFLICT (user_id, guild_id, data_type) 
-                       DO UPDATE SET data_content = $4, updated_at = CURRENT_TIMESTAMP""",
-                    str(interaction.user.id), str(interaction.guild.id), 'ticket_join_request', json.dumps(request_data)
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO user_data (user_id, guild_id, data_type, data_content)
-                       VALUES (?, ?, ?, ?)""",
-                    (str(interaction.user.id), str(interaction.guild.id), 'ticket_join_request', json.dumps(request_data))
-                )
-                await self.bot.db.connection.commit()
-        except Exception as e:
-            print(f"Error logging join request: {e}")
-            # Continue anyway since the request was already sent and user was notified
     
     @app_commands.command(name="private", description="Make ticket private (only assigned users can read)")
     async def ticket_private(self, interaction: discord.Interaction):
