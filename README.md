@@ -84,7 +84,7 @@ A comprehensive Discord bot designed to streamline community management with pow
 
 1. **Clone the Repository**
    \`\`\`bash
-   git clone https://github.com/your-username/devbot.git
+   git clone https://github.com/emiliano-gandini-outeda/devbot.git
    cd devbot
    \`\`\`
 
