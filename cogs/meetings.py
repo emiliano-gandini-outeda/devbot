@@ -109,15 +109,25 @@ class AdminMeetingView(discord.ui.View):
             meeting_view = MeetingView(self.bot, meeting_id)
 
             # Send the meeting announcement with the selected ping
-            ping_text = "@everyone" if self.selected_ping == "everyone" else "@here"
-            content = f"{ping_text} - New admin meeting scheduled!"
+            if self.selected_ping == "everyone":
+                allowed_mentions = discord.AllowedMentions(everyone=True)
+                content = "@everyone - New admin meeting scheduled!"
+            else:  # here
+                allowed_mentions = discord.AllowedMentions(everyone=False, here=True)
+                content = "@here - New admin meeting scheduled!"
 
-            await interaction.followup.send(content=content, embed=embed, view=meeting_view)
+            await interaction.followup.send(
+                content=content, 
+                embed=embed, 
+                view=meeting_view,
+                allowed_mentions=allowed_mentions
+            )
             
             # Send confirmation to the admin
+            ping_display = "@everyone" if self.selected_ping == "everyone" else "@here"
             confirm_embed = EmbedBuilder.success(
                 "Admin Meeting Created",
-                f"Meeting '{self.meeting_data['name']}' has been created with {ping_text} ping."
+                f"Meeting '{self.meeting_data['name']}' has been created with {ping_display} ping."
             )
             await interaction.followup.send(embed=confirm_embed, ephemeral=True)
             
