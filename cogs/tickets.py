@@ -107,13 +107,13 @@ class TicketJoinRequestView(discord.ui.View):
             # Clean up denial records since request was accepted
             if self.bot.db.is_postgresql:
                 await self.bot.db.connection.execute(
-                    "DELETE FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3 AND data_content->>'ticket_id' = $4",
-                    str(self.requesting_user.id), str(interaction.guild.id), 'ticket_join_denial', ticket_id
+                    "DELETE FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3",
+                    str(self.requesting_user.id), str(interaction.guild.id), f'ticket_join_denial_{ticket_id}'
                 )
             else:
                 await self.bot.db.connection.execute(
-                    "DELETE FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ? AND json_extract(data_content, '$.ticket_id') = ?",
-                    (str(self.requesting_user.id), str(interaction.guild.id), 'ticket_join_denial', ticket_id)
+                    "DELETE FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ?",
+                    (str(self.requesting_user.id), str(interaction.guild.id), f'ticket_join_denial_{ticket_id}')
                 )
                 await self.bot.db.connection.commit()
             
@@ -204,45 +204,91 @@ class DenialReasonModal(discord.ui.Modal):
                 response_msg = f"Request denied but couldn't send DM to {self.requester.mention}."
             
             # Track the denial
-            denial_data = {
-                'ticket_id': self.ticket_id,
-                'denied_at': datetime.utcnow().isoformat(),
-                'denied_by': str(self.denier.id),
-                'reason': self.reason_input.value
-            }
-            
             try:
                 if self.bot.db.is_postgresql:
-                    # Get current denial count
-                    current_denials = await self.bot.db.connection.fetchval(
-                        "SELECT COUNT(*) FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3 AND data_content->>'ticket_id' = $4",
-                        str(self.requester.id), str(interaction.guild.id), 'ticket_join_denial', self.ticket_id
+                    # Get existing denials for this user+ticket combination
+                    existing_record = await self.bot.db.connection.fetchrow(
+                        "SELECT data_content FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3",
+                        str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}'
                     )
                     
-                    # Insert new denial record
-                    await self.bot.db.connection.execute(
-                        """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
-                           VALUES ($1, $2, $3, $4)""",
-                        str(self.requester.id), str(interaction.guild.id), 'ticket_join_denial', json.dumps(denial_data)
-                    )
+                    if existing_record:
+                        # Update existing record with new denial
+                        denials_data = json.loads(existing_record['data_content'])
+                        denials_data['denials'].append({
+                            'denied_at': datetime.utcnow().isoformat(),
+                            'denied_by': str(self.denier.id),
+                            'reason': self.reason_input.value
+                        })
+                        denials_data['count'] = len(denials_data['denials'])
+                        
+                        await self.bot.db.connection.execute(
+                            "UPDATE user_data SET data_content = $1, updated_at = CURRENT_TIMESTAMP WHERE user_id = $2 AND guild_id = $3 AND data_type = $4",
+                            json.dumps(denials_data), str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}'
+                        )
+                        current_denials = denials_data['count']
+                    else:
+                        # Create new denial record
+                        denials_data = {
+                            'ticket_id': self.ticket_id,
+                            'count': 1,
+                            'denials': [{
+                                'denied_at': datetime.utcnow().isoformat(),
+                                'denied_by': str(self.denier.id),
+                                'reason': self.reason_input.value
+                            }]
+                        }
+                        
+                        await self.bot.db.connection.execute(
+                            "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES ($1, $2, $3, $4)",
+                            str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}', json.dumps(denials_data)
+                        )
+                        current_denials = 1
                 else:
-                    # Get current denial count
+                    # SQLite version
                     cursor = await self.bot.db.connection.execute(
-                        "SELECT COUNT(*) FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ? AND json_extract(data_content, '$.ticket_id') = ?",
-                        (str(self.requester.id), str(interaction.guild.id), 'ticket_join_denial', self.ticket_id)
+                        "SELECT data_content FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ?",
+                        (str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}')
                     )
-                    current_denials = (await cursor.fetchone())[0]
+                    existing_record = await cursor.fetchone()
                     
-                    # Insert new denial record
-                    await self.bot.db.connection.execute(
-                        """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
-                           VALUES (?, ?, ?, ?)""",
-                        (str(self.requester.id), str(interaction.guild.id), 'ticket_join_denial', json.dumps(denial_data))
-                    )
+                    if existing_record:
+                        # Update existing record with new denial
+                        denials_data = json.loads(existing_record[0])
+                        denials_data['denials'].append({
+                            'denied_at': datetime.utcnow().isoformat(),
+                            'denied_by': str(self.denier.id),
+                            'reason': self.reason_input.value
+                        })
+                        denials_data['count'] = len(denials_data['denials'])
+                        
+                        await self.bot.db.connection.execute(
+                            "UPDATE user_data SET data_content = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ? AND guild_id = ? AND data_type = ?",
+                            (json.dumps(denials_data), str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}')
+                        )
+                        current_denials = denials_data['count']
+                    else:
+                        # Create new denial record
+                        denials_data = {
+                            'ticket_id': self.ticket_id,
+                            'count': 1,
+                            'denials': [{
+                                'denied_at': datetime.utcnow().isoformat(),
+                                'denied_by': str(self.denier.id),
+                                'reason': self.reason_input.value
+                            }]
+                        }
+                        
+                        await self.bot.db.connection.execute(
+                            "INSERT INTO user_data (user_id, guild_id, data_type, data_content) VALUES (?, ?, ?, ?)",
+                            (str(self.requester.id), str(interaction.guild.id), f'ticket_join_denial_{self.ticket_id}', json.dumps(denials_data))
+                        )
+                        current_denials = 1
+                    
                     await self.bot.db.connection.commit()
                 
                 # Check if user has reached denial limit
-                if current_denials + 1 >= 3:
+                if current_denials >= 3:
                     response_msg += f"\n⚠️ {self.requester.mention} has been denied 3 times and can no longer request to join this ticket."
                     
             except Exception as e:
@@ -538,16 +584,24 @@ class TicketCommands(app_commands.Group):
         
         # Check if user has been denied too many times for this ticket
         if self.bot.db.is_postgresql:
-            denial_count = await self.bot.db.connection.fetchval(
-                "SELECT COUNT(*) FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3 AND data_content->>'ticket_id' = $4",
-                str(interaction.user.id), str(interaction.guild.id), 'ticket_join_denial', ticket_id
+            denial_record = await self.bot.db.connection.fetchrow(
+                "SELECT data_content FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3",
+                str(interaction.user.id), str(interaction.guild.id), f'ticket_join_denial_{ticket_id}'
             )
+            denial_count = 0
+            if denial_record:
+                denials_data = json.loads(denial_record['data_content'])
+                denial_count = denials_data.get('count', 0)
         else:
             cursor = await self.bot.db.connection.execute(
-                "SELECT COUNT(*) FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ? AND json_extract(data_content, '$.ticket_id') = ?",
-                (str(interaction.user.id), str(interaction.guild.id), 'ticket_join_denial', ticket_id)
+                "SELECT data_content FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ?",
+                (str(interaction.user.id), str(interaction.guild.id), f'ticket_join_denial_{ticket_id}')
             )
-            denial_count = (await cursor.fetchone())[0]
+            denial_record = await cursor.fetchone()
+            denial_count = 0
+            if denial_record:
+                denials_data = json.loads(denial_record[0])
+                denial_count = denials_data.get('count', 0)
 
         # Check if user has been denied too many times
         if denial_count >= 3:
@@ -855,6 +909,59 @@ class TicketCommands(app_commands.Group):
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to assign ticket: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    async def restore_ticket_views(self):
+        """Restore ticket views for existing open tickets on bot startup"""
+        try:
+            # Get all open tickets
+            open_tickets = await self.bot.db.connection.fetch(
+                "SELECT ticket_id, channel_id, guild_id FROM tickets WHERE status = $1",
+                TicketStatus.OPEN.value
+            )
+            
+            restored_count = 0
+            for ticket in open_tickets:
+                try:
+                    guild = self.bot.get_guild(int(ticket['guild_id']))
+                    if not guild:
+                        continue
+                    
+                    channel = guild.get_channel(int(ticket['channel_id']))
+                    if not channel:
+                        # Channel was deleted, mark ticket as closed
+                        await self.bot.db.connection.execute(
+                            "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
+                            TicketStatus.CLOSED.value, datetime.utcnow(), ticket['ticket_id']
+                        )
+                        continue
+                    
+                    # Check if there's already a view in the channel
+                    has_view = False
+                    async for message in channel.history(limit=50):
+                        if message.author == self.bot.user and message.components:
+                            has_view = True
+                            break
+                    
+                    if not has_view:
+                        # Add the ticket view back
+                        view = TicketView(self.bot, ticket['ticket_id'])
+                        embed = discord.Embed(
+                            title="🎫 Ticket Controls Restored",
+                            description="Bot restarted - ticket controls have been restored.",
+                            color=0x5865F2
+                        )
+                        await channel.send(embed=embed, view=view)
+                        restored_count += 1
+                        
+                except Exception as e:
+                    print(f"Error restoring ticket {ticket['ticket_id']}: {e}")
+                    continue
+            
+            if restored_count > 0:
+                print(f"Restored ticket views for {restored_count} open tickets")
+                
+        except Exception as e:
+            print(f"Error restoring ticket views: {e}")
 
 class Tickets(commands.Cog):
     """Support ticket system"""
@@ -863,6 +970,11 @@ class Tickets(commands.Cog):
         self.bot = bot
         self.ticket_commands = TicketCommands(bot)
         self.bot.tree.add_command(self.ticket_commands)
+    
+    async def cog_load(self):
+        """Called when the cog is loaded"""
+        # Restore ticket views for existing open tickets
+        await self.ticket_commands.restore_ticket_views()
 
 async def setup(bot):
     await bot.add_cog(Tickets(bot))
