@@ -22,11 +22,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger('discord-bot')
 
-# Environment variables
+# Environment variables with better error handling
 TOKEN = os.environ.get('DISCORD_TOKEN')
 APP_ID = os.environ.get('APP_ID')
 GITHUB_TOKEN = os.environ.get('GITHUB_TOKEN')
 DATABASE_URL = os.environ.get('DATABASE_URL')
+
+if not TOKEN:
+    logger.error("DISCORD_TOKEN environment variable is required")
+    exit(1)
+
+if not APP_ID:
+    logger.error("APP_ID environment variable is required")
+    exit(1)
+
+if not DATABASE_URL:
+    logger.warning("DATABASE_URL environment variable not set. Bot will run with limited functionality.")
 
 # Constants
 PRIORITY_CHOICES = [
@@ -41,6 +52,30 @@ STATUS_CHOICES = [
     app_commands.Choice(name="Closed", value="closed")
 ]
 
+async def safe_db_execute(bot, operation_func):
+    """Safely execute a database operation with proper error handling"""
+    if not bot.db_pool:
+        raise Exception("Database connection not available. Please contact an administrator.")
+    
+    try:
+        async with bot.db_pool.acquire() as conn:
+            return await operation_func(conn)
+    except Exception as e:
+        logger.error(f"Database operation failed: {e}")
+        # Try to ensure connection and retry once
+        if hasattr(bot, 'ensure_database_connection'):
+            if await bot.ensure_database_connection():
+                try:
+                    async with bot.db_pool.acquire() as conn:
+                        return await operation_func(conn)
+                except Exception as retry_error:
+                    logger.error(f"Database operation failed after reconnection: {retry_error}")
+                    raise Exception("Database operation failed. Please try again later.")
+            else:
+                raise Exception("Database connection unavailable. Please contact an administrator.")
+        else:
+            raise Exception("Database operation failed. Please try again later.")
+
 class DevBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.all()
@@ -48,18 +83,45 @@ class DevBot(commands.Bot):
         self.db_pool = None
         
     async def setup_hook(self):
-        # Initialize database connection pool
-        try:
-            self.db_pool = await asyncpg.create_pool(DATABASE_URL)
-            logger.info("Database connection pool created successfully")
-            await self.init_db()
-        except Exception as e:
-            logger.error(f"Failed to create database connection pool: {e}")
-            traceback.print_exc()
-            
-        # Start background tasks
-        self.github_checker.start()
-        self.reminder_checker.start()
+        # Initialize database connection pool with retry logic
+        max_retries = 5
+        retry_delay = 5
+        
+        for attempt in range(max_retries):
+            try:
+                # Parse DATABASE_URL to handle different formats
+                if DATABASE_URL:
+                    # Handle Railway's DATABASE_URL format
+                    if DATABASE_URL.startswith('postgresql://'):
+                        # Convert postgresql:// to postgres:// for asyncpg compatibility
+                        db_url = DATABASE_URL.replace('postgresql://', 'postgres://', 1)
+                    else:
+                        db_url = DATABASE_URL
+                    
+                    self.db_pool = await asyncpg.create_pool(
+                        db_url,
+                        min_size=1,
+                        max_size=10,
+                        command_timeout=60,
+                        server_settings={
+                            'jit': 'off'
+                        }
+                    )
+                    logger.info("Database connection pool created successfully")
+                    await self.init_db()
+                    break
+                else:
+                    logger.error("DATABASE_URL environment variable not set")
+                    break
+            except Exception as e:
+                logger.error(f"Failed to create database connection pool (attempt {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error("Failed to connect to database after all retries. Bot will run with limited functionality.")
+                    self.db_pool = None
         
         # Add command groups
         await self.add_cog(TicketCommands(self))
@@ -78,11 +140,23 @@ class DevBot(commands.Bot):
         await self.add_cog(PrivacyCommands(self))
         await self.add_cog(HelpCommands(self))
         
+        # Start background tasks only if database is available
+        if self.db_pool:
+            self.github_checker.start()
+            self.reminder_checker.start()
+            logger.info("Background tasks started")
+        else:
+            logger.warning("Background tasks not started due to database connection failure")
+        
         # Sync commands with Discord
         logger.info("Syncing commands...")
-        for guild in self.guilds:
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
+        try:
+            for guild in self.guilds:
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+            logger.info("Commands synced successfully")
+        except Exception as e:
+            logger.error(f"Failed to sync commands: {e}")
         
     async def on_ready(self):
         logger.info(f'{self.user} is ready!')
@@ -95,10 +169,14 @@ class DevBot(commands.Bot):
         logger.info(f"Joined new guild: {guild.name} (ID: {guild.id})")
         
     async def init_db(self):
-        """Initialize database tables if they don't exist"""
+        """Initialize database tables if they don't exist and handle migrations"""
+        if not self.db_pool:
+            logger.error("Cannot initialize database: no connection pool")
+            return
+        
         try:
             async with self.db_pool.acquire() as conn:
-                # Create tables based on schema
+                # Create tables with current schema
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS tickets (
                         id TEXT PRIMARY KEY,
@@ -114,7 +192,8 @@ class DevBot(commands.Bot):
                         guild_id BIGINT NOT NULL
                     )
                 ''')
-                
+            
+                # Create reminders table with proper schema
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS reminders (
                         id SERIAL PRIMARY KEY,
@@ -127,7 +206,14 @@ class DevBot(commands.Bot):
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                
+            
+                # Handle schema migrations for existing tables
+                await self.migrate_schema(conn)
+            
+                # Create indexes for performance
+                await self.create_indexes(conn)
+            
+                # Continue with other tables...
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS keywords (
                         user_id BIGINT NOT NULL,
@@ -136,7 +222,7 @@ class DevBot(commands.Bot):
                         PRIMARY KEY (user_id, guild_id, keyword)
                     )
                 ''')
-                
+            
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS github_repos (
                         guild_id BIGINT NOT NULL,
@@ -150,7 +236,7 @@ class DevBot(commands.Bot):
                         PRIMARY KEY (guild_id, repo_name)
                     )
                 ''')
-                
+            
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS meetings (
                         id TEXT PRIMARY KEY,
@@ -164,7 +250,7 @@ class DevBot(commands.Bot):
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
-                
+            
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS workflows (
                         guild_id BIGINT NOT NULL,
@@ -178,7 +264,7 @@ class DevBot(commands.Bot):
                         PRIMARY KEY (guild_id, name)
                     )
                 ''')
-                
+            
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS admin_roles (
                         guild_id BIGINT NOT NULL,
@@ -186,7 +272,7 @@ class DevBot(commands.Bot):
                         PRIMARY KEY (guild_id, role_id)
                     )
                 ''')
-                
+            
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS server_config (
                         guild_id BIGINT PRIMARY KEY,
@@ -200,16 +286,222 @@ class DevBot(commands.Bot):
                         thread_log_channel_id BIGINT
                     )
                 ''')
-                
-                logger.info("Database tables initialized successfully")
+            
+            logger.info("Database tables initialized successfully")
         except Exception as e:
             logger.error(f"Error initializing database: {e}")
-            traceback.print_exc()
+            raise e
+
+    async def migrate_schema(self, conn):
+        """Handle database schema migrations"""
+        try:
+            # Check if remind_time column exists in reminders table
+            column_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = 'reminders' 
+                    AND column_name = 'remind_time'
+                )
+            """)
+        
+            if not column_exists:
+                logger.info("Adding missing remind_time column to reminders table")
+            
+                # Add the remind_time column
+                await conn.execute("""
+                    ALTER TABLE reminders 
+                    ADD COLUMN remind_time TIMESTAMP
+                """)
+            
+                # For existing records without remind_time, set a default value
+                # (24 hours from creation time or current time)
+                await conn.execute("""
+                    UPDATE reminders 
+                    SET remind_time = COALESCE(created_at + INTERVAL '24 hours', CURRENT_TIMESTAMP + INTERVAL '24 hours')
+                    WHERE remind_time IS NULL
+                """)
+            
+                # Make the column NOT NULL after setting values
+                await conn.execute("""
+                    ALTER TABLE reminders 
+                    ALTER COLUMN remind_time SET NOT NULL
+                """)
+            
+                logger.info("Successfully added remind_time column to reminders table")
+        
+            # Check for other missing columns in other tables
+            await self.migrate_other_tables(conn)
+        
+        except Exception as e:
+            logger.error(f"Error during schema migration: {e}")
+            raise e
+
+    async def migrate_other_tables(self, conn):
+        """Handle migrations for other tables if needed"""
+        try:
+            # Check if meetings table has meeting_time column
+            meeting_time_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name = 'meetings' 
+                    AND column_name = 'meeting_time'
+                )
+            """)
+        
+            if not meeting_time_exists:
+                logger.info("Adding missing meeting_time column to meetings table")
+                await conn.execute("""
+                    ALTER TABLE meetings 
+                    ADD COLUMN meeting_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP + INTERVAL '1 hour'
+                """)
+        
+            # Add any other column migrations here as needed
+        
+        except Exception as e:
+            logger.error(f"Error during table migrations: {e}")
+            # Don't raise here to prevent blocking other migrations
+
+    async def create_indexes(self, conn):
+        """Create database indexes for performance"""
+        try:
+            # Index on remind_time for efficient reminder queries
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_reminders_remind_time 
+                ON reminders(remind_time)
+            """)
+        
+            # Index on user_id and guild_id for user-specific queries
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_reminders_user_guild 
+                ON reminders(user_id, guild_id)
+            """)
+        
+            # Index on meeting_time for meeting queries
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_meetings_meeting_time 
+                ON meetings(meeting_time)
+            """)
+        
+            # Index on keywords for notification queries
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_keywords_guild_keyword 
+                ON keywords(guild_id, keyword)
+            """)
+        
+            # Index on github repos for tracking queries
+            await conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_github_repos_last_checked 
+                ON github_repos(last_checked)
+            """)
+        
+            logger.info("Database indexes created successfully")
+        
+        except Exception as e:
+            logger.error(f"Error creating indexes: {e}")
+            # Don't raise here as indexes are performance optimizations
+    
+    async def verify_database_schema(self):
+        """Verify that all required database columns exist"""
+        if not self.db_pool:
+            return False
+            
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Define required columns for each table
+                required_schema = {
+                    'reminders': ['id', 'user_id', 'guild_id', 'message', 'remind_time', 'channel_id', 'send_dm', 'created_at'],
+                    'tickets': ['id', 'title', 'description', 'creator_id', 'channel_id', 'status', 'priority', 'is_private', 'created_at', 'assigned_users', 'guild_id'],
+                    'meetings': ['id', 'guild_id', 'name', 'description', 'meeting_time', 'voice_channel_id', 'creator_id', 'participants', 'created_at'],
+                    'keywords': ['user_id', 'guild_id', 'keyword'],
+                    'github_repos': ['guild_id', 'repo_name', 'channel_id', 'last_commit_sha', 'star_count', 'fork_count', 'branches', 'last_checked'],
+                    'workflows': ['guild_id', 'name', 'trigger_type', 'trigger_value', 'trigger_channel_id', 'actions', 'log_channel_id', 'is_enabled'],
+                    'admin_roles': ['guild_id', 'role_id'],
+                    'server_config': ['guild_id', 'ticket_category_id', 'ticket_transcript_channel_id', 'github_channel_id', 'reminder_channel_id', 'meeting_announcement_channel_id', 'meeting_voice_channel_id', 'log_channel_id', 'thread_log_channel_id']
+                }
+                
+                schema_issues = []
+                
+                for table_name, required_columns in required_schema.items():
+                    # Check if table exists
+                    table_exists = await conn.fetchval("""
+                        SELECT EXISTS (
+                            SELECT 1 FROM information_schema.tables 
+                            WHERE table_name = $1
+                        )
+                    """, table_name)
+                    
+                    if not table_exists:
+                        schema_issues.append(f"Table '{table_name}' does not exist")
+                        continue
+                    
+                    # Check if all required columns exist
+                    for column_name in required_columns:
+                        column_exists = await conn.fetchval("""
+                            SELECT EXISTS (
+                                SELECT 1 FROM information_schema.columns 
+                                WHERE table_name = $1 AND column_name = $2
+                            )
+                        """, table_name, column_name)
+                        
+                        if not column_exists:
+                            schema_issues.append(f"Column '{column_name}' missing from table '{table_name}'")
+                
+                if schema_issues:
+                    logger.error("Database schema issues found:")
+                    for issue in schema_issues:
+                        logger.error(f"  - {issue}")
+                    return False
+                else:
+                    logger.info("Database schema verification passed")
+                    return True
+                    
+        except Exception as e:
+            logger.error(f"Error verifying database schema: {e}")
+            return False
+
+    async def fix_reminder_data_types(self, conn):
+        """Ensure remind_time column has proper data type and constraints"""
+        try:
+            # Check current data type of remind_time column
+            current_type = await conn.fetchval("""
+                SELECT data_type FROM information_schema.columns 
+                WHERE table_name = 'reminders' AND column_name = 'remind_time'
+            """)
+            
+            if current_type and current_type.lower() not in ['timestamp', 'timestamp without time zone', 'timestamp with time zone']:
+                logger.info(f"Converting remind_time column from {current_type} to TIMESTAMP")
+                
+                # Create a backup column first
+                await conn.execute("ALTER TABLE reminders ADD COLUMN remind_time_backup TEXT")
+                await conn.execute("UPDATE reminders SET remind_time_backup = remind_time::TEXT")
+                
+                # Drop and recreate the column with correct type
+                await conn.execute("ALTER TABLE reminders DROP COLUMN remind_time")
+                await conn.execute("ALTER TABLE reminders ADD COLUMN remind_time TIMESTAMP")
+                
+                # Try to convert the data back
+                await conn.execute("""
+                    UPDATE reminders 
+                    SET remind_time = remind_time_backup::TIMESTAMP 
+                    WHERE remind_time_backup IS NOT NULL
+                """)
+                
+                # Clean up backup column
+                await conn.execute("ALTER TABLE reminders DROP COLUMN remind_time_backup")
+                
+                # Make NOT NULL
+                await conn.execute("ALTER TABLE reminders ALTER COLUMN remind_time SET NOT NULL")
+                
+                logger.info("Successfully converted remind_time column to TIMESTAMP")
+                
+        except Exception as e:
+            logger.error(f"Error fixing remind_time data type: {e}")
+            # Don't raise as this is a recovery operation
     
     @tasks.loop(minutes=30)
     async def github_checker(self):
         """Check GitHub repositories for updates every 30 minutes"""
-        if not self.is_ready():
+        if not self.is_ready() or not self.db_pool:
             return
             
         try:
@@ -309,7 +601,7 @@ class DevBot(commands.Bot):
     @tasks.loop(minutes=1)
     async def reminder_checker(self):
         """Check for due reminders every minute"""
-        if not self.is_ready():
+        if not self.is_ready() or not self.db_pool:
             return
             
         try:
@@ -742,6 +1034,65 @@ class DevBot(commands.Bot):
         except Exception as e:
             logger.error(f"Error logging event: {e}")
             traceback.print_exc()
+
+    async def check_database_health(self):
+        """Check if database connection is healthy"""
+        if not self.db_pool:
+            return False
+        
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.fetchval("SELECT 1")
+            return True
+        except Exception as e:
+            logger.error(f"Database health check failed: {e}")
+            return False
+
+    async def ensure_database_connection(self):
+        """Ensure database connection is available, attempt reconnection if needed"""
+        if not self.db_pool or not await self.check_database_health():
+            logger.info("Attempting to reconnect to database...")
+            try:
+                if self.db_pool:
+                    await self.db_pool.close()
+                
+                if DATABASE_URL:
+                    db_url = DATABASE_URL.replace('postgresql://', 'postgres://', 1) if DATABASE_URL.startswith('postgresql://') else DATABASE_URL
+                    self.db_pool = await asyncpg.create_pool(
+                        db_url,
+                        min_size=1,
+                        max_size=10,
+                        command_timeout=60,
+                        server_settings={'jit': 'off'}
+                    )
+                    await self.init_db()
+                    logger.info("Database reconnection successful")
+                    return True
+            except Exception as e:
+                logger.error(f"Database reconnection failed: {e}")
+                self.db_pool = None
+        
+        return self.db_pool is not None
+
+    async def safe_db_operation(self, operation):
+        """Safely execute a database operation with error handling"""
+        if not self.db_pool:
+            if not await self.ensure_database_connection():
+                raise Exception("Database connection not available")
+        
+        try:
+            return await operation()
+        except Exception as e:
+            logger.error(f"Database operation failed: {e}")
+            # Try to reconnect once
+            if await self.ensure_database_connection():
+                try:
+                    return await operation()
+                except Exception as retry_error:
+                    logger.error(f"Database operation failed after reconnection: {retry_error}")
+                    raise retry_error
+            else:
+                raise e
 
 # Utility functions
 def parse_time(time_str):
@@ -1349,85 +1700,6 @@ class TicketCommands(commands.GroupCog, name="ticket"):
                     """,
                     interaction.guild.id, category.id, transcript_channel.id
                 )
-            
-            # Set up close ticket button handler
-            @self.bot.tree.context_menu(name="Close Ticket")
-            async def close_ticket(interaction: discord.Interaction, message: discord.Message):
-                # Check if this is a ticket channel
-                channel_name = interaction.channel.name
-                if not channel_name.startswith("ticket-"):
-                    await interaction.response.send_message("This command can only be used in ticket channels.", ephemeral=True)
-                    return
-                
-                # Get ticket info
-                async with self.bot.db_pool.acquire() as conn:
-                    ticket = await conn.fetchrow(
-                        "SELECT * FROM tickets WHERE channel_id = $1 AND guild_id = $2",
-                        interaction.channel.id, interaction.guild.id
-                    )
-                    
-                    if not ticket:
-                        await interaction.response.send_message("Ticket not found for this channel.", ephemeral=True)
-                        return
-                    
-                    # Check if user is ticket creator, assigned, or admin
-                    is_admin_user = await is_admin(interaction)
-                    is_creator = interaction.user.id == ticket['creator_id']
-                    is_assigned = interaction.user.id in json.loads(ticket['assigned_users'])
-                    
-                    if not (is_admin_user or is_creator or is_assigned):
-                        await interaction.response.send_message("You don't have permission to close this ticket.", ephemeral=True)
-                        return
-                    
-                    # Mark ticket as closed
-                    await conn.execute(
-                        "UPDATE tickets SET status = 'closed' WHERE id = $1",
-                        ticket['id']
-                    )
-                    
-                    # Get transcript channel
-                    config = await conn.fetchrow(
-                        "SELECT ticket_transcript_channel_id FROM server_config WHERE guild_id = $1",
-                        interaction.guild.id
-                    )
-                    
-                    transcript_channel_id = config['ticket_transcript_channel_id'] if config else None
-                    transcript_channel = interaction.guild.get_channel(transcript_channel_id) if transcript_channel_id else None
-                    
-                    # Generate transcript
-                    await interaction.response.send_message("Generating transcript and closing ticket...")
-                    
-                    if transcript_channel:
-                        transcript_parts = await generate_transcript(interaction.channel)
-                        
-                        # Create transcript embed
-                        embed = discord.Embed(
-                            title=f"Ticket Transcript: {ticket['title']}",
-                            description=f"Ticket ID: {ticket['id']}\nClosed by: {interaction.user.mention}",
-                            color=discord.Color.blue(),
-                            timestamp=datetime.utcnow()
-                        )
-                        
-                        creator = interaction.guild.get_member(ticket['creator_id'])
-                        creator_name = creator.mention if creator else f"Unknown ({ticket['creator_id']})"
-                        
-                        embed.add_field(name="Creator", value=creator_name, inline=True)
-                        embed.add_field(name="Status", value="Closed", inline=True)
-                        embed.add_field(name="Priority", value=ticket['priority'], inline=True)
-                        
-                        await transcript_channel.send(embed=embed)
-                        
-                        # Send transcript parts
-                        for i, part in enumerate(transcript_parts):
-                            await transcript_channel.send(f"**Transcript Part {i+1}/{len(transcript_parts)}**\n{part}")
-                    
-                    # Delete channel after 10 seconds
-                    await interaction.channel.send("This ticket has been closed. Channel will be deleted in 10 seconds.")
-                    await asyncio.sleep(10)
-                    await interaction.channel.delete()
-            
-            # Sync commands
-            await self.bot.tree.sync(guild=interaction.guild)
             
             await interaction.response.send_message(
                 f"Ticket system set up successfully!\n"
@@ -3296,15 +3568,15 @@ class AdminCommands(commands.GroupCog, name="admin"):
                 timestamp=datetime.utcnow()
             )
             
-            role_mentions = []
-            for row in admin_roles:
-                role = interaction.guild.get_role(row['role_id'])
+            role_list = []
+            for admin_role in admin_roles:
+                role = interaction.guild.get_role(admin_role['role_id'])
                 if role:
-                    role_mentions.append(role.mention)
+                    role_list.append(role.mention)
                 else:
-                    role_mentions.append(f"Deleted Role ({row['role_id']})")
+                    role_list.append(f"Deleted Role ({admin_role['role_id']})")
             
-            embed.description = "\n".join(role_mentions)
+            embed.description = "\n".join(role_list)
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
@@ -3312,176 +3584,87 @@ class AdminCommands(commands.GroupCog, name="admin"):
             logger.error(f"Error in list_admin_roles: {e}")
             traceback.print_exc()
     
-    @app_commands.command(name="panel")
-    async def admin_panel(self, interaction: discord.Interaction):
-        """Open admin panel"""
+    @app_commands.command(name="purge")
+    @app_commands.describe(
+        count="Number of messages to delete",
+        user="Delete messages from specific user only"
+    )
+    async def purge_messages(self, interaction: discord.Interaction, count: int, user: discord.User = None):
+        """Purge messages from the channel"""
         try:
             # Check if user is admin
             if not await is_admin(interaction):
-                await interaction.response.send_message("You don't have permission to access the admin panel.", ephemeral=True)
+                await interaction.response.send_message("You don't have permission to purge messages.", ephemeral=True)
                 return
             
-            # Get server config
-            async with self.bot.db_pool.acquire() as conn:
-                config = await conn.fetchrow(
-                    "SELECT * FROM server_config WHERE guild_id = $1",
-                    interaction.guild.id
-                )
+            if count > 100:
+                count = 100
+            
+            await interaction.response.defer(ephemeral=True)
+            
+            # Delete messages
+            deleted = 0
+            async for message in interaction.channel.history(limit=count):
+                if user and message.author != user:
+                    continue
                 
-                # Get counts
-                ticket_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM tickets WHERE guild_id = $1",
-                    interaction.guild.id
-                )
-                
-                reminder_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM reminders WHERE guild_id = $1",
-                    interaction.guild.id
-                )
-                
-                github_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM github_repos WHERE guild_id = $1",
-                    interaction.guild.id
-                )
-                
-                meeting_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM meetings WHERE guild_id = $1",
-                    interaction.guild.id
-                )
-                
-                workflow_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM workflows WHERE guild_id = $1",
-                    interaction.guild.id
-                )
+                try:
+                    await message.delete()
+                    deleted += 1
+                except discord.NotFound:
+                    # Message already deleted
+                    pass
+                except discord.Forbidden:
+                    # Can't delete message
+                    break
+            
+            await interaction.followup.send(f"Deleted {deleted} messages.", ephemeral=True)
+        except Exception as e:
+            await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
+            logger.error(f"Error in purge_messages: {e}")
+            traceback.print_exc()
+    
+    @app_commands.command(name="status")
+    async def bot_status(self, interaction: discord.Interaction):
+        """Get bot status information"""
+        try:
+            # Check if user is admin
+            if not await is_admin(interaction):
+                await interaction.response.send_message("You don't have permission to view bot status.", ephemeral=True)
+                return
             
             embed = discord.Embed(
-                title="Admin Panel",
-                description="Server configuration and statistics",
-                color=discord.Color.blue(),
+                title="Bot Status",
+                color=discord.Color.green(),
                 timestamp=datetime.utcnow()
             )
             
-            # Configuration
-            config_info = []
-            if config:
-                if config['ticket_category_id']:
-                    category = interaction.guild.get_channel(config['ticket_category_id'])
-                    config_info.append(f"Ticket Category: {category.mention if category else 'Deleted'}")
-                
-                if config['ticket_transcript_channel_id']:
-                    channel = interaction.guild.get_channel(config['ticket_transcript_channel_id'])
-                    config_info.append(f"Ticket Transcript Channel: {channel.mention if channel else 'Deleted'}")
-                
-                if config['github_channel_id']:
-                    channel = interaction.guild.get_channel(config['github_channel_id'])
-                    config_info.append(f"GitHub Channel: {channel.mention if channel else 'Deleted'}")
-                
-                if config['reminder_channel_id']:
-                    channel = interaction.guild.get_channel(config['reminder_channel_id'])
-                    config_info.append(f"Reminder Channel: {channel.mention if channel else 'Deleted'}")
-                
-                if config['meeting_announcement_channel_id']:
-                    channel = interaction.guild.get_channel(config['meeting_announcement_channel_id'])
-                    config_info.append(f"Meeting Announcement Channel: {channel.mention if channel else 'Deleted'}")
-                
-                if config['log_channel_id']:
-                    channel = interaction.guild.get_channel(config['log_channel_id'])
-                    config_info.append(f"Log Channel: {channel.mention if channel else 'Deleted'}")
+            # Basic info
+            embed.add_field(name="Bot Name", value=self.bot.user.name, inline=True)
+            embed.add_field(name="Bot ID", value=self.bot.user.id, inline=True)
+            embed.add_field(name="Guilds", value=len(self.bot.guilds), inline=True)
             
-            if config_info:
-                embed.add_field(
-                    name="Configuration",
-                    value="\n".join(config_info),
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="Configuration",
-                    value="No configuration found. Use setup commands to configure the bot.",
-                    inline=False
-                )
+            # Database status
+            db_status = "Connected" if self.bot.db_pool else "Disconnected"
+            embed.add_field(name="Database", value=db_status, inline=True)
             
-            # Statistics
-            embed.add_field(name="Active Tickets", value=str(ticket_count), inline=True)
-            embed.add_field(name="Active Reminders", value=str(reminder_count), inline=True)
-            embed.add_field(name="GitHub Repos", value=str(github_count), inline=True)
-            embed.add_field(name="Meetings", value=str(meeting_count), inline=True)
-            embed.add_field(name="Workflows", value=str(workflow_count), inline=True)
+            # Background tasks status
+            github_status = "Running" if self.bot.github_checker.is_running() else "Stopped"
+            reminder_status = "Running" if self.bot.reminder_checker.is_running() else "Stopped"
+            
+            embed.add_field(name="GitHub Checker", value=github_status, inline=True)
+            embed.add_field(name="Reminder Checker", value=reminder_status, inline=True)
+            
+            # Memory usage (basic)
+            import psutil
+            process = psutil.Process()
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            embed.add_field(name="Memory Usage", value=f"{memory_mb:.1f} MB", inline=True)
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
-            logger.error(f"Error in admin_panel: {e}")
-            traceback.print_exc()
-    
-    @app_commands.command(name="export")
-    @app_commands.describe(user="User to export data for")
-    async def export_user_data(self, interaction: discord.Interaction, user: discord.User):
-        """Export user data"""
-        try:
-            # Check if user is admin
-            if not await is_admin(interaction):
-                await interaction.response.send_message("You don't have permission to export user data.", ephemeral=True)
-                return
-            
-            await interaction.response.defer(ephemeral=True)
-            
-            # Get user data
-            async with self.bot.db_pool.acquire() as conn:
-                # Get tickets
-                tickets = await conn.fetch(
-                    "SELECT * FROM tickets WHERE creator_id = $1 AND guild_id = $2",
-                    user.id, interaction.guild.id
-                )
-                
-                # Get reminders
-                reminders = await conn.fetch(
-                    "SELECT * FROM reminders WHERE user_id = $1 AND guild_id = $2",
-                    user.id, interaction.guild.id
-                )
-                
-                # Get keywords
-                keywords = await conn.fetch(
-                    "SELECT * FROM keywords WHERE user_id = $1 AND guild_id = $2",
-                    user.id, interaction.guild.id
-                )
-                
-                # Get meetings
-                meetings = await conn.fetch(
-                    "SELECT * FROM meetings WHERE creator_id = $1 AND guild_id = $2",
-                    user.id, interaction.guild.id
-                )
-            
-            # Create export data
-            export_data = {
-                "user_id": user.id,
-                "username": user.name,
-                "guild_id": interaction.guild.id,
-                "guild_name": interaction.guild.name,
-                "export_time": datetime.utcnow().isoformat(),
-                "tickets": [dict(ticket) for ticket in tickets],
-                "reminders": [dict(reminder) for reminder in reminders],
-                "keywords": [dict(keyword) for keyword in keywords],
-                "meetings": [dict(meeting) for meeting in meetings]
-            }
-            
-            # Convert to JSON
-            export_json = json.dumps(export_data, indent=2, default=str)
-            
-            # Send as file
-            file = discord.File(
-                io.BytesIO(export_json.encode()),
-                filename=f"user_data_{user.id}.json"
-            )
-            
-            await interaction.followup.send(
-                f"Exported data for {user.mention}",
-                file=file,
-                ephemeral=True
-            )
-        except Exception as e:
-            await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
-            logger.error(f"Error in export_user_data: {e}")
+            logger.error(f"Error in bot_status: {e}")
             traceback.print_exc()
 
 class LogCommands(commands.GroupCog, name="log"):
@@ -3490,12 +3673,9 @@ class LogCommands(commands.GroupCog, name="log"):
         super().__init__()
     
     @app_commands.command(name="setup")
-    @app_commands.describe(
-        log_channel="Channel for logs",
-        events="Events to log (comma-separated, e.g., 'message_delete,member_join')"
-    )
-    async def setup_logging(self, interaction: discord.Interaction, log_channel: discord.TextChannel, events: str):
-        """Set up logging system"""
+    @app_commands.describe(channel="Channel for server logs")
+    async def setup_logging(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        """Set up server logging"""
         try:
             # Check if user is admin
             if not await is_admin(interaction):
@@ -3511,239 +3691,42 @@ class LogCommands(commands.GroupCog, name="log"):
                     ON CONFLICT (guild_id) 
                     DO UPDATE SET log_channel_id = $2
                     """,
-                    interaction.guild.id, log_channel.id
+                    interaction.guild.id, channel.id
                 )
             
-            # Parse events
-            event_list = [e.strip() for e in events.split(",")]
-            valid_events = [
-                "message_delete", "message_edit", "member_join", "member_leave",
-                "role_create", "role_delete", "role_update", "channel_create", "channel_delete"
-            ]
-            
-            valid_event_list = [e for e in event_list if e in valid_events]
-            invalid_events = [e for e in event_list if e not in valid_events]
-            
-            embed = discord.Embed(
-                title="Logging Setup",
-                description=f"Logging has been set up in {log_channel.mention}",
-                color=discord.Color.green(),
-                timestamp=datetime.utcnow()
+            await interaction.response.send_message(
+                f"Logging set up successfully!\nLogs will be sent to {channel.mention}",
+                ephemeral=True
             )
-            
-            if valid_event_list:
-                embed.add_field(
-                    name="Enabled Events",
-                    value="\n".join(valid_event_list),
-                    inline=False
-                )
-            
-            if invalid_events:
-                embed.add_field(
-                    name="Invalid Events (Ignored)",
-                    value="\n".join(invalid_events),
-                    inline=False
-                )
-            
-            await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
             logger.error(f"Error in setup_logging: {e}")
             traceback.print_exc()
     
-    @app_commands.command(name="export")
-    @app_commands.describe(data_type="Type of data to export (e.g., 'tickets', 'reminders')")
-    async def export_logs(self, interaction: discord.Interaction, data_type: str = None):
-        """Export logs"""
+    @app_commands.command(name="disable")
+    async def disable_logging(self, interaction: discord.Interaction):
+        """Disable server logging"""
         try:
             # Check if user is admin
             if not await is_admin(interaction):
-                await interaction.response.send_message("You don't have permission to export logs.", ephemeral=True)
+                await interaction.response.send_message("You don't have permission to disable logging.", ephemeral=True)
                 return
             
-            await interaction.response.defer(ephemeral=True)
-            
-            # Get data
+            # Update server config
             async with self.bot.db_pool.acquire() as conn:
-                if data_type == "tickets" or not data_type:
-                    tickets = await conn.fetch(
-                        "SELECT * FROM tickets WHERE guild_id = $1",
-                        interaction.guild.id
-                    )
-                    
-                    # Convert to JSON
-                    tickets_json = json.dumps([dict(ticket) for ticket in tickets], indent=2, default=str)
-                    
-                    # Send as file
-                    file = discord.File(
-                        io.BytesIO(tickets_json.encode()),
-                        filename=f"tickets_{interaction.guild.id}.json"
-                    )
-                    
-                    await interaction.followup.send(
-                        f"Exported {len(tickets)} tickets",
-                        file=file,
-                        ephemeral=True
-                    )
-                
-                elif data_type == "reminders":
-                    reminders = await conn.fetch(
-                        "SELECT * FROM reminders WHERE guild_id = $1",
-                        interaction.guild.id
-                    )
-                    
-                    # Convert to JSON
-                    reminders_json = json.dumps([dict(reminder) for reminder in reminders], indent=2, default=str)
-                    
-                    # Send as file
-                    file = discord.File(
-                        io.BytesIO(reminders_json.encode()),
-                        filename=f"reminders_{interaction.guild.id}.json"
-                    )
-                    
-                    await interaction.followup.send(
-                        f"Exported {len(reminders)} reminders",
-                        file=file,
-                        ephemeral=True
-                    )
-                
-                elif data_type == "github":
-                    repos = await conn.fetch(
-                        "SELECT * FROM github_repos WHERE guild_id = $1",
-                        interaction.guild.id
-                    )
-                    
-                    # Convert to JSON
-                    repos_json = json.dumps([dict(repo) for repo in repos], indent=2, default=str)
-                    
-                    # Send as file
-                    file = discord.File(
-                        io.BytesIO(repos_json.encode()),
-                        filename=f"github_repos_{interaction.guild.id}.json"
-                    )
-                    
-                    await interaction.followup.send(
-                        f"Exported {len(repos)} GitHub repositories",
-                        file=file,
-                        ephemeral=True
-                    )
-                
-                elif data_type == "meetings":
-                    meetings = await conn.fetch(
-                        "SELECT * FROM meetings WHERE guild_id = $1",
-                        interaction.guild.id
-                    )
-                    
-                    # Convert to JSON
-                    meetings_json = json.dumps([dict(meeting) for meeting in meetings], indent=2, default=str)
-                    
-                    # Send as file
-                    file = discord.File(
-                        io.BytesIO(meetings_json.encode()),
-                        filename=f"meetings_{interaction.guild.id}.json"
-                    )
-                    
-                    await interaction.followup.send(
-                        f"Exported {len(meetings)} meetings",
-                        file=file,
-                        ephemeral=True
-                    )
-                
-                elif data_type == "workflows":
-                    workflows = await conn.fetch(
-                        "SELECT * FROM workflows WHERE guild_id = $1",
-                        interaction.guild.id
-                    )
-                    
-                    # Convert to JSON
-                    workflows_json = json.dumps([dict(workflow) for workflow in workflows], indent=2, default=str)
-                    
-                    # Send as file
-                    file = discord.File(
-                        io.BytesIO(workflows_json.encode()),
-                        filename=f"workflows_{interaction.guild.id}.json"
-                    )
-                    
-                    await interaction.followup.send(
-                        f"Exported {len(workflows)} workflows",
-                        file=file,
-                        ephemeral=True
-                    )
-                
-                else:
-                    await interaction.followup.send(
-                        f"Unknown data type: {data_type}. Valid types: tickets, reminders, github, meetings, workflows",
-                        ephemeral=True
-                    )
-        except Exception as e:
-            await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
-            logger.error(f"Error in export_logs: {e}")
-            traceback.print_exc()
-    
-    @app_commands.command(name="delete")
-    @app_commands.describe(
-        data_type="Type of data to delete (e.g., 'tickets', 'reminders')",
-        confirm="Type 'confirm' to confirm deletion"
-    )
-    async def delete_logs(self, interaction: discord.Interaction, data_type: str, confirm: bool):
-        """Delete logs"""
-        try:
-            # Check if user is admin
-            if not await is_admin(interaction):
-                await interaction.response.send_message("You don't have permission to delete logs.", ephemeral=True)
-                return
-            
-            # Check confirmation
-            if not confirm:
-                await interaction.response.send_message(
-                    f"To confirm deletion of {data_type} data, set confirm=True",
-                    ephemeral=True
+                await conn.execute(
+                    """
+                    UPDATE server_config 
+                    SET log_channel_id = NULL 
+                    WHERE guild_id = $1
+                    """,
+                    interaction.guild.id
                 )
-                return
             
-            # Delete data
-            async with self.bot.db_pool.acquire() as conn:
-                if data_type == "tickets":
-                    result = await conn.execute(
-                        "DELETE FROM tickets WHERE guild_id = $1 AND status = 'closed'",
-                        interaction.guild.id
-                    )
-                    
-                    await interaction.response.send_message(
-                        f"Deleted closed tickets from the database.",
-                        ephemeral=True
-                    )
-                
-                elif data_type == "reminders":
-                    result = await conn.execute(
-                        "DELETE FROM reminders WHERE guild_id = $1 AND remind_time < $2",
-                        interaction.guild.id, datetime.utcnow()
-                    )
-                    
-                    await interaction.response.send_message(
-                        f"Deleted expired reminders from the database.",
-                        ephemeral=True
-                    )
-                
-                elif data_type == "meetings":
-                    result = await conn.execute(
-                        "DELETE FROM meetings WHERE guild_id = $1 AND meeting_time < $2",
-                        interaction.guild.id, datetime.utcnow()
-                    )
-                    
-                    await interaction.response.send_message(
-                        f"Deleted past meetings from the database.",
-                        ephemeral=True
-                    )
-                
-                else:
-                    await interaction.response.send_message(
-                        f"Unknown data type: {data_type}. Valid types: tickets, reminders, meetings",
-                        ephemeral=True
-                    )
+            await interaction.response.send_message("Logging disabled.", ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
-            logger.error(f"Error in delete_logs: {e}")
+            logger.error(f"Error in disable_logging: {e}")
             traceback.print_exc()
 
 class PrivacyCommands(commands.GroupCog, name="privacy"):
@@ -3751,214 +3734,153 @@ class PrivacyCommands(commands.GroupCog, name="privacy"):
         self.bot = bot
         super().__init__()
     
-    @app_commands.command(name="export")
+    @app_commands.command(name="data-export")
     async def export_data(self, interaction: discord.Interaction):
-        """Export your personal data"""
+        """Export your data from the bot"""
         try:
             await interaction.response.defer(ephemeral=True)
             
-            # Get user data
-            async with self.bot.db_pool.acquire() as conn:
-                # Get tickets
-                tickets = await conn.fetch(
-                    "SELECT * FROM tickets WHERE creator_id = $1",
-                    interaction.user.id
-                )
-                
-                # Get reminders
-                reminders = await conn.fetch(
-                    "SELECT * FROM reminders WHERE user_id = $1",
-                    interaction.user.id
-                )
-                
-                # Get keywords
-                keywords = await conn.fetch(
-                    "SELECT * FROM keywords WHERE user_id = $1",
-                    interaction.user.id
-                )
-                
-                # Get meetings
-                meetings = await conn.fetch(
-                    "SELECT * FROM meetings WHERE creator_id = $1 OR participants::text LIKE $2",
-                    interaction.user.id, f"%{interaction.user.id}%"
-                )
+            user_data = {}
             
-            # Create export data
-            export_data = {
-                "user_id": interaction.user.id,
-                "username": interaction.user.name,
-                "export_time": datetime.utcnow().isoformat(),
-                "tickets": [dict(ticket) for ticket in tickets],
-                "reminders": [dict(reminder) for reminder in reminders],
-                "keywords": [dict(keyword) for keyword in keywords],
-                "meetings": [dict(meeting) for meeting in meetings]
-            }
+            async with self.bot.db_pool.acquire() as conn:
+                # Get user's tickets
+                tickets = await conn.fetch(
+                    "SELECT * FROM tickets WHERE creator_id = $1 AND guild_id = $2",
+                    interaction.user.id, interaction.guild.id
+                )
+                user_data['tickets'] = [dict(ticket) for ticket in tickets]
+                
+                # Get user's reminders
+                reminders = await conn.fetch(
+                    "SELECT * FROM reminders WHERE user_id = $1 AND guild_id = $2",
+                    interaction.user.id, interaction.guild.id
+                )
+                user_data['reminders'] = [dict(reminder) for reminder in reminders]
+                
+                # Get user's keywords
+                keywords = await conn.fetch(
+                    "SELECT * FROM keywords WHERE user_id = $1 AND guild_id = $2",
+                    interaction.user.id, interaction.guild.id
+                )
+                user_data['keywords'] = [dict(keyword) for keyword in keywords]
+                
+                # Get user's meetings
+                meetings = await conn.fetch(
+                    "SELECT * FROM meetings WHERE creator_id = $1 AND guild_id = $2",
+                    interaction.user.id, interaction.guild.id
+                )
+                user_data['meetings'] = [dict(meeting) for meeting in meetings]
             
             # Convert to JSON
-            export_json = json.dumps(export_data, indent=2, default=str)
+            import json
+            data_json = json.dumps(user_data, indent=2, default=str)
             
-            # Send as file
-            file = discord.File(
-                io.BytesIO(export_json.encode()),
-                filename=f"my_data_{interaction.user.id}.json"
+            # Create file
+            import io
+            file_buffer = io.StringIO(data_json)
+            file = discord.File(file_buffer, filename=f"user_data_{interaction.user.id}.json")
+            
+            embed = discord.Embed(
+                title="Data Export",
+                description="Your data has been exported. This includes tickets, reminders, keywords, and meetings you've created.",
+                color=discord.Color.blue(),
+                timestamp=datetime.utcnow()
             )
             
-            await interaction.followup.send(
-                "Here's your personal data export:",
-                file=file,
-                ephemeral=True
-            )
+            await interaction.followup.send(embed=embed, file=file, ephemeral=True)
         except Exception as e:
             await interaction.followup.send(f"Error: {str(e)}", ephemeral=True)
             logger.error(f"Error in export_data: {e}")
             traceback.print_exc()
     
-    @app_commands.command(name="delete")
-    @app_commands.describe(data_type="Type of data to delete (leave blank to delete all)")
-    async def delete_data(self, interaction: discord.Interaction, data_type: str = None):
-        """Delete your personal data"""
+    @app_commands.command(name="data-delete")
+    async def delete_data(self, interaction: discord.Interaction):
+        """Delete all your data from the bot"""
         try:
-            # Delete data
-            async with self.bot.db_pool.acquire() as conn:
-                if data_type == "tickets" or not data_type:
-                    await conn.execute(
-                        "DELETE FROM tickets WHERE creator_id = $1",
-                        interaction.user.id
-                    )
+            # Create confirmation view
+            class ConfirmView(discord.ui.View):
+                def __init__(self):
+                    super().__init__(timeout=60)
                 
-                if data_type == "reminders" or not data_type:
-                    await conn.execute(
-                        "DELETE FROM reminders WHERE user_id = $1",
-                        interaction.user.id
-                    )
-                
-                if data_type == "keywords" or not data_type:
-                    await conn.execute(
-                        "DELETE FROM keywords WHERE user_id = $1",
-                        interaction.user.id
-                    )
-                
-                if data_type == "meetings" or not data_type:
-                    # For meetings, we need to handle participants differently
-                    meetings = await conn.fetch(
-                        "SELECT id, participants FROM meetings WHERE participants::text LIKE $1",
-                        f"%{interaction.user.id}%"
-                    )
+                @discord.ui.button(label="Confirm Delete", style=discord.ButtonStyle.danger)
+                async def confirm_delete(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+                    if button_interaction.user != interaction.user:
+                        await button_interaction.response.send_message("You can't confirm this action.", ephemeral=True)
+                        return
                     
-                    for meeting in meetings:
-                        participants = json.loads(meeting['participants'])
-                        if interaction.user.id in participants:
-                            participants.remove(interaction.user.id)
+                    try:
+                        async with self.bot.db_pool.acquire() as conn:
+                            # Delete user's data
+                            await conn.execute("DELETE FROM reminders WHERE user_id = $1 AND guild_id = $2", interaction.user.id, interaction.guild.id)
+                            await conn.execute("DELETE FROM keywords WHERE user_id = $1 AND guild_id = $2", interaction.user.id, interaction.guild.id)
                             
-                            await conn.execute(
-                                "UPDATE meetings SET participants = $1 WHERE id = $2",
-                                json.dumps(participants), meeting['id']
-                            )
+                            # Note: We don't delete tickets and meetings as they may involve other users
+                            # Instead, we could anonymize them or mark them as deleted
+                        
+                        await button_interaction.response.send_message("Your personal data has been deleted.", ephemeral=True)
+                    except Exception as e:
+                        await button_interaction.response.send_message(f"Error deleting data: {str(e)}", ephemeral=True)
+                        logger.error(f"Error in delete_data confirmation: {e}")
+                
+                @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+                async def cancel_delete(self, button_interaction: discord.Interaction, button: discord.ui.Button):
+                    if button_interaction.user != interaction.user:
+                        await button_interaction.response.send_message("You can't cancel this action.", ephemeral=True)
+                        return
                     
-                    # Delete meetings where user is creator and no participants
-                    await conn.execute(
-                        """
-                        DELETE FROM meetings 
-                        WHERE creator_id = $1 AND (participants::text = '[]' OR participants IS NULL)
-                        """,
-                        interaction.user.id
-                    )
+                    await button_interaction.response.send_message("Data deletion cancelled.", ephemeral=True)
+                    self.stop()
             
-            await interaction.response.send_message(
-                f"Your {'personal data' if not data_type else data_type} has been deleted.",
-                ephemeral=True
+            embed = discord.Embed(
+                title="⚠️ Data Deletion Confirmation",
+                description="This will delete all your personal data including reminders and keywords. Tickets and meetings will be preserved but anonymized.\n\n**This action cannot be undone.**",
+                color=discord.Color.red(),
+                timestamp=datetime.utcnow()
             )
+            
+            await interaction.response.send_message(embed=embed, view=ConfirmView(), ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
             logger.error(f"Error in delete_data: {e}")
             traceback.print_exc()
     
-    @app_commands.command(name="summary")
-    async def data_summary(self, interaction: discord.Interaction):
-        """Get a summary of your personal data"""
-        try:
-            # Get data counts
-            async with self.bot.db_pool.acquire() as conn:
-                ticket_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM tickets WHERE creator_id = $1",
-                    interaction.user.id
-                )
-                
-                reminder_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM reminders WHERE user_id = $1",
-                    interaction.user.id
-                )
-                
-                keyword_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM keywords WHERE user_id = $1",
-                    interaction.user.id
-                )
-                
-                meeting_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM meetings WHERE creator_id = $1 OR participants::text LIKE $2",
-                    interaction.user.id, f"%{interaction.user.id}%"
-                )
-            
-            embed = discord.Embed(
-                title="Your Data Summary",
-                description="Here's a summary of your personal data stored by the bot:",
-                color=discord.Color.blue(),
-                timestamp=datetime.utcnow()
-            )
-            
-            embed.add_field(name="Tickets", value=str(ticket_count), inline=True)
-            embed.add_field(name="Reminders", value=str(reminder_count), inline=True)
-            embed.add_field(name="Keywords", value=str(keyword_count), inline=True)
-            embed.add_field(name="Meetings", value=str(meeting_count), inline=True)
-            
-            embed.add_field(
-                name="Data Management",
-                value="Use `/privacy export` to export your data\nUse `/privacy delete` to delete your data",
-                inline=False
-            )
-            
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
-            logger.error(f"Error in data_summary: {e}")
-            traceback.print_exc()
-    
     @app_commands.command(name="policy")
     async def privacy_policy(self, interaction: discord.Interaction):
-        """View the privacy policy"""
+        """View the bot's privacy policy"""
         try:
             embed = discord.Embed(
                 title="Privacy Policy",
-                description="This bot collects and stores data necessary for its functionality.",
                 color=discord.Color.blue(),
                 timestamp=datetime.utcnow()
             )
             
             embed.add_field(
                 name="Data Collection",
-                value=(
-                    "The bot collects and stores the following data:\n"
-                    "- User IDs for tracking tickets, reminders, etc.\n"
-                    "- Message content for keyword notifications\n"
-                    "- Channel and role IDs for configuration"
-                ),
+                value="We collect only the data necessary for bot functionality: user IDs, message content for commands, and configuration data.",
                 inline=False
             )
             
             embed.add_field(
                 name="Data Usage",
-                value=(
-                    "Your data is used solely for the functionality of the bot and is not shared with third parties."
-                ),
+                value="Your data is used solely to provide bot services like reminders, tickets, and notifications. We do not share data with third parties.",
                 inline=False
             )
             
             embed.add_field(
-                name="Data Management",
-                value=(
-                    "You can export your data using `/privacy export`\n"
-                    "You can delete your data using `/privacy delete`"
-                ),
+                name="Data Retention",
+                value="Data is retained until you delete it or leave the server. You can export or delete your data at any time.",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Your Rights",
+                value="You have the right to access, export, and delete your data. Use `/privacy data-export` and `/privacy data-delete` commands.",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Contact",
+                value="For privacy concerns, contact the server administrators.",
                 inline=False
             )
             
@@ -3967,332 +3889,176 @@ class PrivacyCommands(commands.GroupCog, name="privacy"):
             await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
             logger.error(f"Error in privacy_policy: {e}")
             traceback.print_exc()
-    
-    @app_commands.command(name="terms")
-    async def terms_of_service(self, interaction: discord.Interaction):
-        """View the terms of service"""
-        try:
-            embed = discord.Embed(
-                title="Terms of Service",
-                description="By using this bot, you agree to the following terms:",
-                color=discord.Color.blue(),
-                timestamp=datetime.utcnow()
-            )
-            
-            embed.add_field(
-                name="Usage",
-                value=(
-                    "The bot is provided as-is, without any warranty.\n"
-                    "You agree to use the bot in compliance with Discord's Terms of Service."
-                ),
-                inline=False
-            )
-            
-            embed.add_field(
-                name="Limitations",
-                value=(
-                    "The bot may be unavailable at times for maintenance or updates.\n"
-                    "The bot's functionality may change without notice."
-                ),
-                inline=False
-            )
-            
-            embed.add_field(
-                name="Data",
-                value=(
-                    "You agree that the bot may collect and store data necessary for its functionality.\n"
-                    "You can manage your data using the `/privacy` commands."
-                ),
-                inline=False
-            )
-            
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
-            logger.error(f"Error in terms_of_service: {e}")
-            traceback.print_exc()
 
 class HelpCommands(commands.GroupCog, name="help"):
     def __init__(self, bot):
         self.bot = bot
         super().__init__()
     
-    @app_commands.command(name="help")
-    @app_commands.describe(category="Command category to get help for")
-    async def help_command(self, interaction: discord.Interaction, category: str = None):
-        """Get help with bot commands"""
+    @app_commands.command(name="commands")
+    async def list_commands(self, interaction: discord.Interaction):
+        """List all available commands"""
         try:
-            if not category:
-                # Show main help
-                embed = discord.Embed(
-                    title="Bot Help",
-                    description="Here are the available command categories:",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                categories = [
-                    ("ticket", "🎫 Ticket System", "Create and manage support tickets"),
-                    ("github", "🐙 GitHub Integration", "Track GitHub repositories"),
-                    ("reminder", "⏰ Reminder System", "Set reminders for yourself or channels"),
-                    ("meeting", "📅 Meeting System", "Schedule and manage meetings"),
-                    ("notification", "🔔 Notification System", "Get notified when keywords are mentioned"),
-                    ("role", "👥 Role Management", "Manage server roles"),
-                    ("user", "👤 User Management", "Get information about users"),
-                    ("conversation", "🗨️ Conversation Management", "Manage threads and messages"),
-                    ("ai", "🤖 AI Features", "AI-powered features"),
-                    ("workflow", "⚙️ Workflow Automation", "Automate server tasks"),
-                    ("integration", "🔗 Integrations", "Connect to external services"),
-                    ("admin", "🛡️ Admin Commands", "Server administration"),
-                    ("log", "📊 Logging System", "Configure logging"),
-                    ("privacy", "🔒 Privacy & Data", "Manage your data")
-                ]
-                
-                for cmd, emoji_name, desc in categories:
-                    embed.add_field(
-                        name=f"{emoji_name}",
-                        value=f"`/help {cmd}` - {desc}",
-                        inline=False
-                    )
-                
-                embed.set_footer(text="Use /help <category> for more information")
-                
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
+            embed = discord.Embed(
+                title="Bot Commands",
+                description="Here are all the available command groups:",
+                color=discord.Color.blue(),
+                timestamp=datetime.utcnow()
+            )
             
-            # Show category help
-            if category == "ticket":
-                embed = discord.Embed(
-                    title="🎫 Ticket System Help",
-                    description="Commands for creating and managing support tickets",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/ticket create", value="Create a new support ticket", inline=False)
-                embed.add_field(name="/ticket join", value="Join an existing ticket", inline=False)
-                embed.add_field(name="/ticket private", value="Make a ticket private", inline=False)
-                embed.add_field(name="/ticket public", value="Make a ticket public", inline=False)
-                embed.add_field(name="/ticket list", value="List tickets", inline=False)
-                embed.add_field(name="/ticket assign", value="Assign a user to a ticket", inline=False)
-                embed.add_field(name="/ticket setup", value="Set up the ticket system", inline=False)
+            command_groups = {
+                "🎫 Ticket": "Create and manage support tickets",
+                "🐙 GitHub": "Track GitHub repositories",
+                "⏰ Reminder": "Set personal and channel reminders",
+                "📅 Meeting": "Schedule and manage meetings",
+                "🔔 Notification": "Monitor keywords in messages",
+                "👥 Role": "Manage user roles",
+                "👤 User": "Get user information and permissions",
+                "🗨️ Conversation": "Manage threads and messages",
+                "🤖 AI": "AI-powered features (requires setup)",
+                "⚙️ Workflow": "Automate server actions",
+                "🔗 Integration": "Connect external services",
+                "🛡️ Admin": "Administrative commands",
+                "📝 Log": "Server event logging",
+                "🔒 Privacy": "Data management and privacy",
+                "❓ Help": "Get help and information"
+            }
             
-            elif category == "github":
-                embed = discord.Embed(
-                    title="🐙 GitHub Integration Help",
-                    description="Commands for tracking GitHub repositories",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/github track", value="Track a GitHub repository", inline=False)
-                embed.add_field(name="/github untrack", value="Stop tracking a repository", inline=False)
-                embed.add_field(name="/github list", value="List tracked repositories", inline=False)
-                embed.add_field(name="/github setup", value="Set up GitHub tracking", inline=False)
-            
-            elif category == "reminder":
-                embed = discord.Embed(
-                    title="⏰ Reminder System Help",
-                    description="Commands for setting reminders",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/reminder create", value="Create a personal reminder", inline=False)
-                embed.add_field(name="/reminder channel", value="Create a channel reminder", inline=False)
-                embed.add_field(name="/reminder list", value="List your reminders", inline=False)
-                embed.add_field(name="/reminder delete", value="Delete a reminder", inline=False)
-                embed.add_field(name="/reminder setup", value="Set up the reminder system", inline=False)
-            
-            elif category == "meeting":
-                embed = discord.Embed(
-                    title="📅 Meeting System Help",
-                    description="Commands for scheduling meetings",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/meeting create", value="Create a new meeting", inline=False)
-                embed.add_field(name="/meeting join", value="Join a meeting", inline=False)
-                embed.add_field(name="/meeting list", value="List upcoming meetings", inline=False)
-                embed.add_field(name="/meeting setup", value="Set up the meeting system", inline=False)
-            
-            elif category == "notification":
-                embed = discord.Embed(
-                    title="🔔 Notification System Help",
-                    description="Commands for keyword notifications",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/notification add", value="Add a keyword to monitor", inline=False)
-                embed.add_field(name="/notification remove", value="Remove a monitored keyword", inline=False)
-                embed.add_field(name="/notification list", value="List your monitored keywords", inline=False)
-            
-            elif category == "role":
-                embed = discord.Embed(
-                    title="👥 Role Management Help",
-                    description="Commands for managing roles",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/role assign", value="Assign a role to a user", inline=False)
-                embed.add_field(name="/role remove", value="Remove a role from a user", inline=False)
-                embed.add_field(name="/role info", value="Get information about a role", inline=False)
-            
-            elif category == "user":
-                embed = discord.Embed(
-                    title="👤 User Management Help",
-                    description="Commands for user information",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/user permissions", value="Check user permissions", inline=False)
-                embed.add_field(name="/user info", value="Get information about a user", inline=False)
-            
-            elif category == "conversation":
-                embed = discord.Embed(
-                    title="🗨️ Conversation Management Help",
-                    description="Commands for managing conversations",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/conversation thread", value="Create a thread from a message", inline=False)
-                embed.add_field(name="/conversation rename", value="Rename a thread", inline=False)
-                embed.add_field(name="/conversation archive", value="Archive a thread", inline=False)
-                embed.add_field(name="/conversation search", value="Search messages", inline=False)
-                embed.add_field(name="/conversation pin", value="Pin a message", inline=False)
-                embed.add_field(name="/conversation unpin", value="Unpin a message", inline=False)
-                embed.add_field(name="/conversation setup", value="Set up conversation management", inline=False)
-            
-            elif category == "ai":
-                embed = discord.Embed(
-                    title="🤖 AI Features Help",
-                    description="AI-powered commands",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/ai summarize", value="Summarize recent messages", inline=False)
-                embed.add_field(name="/ai translate", value="Translate text", inline=False)
-                embed.add_field(name="/ai ask", value="Ask a question to the AI", inline=False)
-                embed.add_field(name="/ai analyze", value="Analyze conversation patterns", inline=False)
-            
-            elif category == "workflow":
-                embed = discord.Embed(
-                    title="⚙️ Workflow Automation Help",
-                    description="Commands for automating tasks",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/workflow create", value="Create a new workflow", inline=False)
-                embed.add_field(name="/workflow list", value="List workflows", inline=False)
-                embed.add_field(name="/workflow toggle", value="Enable or disable a workflow", inline=False)
-            
-            elif category == "integration":
-                embed = discord.Embed(
-                    title="🔗 Integration Help",
-                    description="Commands for external integrations",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/integration google-connect", value="Connect to Google", inline=False)
-                embed.add_field(name="/integration google-events", value="Fetch Google Calendar events", inline=False)
-                embed.add_field(name="/integration notion-connect", value="Connect to Notion", inline=False)
-                embed.add_field(name="/integration notion-pages", value="List Notion pages", inline=False)
-                embed.add_field(name="/integration trello-connect", value="Connect to Trello", inline=False)
-                embed.add_field(name="/integration trello-boards", value="List Trello boards", inline=False)
-            
-            elif category == "admin":
-                embed = discord.Embed(
-                    title="🛡️ Admin Commands Help",
-                    description="Commands for server administration",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/admin role-add", value="Add an admin role", inline=False)
-                embed.add_field(name="/admin role-remove", value="Remove an admin role", inline=False)
-                embed.add_field(name="/admin role-list", value="List admin roles", inline=False)
-                embed.add_field(name="/admin panel", value="Open admin panel", inline=False)
-                embed.add_field(name="/admin export", value="Export user data", inline=False)
-            
-            elif category == "log":
-                embed = discord.Embed(
-                    title="📊 Logging System Help",
-                    description="Commands for logging",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/log setup", value="Set up logging", inline=False)
-                embed.add_field(name="/log export", value="Export logs", inline=False)
-                embed.add_field(name="/log delete", value="Delete logs", inline=False)
-            
-            elif category == "privacy":
-                embed = discord.Embed(
-                    title="🔒 Privacy & Data Help",
-                    description="Commands for managing your data",
-                    color=discord.Color.blue(),
-                    timestamp=datetime.utcnow()
-                )
-                
-                embed.add_field(name="/privacy export", value="Export your data", inline=False)
-                embed.add_field(name="/privacy delete", value="Delete your data", inline=False)
-                embed.add_field(name="/privacy summary", value="Get a summary of your data", inline=False)
-                embed.add_field(name="/privacy policy", value="View the privacy policy", inline=False)
-                embed.add_field(name="/privacy terms", value="View the terms of service", inline=False)
-            
-            else:
-                embed = discord.Embed(
-                    title="Help",
-                    description=f"Unknown category: {category}",
-                    color=discord.Color.red(),
-                    timestamp=datetime.utcnow()
-                )
-                
+            for group, description in command_groups.items():
                 embed.add_field(
-                    name="Available Categories",
-                    value=(
-                        "ticket, github, reminder, meeting, notification, role, user, "
-                        "conversation, ai, workflow, integration, admin, log, privacy"
-                    ),
-                    inline=False
+                    name=group,
+                    value=description,
+                    inline=True
                 )
+            
+            embed.add_field(
+                name="Usage",
+                value="Use `/[group] [command]` to run commands. For example: `/ticket create`",
+                inline=False
+            )
             
             await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception as e:
             await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
-            logger.error(f"Error in help_command: {e}")
+            logger.error(f"Error in list_commands: {e}")
+            traceback.print_exc()
+    
+    @app_commands.command(name="setup")
+    async def setup_guide(self, interaction: discord.Interaction):
+        """Get setup guide for the bot"""
+        try:
+            embed = discord.Embed(
+                title="Bot Setup Guide",
+                description="Follow these steps to set up the bot features:",
+                color=discord.Color.green(),
+                timestamp=datetime.utcnow()
+            )
+            
+            setup_steps = [
+                "1. **Admin Roles**: `/admin role-add @role` - Add admin roles",
+                "2. **Tickets**: `/ticket setup #category #transcript-channel` - Set up ticket system",
+                "3. **GitHub**: `/github setup #notifications-channel` - Set up GitHub tracking",
+                "4. **Reminders**: `/reminder setup #default-channel` - Set up reminders",
+                "5. **Meetings**: `/meeting setup #announcements #voice-channel` - Set up meetings",
+                "6. **Logging**: `/log setup #log-channel` - Set up event logging",
+                "7. **Conversations**: `/conversation setup #thread-log-channel` - Set up conversation management"
+            ]
+            
+            embed.add_field(
+                name="Setup Steps",
+                value="\n".join(setup_steps),
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Required Permissions",
+                value="The bot needs Administrator permissions or specific permissions for each feature.",
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Optional Features",
+                value="Workflows, integrations, and AI features can be set up later as needed.",
+                inline=False
+            )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
+            logger.error(f"Error in setup_guide: {e}")
+            traceback.print_exc()
+    
+    @app_commands.command(name="about")
+    async def about_bot(self, interaction: discord.Interaction):
+        """Get information about the bot"""
+        try:
+            embed = discord.Embed(
+                title="Discord Management Bot",
+                description="A comprehensive Discord management bot with advanced features.",
+                color=discord.Color.blue(),
+                timestamp=datetime.utcnow()
+            )
+            
+            embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+            
+            features = [
+                "🎫 Complete ticket system with transcripts",
+                "🐙 GitHub repository tracking and notifications",
+                "⏰ Personal and channel reminder system",
+                "📅 Meeting scheduling and management",
+                "🔔 Keyword monitoring and notifications",
+                "👥 Advanced role management",
+                "🗨️ Thread and conversation management",
+                "⚙️ Workflow automation system",
+                "📝 Comprehensive event logging",
+                "🔒 GDPR-compliant data management",
+                "🤖 AI integration support",
+                "🔗 External service integrations"
+            ]
+            
+            embed.add_field(
+                name="Features",
+                value="\n".join(features),
+                inline=False
+            )
+            
+            embed.add_field(
+                name="Version",
+                value="1.0.0",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Servers",
+                value=str(len(self.bot.guilds)),
+                inline=True
+            )
+            
+            embed.add_field(
+                name="Support",
+                value="Contact server administrators for support",
+                inline=True
+            )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception as e:
+            await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
+            logger.error(f"Error in about_bot: {e}")
             traceback.print_exc()
 
-# Run the bot
-bot = DevBot()
-
-@bot.tree.error
-async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
-    if isinstance(error, app_commands.CommandOnCooldown):
-        await interaction.response.send_message(
-            f"This command is on cooldown. Try again in {error.retry_after:.2f} seconds.",
-            ephemeral=True
-        )
-    elif isinstance(error, app_commands.MissingPermissions):
-        await interaction.response.send_message(
-            "You don't have permission to use this command.",
-            ephemeral=True
-        )
-    else:
-        await interaction.response.send_message(
-            f"An error occurred: {str(error)}",
-            ephemeral=True
-        )
-        logger.error(f"Command error: {error}")
-        traceback.print_exc()
-
+# Main execution
 if __name__ == "__main__":
-    bot.run(TOKEN)
+    bot = DevBot()
+    
+    try:
+        bot.run(TOKEN)
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Bot crashed: {e}")
+        traceback.print_exc()
+    finally:
+        # Cleanup
+        if bot.db_pool:
+            asyncio.run(bot.db_pool.close())
+        logger.info("Bot shutdown complete")
