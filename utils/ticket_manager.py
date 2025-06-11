@@ -128,6 +128,26 @@ class TicketManager:
         self.bot = bot
         self.ticket_configs = {}
     
+    async def load_ticket_configs(self) -> bool:
+        """Load all ticket configurations from database"""
+        try:
+            rows = await self.bot.db.fetch(
+                "SELECT user_id, data_content FROM user_data WHERE data_type = $1",
+                'ticket_config'
+            )
+            
+            for row in rows:
+                guild_id = row['user_id']  # user_id is used as guild_id for configs
+                config = json.loads(row['data_content'])
+                self.ticket_configs[guild_id] = config
+            
+            logger.info(f"Loaded {len(self.ticket_configs)} ticket configurations")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error loading ticket configs: {e}")
+            return False
+    
     def generate_ticket_id(self) -> str:
         """Generate a unique ticket ID"""
         return f"TKT-{uuid.uuid4().hex[:8].upper()}"
