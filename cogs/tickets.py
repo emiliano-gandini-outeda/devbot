@@ -300,149 +300,6 @@ class DenialReasonModal(discord.ui.Modal):
         except Exception as e:
             await interaction.response.send_message(f"Error: {str(e)}", ephemeral=True)
 
-class TicketView(discord.ui.View):
-    def __init__(self, bot, ticket_id: str):
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.ticket_id = ticket_id
-    
-    @discord.ui.button(label="Transcript & Close", style=discord.ButtonStyle.danger, emoji="📄")
-    async def close_and_transcript(self, interaction: discord.Interaction, button: discord.ui.Button):
-        try:
-            # Check permissions
-            ticket = await self.bot.db.connection.fetchrow(
-                "SELECT * FROM tickets WHERE ticket_id = $1", self.ticket_id
-            )
-            
-            if not ticket:
-                embed = EmbedBuilder.error("Error", "Ticket not found")
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            
-            ticket_user_id = ticket['user_id']
-            assignee_id = ticket['assignee_id']
-            
-            # Check if user is admin, ticket creator, or assignee
-            is_admin = self.bot.admin_manager.is_admin(interaction.user)
-            is_creator = str(interaction.user.id) == ticket_user_id
-            is_assignee = assignee_id and str(interaction.user.id) == assignee_id
-            
-            if not (is_admin or is_creator or is_assignee):
-                embed = EmbedBuilder.error("Permission Denied", "Only admins, ticket creator, or assignees can close tickets")
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            
-            await interaction.response.defer()
-            
-            # Create transcript
-            transcript = await self.create_transcript(interaction.channel)
-            
-            # Get ticket creator
-            ticket_user = interaction.guild.get_member(int(ticket_user_id))
-            
-            # Send transcript
-            success = await self.send_transcript(
-                interaction.guild, transcript, self.ticket_id, ticket_user or interaction.user
-            )
-            
-            # Update ticket status
-            await self.bot.db.connection.execute(
-                "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
-                TicketStatus.CLOSED.value, datetime.utcnow(), self.ticket_id
-            )
-            
-            if success:
-                embed = EmbedBuilder.success(
-                    "Ticket Closed", 
-                    f"Ticket {self.ticket_id} has been closed and transcript saved.\n"
-                    f"This channel will be deleted in 10 seconds."
-                )
-            else:
-                embed = EmbedBuilder.warning(
-                    "Ticket Closed", 
-                    f"Ticket {self.ticket_id} has been closed but transcript could not be saved.\n"
-                    f"This channel will be deleted in 10 seconds."
-                )
-            
-            await interaction.followup.send(embed=embed)
-            
-            # Delete channel after 10 seconds
-            await asyncio.sleep(10)
-            try:
-                await interaction.channel.delete(reason=f"Ticket {self.ticket_id} closed")
-            except:
-                pass
-            
-        except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to close ticket: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-    
-    async def create_transcript(self, channel: discord.TextChannel) -> str:
-        """Create a transcript of the ticket channel"""
-        try:
-            messages = []
-            async for message in channel.history(limit=None, oldest_first=True):
-                timestamp = message.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')
-                content = message.content or "[No content]"
-                
-                if message.attachments:
-                    attachments = "\n".join([f"Attachment: {att.filename}" for att in message.attachments])
-                    content += f"\n{attachments}"
-                
-                messages.append(f"[{timestamp}] {message.author}: {content}")
-            
-            return "\n".join(messages)
-            
-        except Exception as e:
-            print(f"Error creating transcript: {e}")
-            return f"Error creating transcript: {str(e)}"
-    
-    async def send_transcript(self, guild: discord.Guild, transcript: str, ticket_id: str, user: discord.Member) -> bool:
-        """Send transcript to the configured channel"""
-        try:
-            config_row = await self.bot.db.connection.fetchrow(
-                "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
-                str(guild.id), 'ticket_config'
-            )
-            
-            if not config_row:
-                print(f"No ticket config found for guild {guild.id}")
-                return False
-            
-            config = json.loads(config_row['data_content'])
-            transcript_channel_id = config.get('transcript_channel_id')
-            
-            if not transcript_channel_id:
-                print(f"No transcript_channel_id in config for guild {guild.id}")
-                return False
-            
-            transcript_channel = guild.get_channel(int(transcript_channel_id))
-            if not transcript_channel:
-                print(f"Transcript channel {transcript_channel_id} not found in guild {guild.id}")
-                return False
-            
-            # Create transcript file
-            transcript_file = discord.File(
-                fp=io.StringIO(transcript),
-                filename=f"transcript_{ticket_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.txt"
-            )
-            
-            embed = discord.Embed(
-                title=f"🎫 Ticket Transcript: {ticket_id}",
-                description=f"Ticket closed by {user.mention}",
-                color=0x5865F2,
-                timestamp=datetime.utcnow()
-            )
-            embed.set_footer(text="Railway Bot")
-            
-            await transcript_channel.send(embed=embed, file=transcript_file)
-            print(f"Transcript sent successfully for ticket {ticket_id}")
-            return True
-            
-        except Exception as e:
-            print(f"Error sending transcript: {e}")
-            return False
-
 class TicketCommands(app_commands.Group):
     """Ticket system commands"""
     
@@ -537,13 +394,12 @@ class TicketCommands(app_commands.Group):
             embed.add_field(name="Status", value="Open", inline=True)
             embed.add_field(name="Created by", value=interaction.user.mention, inline=True)
             embed.add_field(name="Visibility", value="🌐 Public (Read-only)", inline=True)
+            embed.add_field(name="Close Ticket", value="Use `/ticket close` to close this ticket", inline=False)
             embed.timestamp = datetime.utcnow()
             embed.set_footer(text="Railway Bot")
             
-            view = TicketView(self.bot, ticket_id)
-            
-            # Send initial message in ticket channel
-            await channel.send(f"Welcome {interaction.user.mention}! Your ticket has been created.", embed=embed, view=view)
+            # Send initial message in ticket channel (no view needed)
+            await channel.send(f"Welcome {interaction.user.mention}! Your ticket has been created.", embed=embed)
             
             # Respond to user
             embed_response = EmbedBuilder.success(
@@ -551,13 +407,174 @@ class TicketCommands(app_commands.Group):
                 f"Your ticket **{ticket_id}** has been created!\n"
                 f"Channel: {channel.mention}\n"
                 f"Priority: {priority.title()}\n"
-                f"Visibility: Public (everyone can read, only you and admins can write)"
+                f"Visibility: Public (everyone can read, only you and admins can write)\n"
+                f"Use `/ticket close` to close the ticket when resolved."
             )
             await interaction.followup.send(embed=embed_response, ephemeral=True)
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to create ticket: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="close", description="Close a ticket with transcript")
+    @app_commands.describe(ticket_id="ID of the ticket to close (optional, not needed if in ticket channel)")
+    async def close_ticket(self, interaction: discord.Interaction, ticket_id: str = None):
+        # If no ticket ID provided, check if we're in a ticket channel
+        if not ticket_id:
+            if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
+                embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels or with a ticket ID")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            # Extract ticket ID from channel topic
+            ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket:", "").strip()
+        
+        try:
+            # Check permissions
+            ticket = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+            )
+            
+            if not ticket:
+                embed = EmbedBuilder.error("Error", "Ticket not found")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            ticket_user_id = ticket['user_id']
+            assignee_id = ticket['assignee_id']
+            channel_id = ticket['channel_id']
+            
+            # Check if user is admin, ticket creator, or assignee
+            is_admin = self.bot.admin_manager.is_admin(interaction.user)
+            is_creator = str(interaction.user.id) == ticket_user_id
+            is_assignee = assignee_id and str(interaction.user.id) == assignee_id
+            
+            if not (is_admin or is_creator or is_assignee):
+                embed = EmbedBuilder.error("Permission Denied", "Only admins, ticket creator, or assignees can close tickets")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            # Get the ticket channel
+            if channel_id:
+                channel = interaction.guild.get_channel(int(channel_id))
+            else:
+                channel = interaction.channel if interaction.channel.topic and "Support ticket:" in interaction.channel.topic else None
+            
+            if not channel:
+                embed = EmbedBuilder.error("Channel Not Found", "The ticket channel no longer exists")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+            
+            await interaction.response.defer()
+            
+            # Create transcript
+            transcript = await self.create_transcript(channel)
+            
+            # Get ticket creator
+            ticket_user = interaction.guild.get_member(int(ticket_user_id))
+            
+            # Send transcript
+            success = await self.send_transcript(
+                interaction.guild, transcript, ticket_id, ticket_user or interaction.user
+            )
+            
+            # Update ticket status
+            await self.bot.db.connection.execute(
+                "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
+                TicketStatus.CLOSED.value, datetime.utcnow(), ticket_id
+            )
+            
+            if success:
+                embed = EmbedBuilder.success(
+                    "Ticket Closed", 
+                    f"Ticket {ticket_id} has been closed and transcript saved.\n"
+                    f"This channel will be deleted in 10 seconds."
+                )
+            else:
+                embed = EmbedBuilder.warning(
+                    "Ticket Closed", 
+                    f"Ticket {ticket_id} has been closed but transcript could not be saved.\n"
+                    f"This channel will be deleted in 10 seconds."
+                )
+            
+            await interaction.followup.send(embed=embed)
+            
+            # Delete channel after 10 seconds
+            await asyncio.sleep(10)
+            try:
+                await channel.delete(reason=f"Ticket {ticket_id} closed")
+            except:
+                pass
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to close ticket: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    async def create_transcript(self, channel: discord.TextChannel) -> str:
+        """Create a transcript of the ticket channel"""
+        try:
+            messages = []
+            async for message in channel.history(limit=None, oldest_first=True):
+                timestamp = message.created_at.strftime('%Y-%m-%d %H:%M:%S UTC')
+                content = message.content or "[No content]"
+                
+                if message.attachments:
+                    attachments = "\n".join([f"Attachment: {att.filename}" for att in message.attachments])
+                    content += f"\n{attachments}"
+                
+                messages.append(f"[{timestamp}] {message.author}: {content}")
+            
+            return "\n".join(messages)
+            
+        except Exception as e:
+            print(f"Error creating transcript: {e}")
+            return f"Error creating transcript: {str(e)}"
+    
+    async def send_transcript(self, guild: discord.Guild, transcript: str, ticket_id: str, user: discord.Member) -> bool:
+        """Send transcript to the configured channel"""
+        try:
+            config_row = await self.bot.db.connection.fetchrow(
+                "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                str(guild.id), 'ticket_config'
+            )
+            
+            if not config_row:
+                print(f"No ticket config found for guild {guild.id}")
+                return False
+            
+            config = json.loads(config_row['data_content'])
+            transcript_channel_id = config.get('transcript_channel_id')
+            
+            if not transcript_channel_id:
+                print(f"No transcript_channel_id in config for guild {guild.id}")
+                return False
+            
+            transcript_channel = guild.get_channel(int(transcript_channel_id))
+            if not transcript_channel:
+                print(f"Transcript channel {transcript_channel_id} not found in guild {guild.id}")
+                return False
+            
+            # Create transcript file
+            transcript_file = discord.File(
+                fp=io.StringIO(transcript),
+                filename=f"transcript_{ticket_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.txt"
+            )
+            
+            embed = discord.Embed(
+                title=f"🎫 Ticket Transcript: {ticket_id}",
+                description=f"Ticket closed by {user.mention}",
+                color=0x5865F2,
+                timestamp=datetime.utcnow()
+            )
+            embed.set_footer(text="Railway Bot")
+            
+            await transcript_channel.send(embed=embed, file=transcript_file)
+            print(f"Transcript sent successfully for ticket {ticket_id}")
+            return True
+            
+        except Exception as e:
+            print(f"Error sending transcript: {e}")
+            return False
     
     @app_commands.command(name="join", description="Request to join a ticket")
     @app_commands.describe(ticket_id="ID of the ticket to join (optional, not needed if in ticket channel)")
@@ -909,59 +926,6 @@ class TicketCommands(app_commands.Group):
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to assign ticket: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    async def restore_ticket_views(self):
-        """Restore ticket views for existing open tickets on bot startup"""
-        try:
-            # Get all open tickets
-            open_tickets = await self.bot.db.connection.fetch(
-                "SELECT ticket_id, channel_id, guild_id FROM tickets WHERE status = $1",
-                TicketStatus.OPEN.value
-            )
-            
-            restored_count = 0
-            for ticket in open_tickets:
-                try:
-                    guild = self.bot.get_guild(int(ticket['guild_id']))
-                    if not guild:
-                        continue
-                    
-                    channel = guild.get_channel(int(ticket['channel_id']))
-                    if not channel:
-                        # Channel was deleted, mark ticket as closed
-                        await self.bot.db.connection.execute(
-                            "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
-                            TicketStatus.CLOSED.value, datetime.utcnow(), ticket['ticket_id']
-                        )
-                        continue
-                    
-                    # Check if there's already a view in the channel
-                    has_view = False
-                    async for message in channel.history(limit=50):
-                        if message.author == self.bot.user and message.components:
-                            has_view = True
-                            break
-                    
-                    if not has_view:
-                        # Add the ticket view back
-                        view = TicketView(self.bot, ticket['ticket_id'])
-                        embed = discord.Embed(
-                            title="🎫 Ticket Controls Restored",
-                            description="Bot restarted - ticket controls have been restored.",
-                            color=0x5865F2
-                        )
-                        await channel.send(embed=embed, view=view)
-                        restored_count += 1
-                        
-                except Exception as e:
-                    print(f"Error restoring ticket {ticket['ticket_id']}: {e}")
-                    continue
-            
-            if restored_count > 0:
-                print(f"Restored ticket views for {restored_count} open tickets")
-                
-        except Exception as e:
-            print(f"Error restoring ticket views: {e}")
 
 class Tickets(commands.Cog):
     """Support ticket system"""
@@ -973,8 +937,8 @@ class Tickets(commands.Cog):
     
     async def cog_load(self):
         """Called when the cog is loaded"""
-        # Restore ticket views for existing open tickets
-        await self.ticket_commands.restore_ticket_views()
+        # No need to restore views since we're using commands now
+        print("Ticket system loaded - using command-based closing")
 
 async def setup(bot):
     await bot.add_cog(Tickets(bot))
