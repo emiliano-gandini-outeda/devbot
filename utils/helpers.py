@@ -1,58 +1,57 @@
 import discord
-import uuid
+from datetime import datetime, timedelta
 import re
-from datetime import datetime, timedelta, timezone
 from typing import Optional, Union
+import random
+import string
+import json
+from enum import Enum
 
 class EmbedBuilder:
     """Helper class for creating consistent embeds"""
     
     @staticmethod
     def success(title: str, description: str) -> discord.Embed:
-        """Create a success embed"""
         embed = discord.Embed(
             title=f"✅ {title}",
             description=description,
-            color=0x57F287  # Green
+            color=0x57F287
         )
-        embed.set_footer(text="devBot - Powered by EGOS")
+        embed.set_footer(text="Railway Bot")
         return embed
     
     @staticmethod
     def error(title: str, description: str) -> discord.Embed:
-        """Create an error embed"""
         embed = discord.Embed(
             title=f"❌ {title}",
             description=description,
-            color=0xED4245  # Red
+            color=0xED4245
         )
-        embed.set_footer(text="devBot - Powered by EGOS")
+        embed.set_footer(text="Railway Bot")
         return embed
     
     @staticmethod
     def warning(title: str, description: str) -> discord.Embed:
-        """Create a warning embed"""
         embed = discord.Embed(
             title=f"⚠️ {title}",
             description=description,
-            color=0xFEE75C  # Yellow
+            color=0xFEE75C
         )
-        embed.set_footer(text="devBot - Powered by EGOS")
+        embed.set_footer(text="Railway Bot")
         return embed
     
     @staticmethod
     def info(title: str, description: str) -> discord.Embed:
-        """Create an info embed"""
         embed = discord.Embed(
             title=f"ℹ️ {title}",
             description=description,
-            color=0x5865F2  # Blurple
+            color=0x5865F2
         )
-        embed.set_footer(text="devBot - Powered by EGOS")
+        embed.set_footer(text="Railway Bot")
         return embed
 
 class TimeParser:
-    """Helper class for parsing time strings and datetime operations"""
+    """Helper class for parsing time strings"""
     
     @staticmethod
     def parse_duration(time_str: str) -> Optional[timedelta]:
@@ -101,58 +100,17 @@ class TimeParser:
             parts.append(f"{minutes}m")
         
         return " ".join(parts) if parts else "< 1m"
-    
-    @staticmethod
-    def parse_time_string(time_str: str) -> Optional[timedelta]:
-        """Alias for parse_duration for backward compatibility"""
-        return TimeParser.parse_duration(time_str)
-    
-    @staticmethod
-    def parse_datetime(datetime_str: str) -> Optional[datetime]:
-        """Parse datetime string into datetime object"""
-        try:
-            # Try common datetime formats
-            formats = [
-                '%Y-%m-%d %H:%M:%S',
-                '%Y-%m-%d %H:%M',
-                '%Y-%m-%d',
-                '%m/%d/%Y %H:%M:%S',
-                '%m/%d/%Y %H:%M',
-                '%m/%d/%Y',
-                '%d/%m/%Y %H:%M:%S',
-                '%d/%m/%Y %H:%M',
-                '%d/%m/%Y'
-            ]
-            
-            for fmt in formats:
-                try:
-                    return datetime.strptime(datetime_str, fmt)
-                except ValueError:
-                    continue
-            
-            return None
-        except Exception:
-            return None
 
-def generate_ticket_id() -> str:
-    """Generate a unique ticket ID"""
-    return f"TKT-{uuid.uuid4().hex[:8].upper()}"
+# Ticket system constants
+class TicketStatus(Enum):
+    OPEN = "open"
+    CLOSED = "closed"
+    PENDING = "pending"
 
-def generate_meeting_id() -> str:
-    """Generate a unique meeting ID"""
-    return f"MTG-{uuid.uuid4().hex[:8].upper()}"
-
-def current_timestamp() -> int:
-    """Get current Unix timestamp"""
-    return int(datetime.now(timezone.utc).timestamp())
-
-def format_timestamp(timestamp: int, style: str = "f") -> str:
-    """Format Unix timestamp for Discord"""
-    return f"<t:{timestamp}:{style}>"
-
-def get_relative_time(timestamp: int) -> str:
-    """Get relative time string for Discord"""
-    return f"<t:{timestamp}:R>"
+class TicketPriority(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 def format_user_mention(user_id: Union[str, int]) -> str:
     """Format a user ID as a Discord mention"""
@@ -179,3 +137,144 @@ def is_valid_discord_id(discord_id: Union[str, int]) -> bool:
         return len(id_str) >= 17 and len(id_str) <= 19 and id_str.isdigit()
     except:
         return False
+
+def generate_ticket_id() -> str:
+    """Generate a unique ticket ID"""
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+
+def generate_meeting_id() -> str:
+    """Generate a unique meeting ID"""
+    return ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
+
+# Ticket system helper functions
+async def get_ticket_channel(bot, guild_id: int, user_id: int = None, ticket_id: str = None) -> Optional[discord.TextChannel]:
+    """Get a ticket channel by user ID or ticket ID"""
+    try:
+        if ticket_id:
+            # Find by ticket ID
+            ticket = await bot.db.connection.fetchrow(
+                "SELECT channel_id FROM tickets WHERE ticket_id = $1 AND guild_id = $2",
+                ticket_id, str(guild_id)
+            )
+            if ticket and ticket['channel_id']:
+                guild = bot.get_guild(guild_id)
+                if guild:
+                    return guild.get_channel(int(ticket['channel_id']))
+        elif user_id:
+            # Find by user ID (open tickets only)
+            ticket = await bot.db.connection.fetchrow(
+                "SELECT channel_id FROM tickets WHERE user_id = $1 AND guild_id = $2 AND status = 'open'",
+                str(user_id), str(guild_id)
+            )
+            if ticket and ticket['channel_id']:
+                guild = bot.get_guild(guild_id)
+                if guild:
+                    return guild.get_channel(int(ticket['channel_id']))
+    except Exception as e:
+        print(f"Error getting ticket channel: {e}")
+    return None
+
+async def get_ticket_owner(bot, channel_id: int) -> Optional[str]:
+    """Get the owner (creator) of a ticket by channel ID"""
+    try:
+        ticket = await bot.db.connection.fetchrow(
+            "SELECT user_id FROM tickets WHERE channel_id = $1",
+            str(channel_id)
+        )
+        return ticket['user_id'] if ticket else None
+    except Exception as e:
+        print(f"Error getting ticket owner: {e}")
+        return None
+
+def is_support_staff(guild: discord.Guild, user: discord.Member) -> bool:
+    """Check if a user is support staff (has manage_channels permission)"""
+    return user.guild_permissions.manage_channels or user.guild_permissions.administrator
+
+def has_permissions(**perms):
+    """Decorator to check if user has required permissions"""
+    def decorator(func):
+        async def wrapper(self, ctx, *args, **kwargs):
+            if not any(getattr(ctx.author.guild_permissions, perm, False) for perm in perms):
+                embed = EmbedBuilder.error(
+                    "Permission Denied",
+                    f"You need one of these permissions: {', '.join(perms)}"
+                )
+                await ctx.send(embed=embed)
+                return
+            return await func(self, ctx, *args, **kwargs)
+        return wrapper
+    return decorator
+
+async def send_dm(user: discord.Member, embed: discord.Embed = None, content: str = None) -> bool:
+    """Send a DM to a user, return True if successful"""
+    try:
+        if embed:
+            await user.send(embed=embed)
+        elif content:
+            await user.send(content)
+        return True
+    except discord.Forbidden:
+        return False
+    except Exception as e:
+        print(f"Error sending DM: {e}")
+        return False
+
+async def log_to_channel(bot, guild_id: int, message: str, log_type: str = "general") -> bool:
+    """Log a message to the configured log channel"""
+    try:
+        # Get log channel from config
+        config_row = await bot.db.connection.fetchrow(
+            "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+            str(guild_id), 'log_config'
+        )
+        
+        if not config_row:
+            return False
+        
+        config = json.loads(config_row['data_content'])
+        log_channel_id = config.get('log_channel_id')
+        
+        if not log_channel_id:
+            return False
+        
+        guild = bot.get_guild(guild_id)
+        if not guild:
+            return False
+        
+        log_channel = guild.get_channel(int(log_channel_id))
+        if not log_channel:
+            return False
+        
+        embed = EmbedBuilder.info(f"{log_type.title()} Log", message)
+        await log_channel.send(embed=embed)
+        return True
+        
+    except Exception as e:
+        print(f"Error logging to channel: {e}")
+        return False
+
+# Exception classes
+class FieldNotFound(Exception):
+    """Raised when a required field is not found"""
+    pass
+
+# Placeholder functions for compatibility
+async def get_expiry_date(*args, **kwargs):
+    """Placeholder function"""
+    return None
+
+async def parse_expiry_date(*args, **kwargs):
+    """Placeholder function"""
+    return None
+
+async def update_expiry_date(*args, **kwargs):
+    """Placeholder function"""
+    return None
+
+def get_role(*args, **kwargs):
+    """Placeholder function"""
+    return None
+
+def get_ticket_type(*args, **kwargs):
+    """Placeholder function"""
+    return None
