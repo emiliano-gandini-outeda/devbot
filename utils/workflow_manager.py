@@ -6,16 +6,58 @@ from typing import Optional, Dict, Any, List
 import asyncio
 from collections import deque
 
+class DatabaseQueue:
+    """Queue system for database operations to prevent concurrent access"""
+    
+    def __init__(self):
+        self._queue = deque()
+        self._processing = False
+        self._lock = asyncio.Lock()
+    
+    async def execute(self, operation):
+        """Add operation to queue and wait for result"""
+        future = asyncio.Future()
+        await self._queue_operation(operation, future)
+        return await future
+    
+    async def _queue_operation(self, operation, future):
+        """Add operation to queue"""
+        self._queue.append((operation, future))
+        await self._process_queue()
+    
+    async def _process_queue(self):
+        """Process queued operations sequentially"""
+        async with self._lock:
+            if self._processing:
+                return
+            
+            self._processing = True
+            
+            try:
+                while self._queue:
+                    operation, future = self._queue.popleft()
+                    try:
+                        result = await operation()
+                        future.set_result(result)
+                    except Exception as e:
+                        future.set_exception(e)
+                    
+                    # Small delay between operations
+                    await asyncio.sleep(0.01)
+            finally:
+                self._processing = False
+
 class WorkflowManager:
     def __init__(self, bot):
         self.bot = bot
+        self._db_queue = DatabaseQueue()
         self._processing_workflows = set()
         self._workflow_semaphore = asyncio.Semaphore(3)  # Limit concurrent workflows
     
     async def load_workflows(self):
         """Load workflows from database on startup"""
         try:
-            async def fetch_workflows():
+            async def get_workflows():
                 if self.bot.db.is_postgresql:
                     return await self.bot.db.connection.fetch(
                         "SELECT * FROM workflows WHERE status = 'active'"
@@ -26,7 +68,7 @@ class WorkflowManager:
                     )
                     return await cursor.fetchall()
             
-            workflows = await self.bot.execute_db_operation(fetch_workflows)
+            workflows = await self._db_queue.execute(get_workflows)
             print(f"Loaded {len(workflows)} active workflows from database")
             
         except Exception as e:
@@ -287,7 +329,7 @@ class WorkflowManager:
                         str(guild.id), 'workflow_config'
                     )
                 
-                config_row = await self.bot.execute_db_operation(get_config)
+                config_row = await self._db_queue.execute(get_config)
                 
                 if config_row:
                     config = json.loads(config_row['data_content'])
@@ -350,7 +392,7 @@ class WorkflowManager:
             return
         
         try:
-            # Get workflows using database operation manager
+            # Get workflows using database queue
             async def get_workflows():
                 if self.bot.db.is_postgresql:
                     return await self.bot.db.connection.fetch(
@@ -364,7 +406,7 @@ class WorkflowManager:
                     )
                     return await cursor.fetchall()
             
-            workflows = await self.bot.execute_db_operation(get_workflows)
+            workflows = await self._db_queue.execute(get_workflows)
             
             for workflow in workflows:
                 # Check if workflow conditions are met
@@ -420,7 +462,6 @@ class WorkflowManager:
     async def process_member_join_triggers(self, member: discord.Member):
         """Check if member join triggers any workflows"""
         try:
-            # Get workflows using database operation manager
             async def get_workflows():
                 if self.bot.db.is_postgresql:
                     return await self.bot.db.connection.fetch(
@@ -434,7 +475,7 @@ class WorkflowManager:
                     )
                     return await cursor.fetchall()
             
-            workflows = await self.bot.execute_db_operation(get_workflows)
+            workflows = await self._db_queue.execute(get_workflows)
             
             for workflow in workflows:
                 trigger_data_raw = workflow['trigger_data'] if self.bot.db.is_postgresql else workflow[5]
@@ -471,7 +512,6 @@ class WorkflowManager:
     async def process_thread_create_triggers(self, thread: discord.Thread):
         """Check if thread creation triggers any workflows"""
         try:
-            # Get workflows using database operation manager
             async def get_workflows():
                 if self.bot.db.is_postgresql:
                     return await self.bot.db.connection.fetch(
@@ -485,7 +525,7 @@ class WorkflowManager:
                     )
                     return await cursor.fetchall()
             
-            workflows = await self.bot.execute_db_operation(get_workflows)
+            workflows = await self._db_queue.execute(get_workflows)
             
             for workflow in workflows:
                 trigger_data = {
@@ -523,7 +563,6 @@ class WorkflowManager:
     async def process_channel_create_triggers(self, channel: discord.abc.GuildChannel):
         """Check if channel creation triggers any workflows."""
         try:
-            # Get workflows using database operation manager
             async def get_workflows():
                 if self.bot.db.is_postgresql:
                     return await self.bot.db.connection.fetch(
@@ -537,7 +576,7 @@ class WorkflowManager:
                     )
                     return await cursor.fetchall()
             
-            workflows = await self.bot.execute_db_operation(get_workflows)
+            workflows = await self._db_queue.execute(get_workflows)
 
             for workflow in workflows:
                 trigger_data = {
