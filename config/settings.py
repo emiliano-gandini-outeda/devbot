@@ -55,3 +55,4 @@ class Settings:
     def is_railway_production(cls) -> bool:
         """Check if running in Railway production environment"""
         return cls.RAILWAY_ENVIRONMENT == 'production'
+ 
