@@ -82,35 +82,32 @@ class GitHubIntegrations(commands.Cog):
             if not repo_data:
                 return None
             
-            # Get branches first
+            # Get ALL branches
             branches_data = await self.github_api_request(f"/repos/{repo_name}/branches?per_page=100")
             if not branches_data:
                 branches_data = []
             
-            # Get commits from multiple branches (prioritize main branches)
+            # Get commits from ALL branches (with reasonable limits)
             all_commits = []
-            main_branches = ['main', 'master', 'develop', 'dev']
             
-            # First, get commits from main branches
-            for branch in branches_data:
+            # Limit to first 20 branches to avoid excessive API calls
+            branches_to_check = branches_data[:20]
+            
+            for branch in branches_to_check:
                 branch_name = branch['name']
-                if branch_name in main_branches:
-                    commits = await self.github_api_request(f"/repos/{repo_name}/commits?sha={branch_name}&per_page=5")
-                    if commits:
-                        for commit in commits:
-                            commit['branch'] = branch_name  # Add branch info
-                            all_commits.append(commit)
-            
-            # If no main branches found, get from default branch
-            if not all_commits:
-                commits = await self.github_api_request(f"/repos/{repo_name}/commits?per_page=10")
+                logger.info(f"Checking commits for branch: {branch_name}")
+                
+                # Get recent commits from this branch
+                commits = await self.github_api_request(f"/repos/{repo_name}/commits?sha={branch_name}&per_page=5")
                 if commits:
-                    default_branch = repo_data.get('default_branch', 'main')
                     for commit in commits:
-                        commit['branch'] = default_branch
+                        commit['branch'] = branch_name  # Add branch info
                         all_commits.append(commit)
+                
+                # Small delay to avoid rate limiting
+                await asyncio.sleep(0.1)
             
-            # Remove duplicates based on SHA
+            # Remove duplicates based on SHA (same commit can be in multiple branches)
             seen_shas = set()
             unique_commits = []
             for commit in all_commits:
@@ -126,9 +123,11 @@ class GitHubIntegrations(commands.Cog):
             if not stargazers_data:
                 stargazers_data = []
             
+            logger.info(f"Found {len(unique_commits)} unique commits across {len(branches_to_check)} branches")
+            
             return {
                 'repo': repo_data,
-                'commits': unique_commits[:10],  # Keep top 10 most recent
+                'commits': unique_commits[:15],  # Keep top 15 most recent
                 'branches': branches_data,
                 'stargazers': stargazers_data
             }
@@ -258,7 +257,7 @@ class GitHubIntegrations(commands.Cog):
             
             # Store commit SHAs from all tracked branches
             tracked_commits = {}
-            for commit in repo_data['commits'][:5]:  # Store top 5 commits
+            for commit in repo_data['commits'][:10]:  # Store top 10 commits
                 branch = commit.get('branch', 'main')
                 if branch not in tracked_commits:
                     tracked_commits[branch] = []
@@ -275,7 +274,7 @@ class GitHubIntegrations(commands.Cog):
                 'last_commit_message': repo_data['commits'][0]['commit']['message'] if repo_data['commits'] else '',
                 'last_commit_author': repo_data['commits'][0]['commit']['author']['name'] if repo_data['commits'] else '',
                 'last_commit_date': repo_data['commits'][0]['commit']['author']['date'] if repo_data['commits'] else '',
-                'tracked_commits': tracked_commits,  # New: track commits per branch
+                'tracked_commits': tracked_commits,  # Track commits per branch
                 'branches': [branch['name'] for branch in repo_data['branches']],
                 'last_check': current_time.isoformat(),
                 'recent_stargazers': [user['login'] for user in repo_data['stargazers'][-5:]]  # Last 5 stargazers
@@ -302,9 +301,8 @@ class GitHubIntegrations(commands.Cog):
                     str(interaction.user.id), str(interaction.guild.id), repo, True
                 )
             
-            # Count tracked branches
-            main_branches = [b for b in repo_data['branches'] if b['name'] in ['main', 'master', 'develop', 'dev']]
-            tracked_branch_count = len(main_branches) if main_branches else 1
+            # Count how many branches we're actually tracking
+            branches_checked = min(len(repo_data['branches']), 20)
             
             embed = EmbedBuilder.success(
                 "Repository Tracked",
@@ -312,10 +310,10 @@ class GitHubIntegrations(commands.Cog):
                 f"**Current Stats:**\n"
                 f"⭐ Stars: {repo_data['repo']['stargazers_count']:,}\n"
                 f"🍴 Forks: {repo_data['repo']['forks_count']:,}\n"
-                f"🌿 Branches: {len(repo_data['branches'])} (tracking {tracked_branch_count} main branches)\n"
+                f"🌿 Branches: {len(repo_data['branches'])} (tracking {branches_checked} branches)\n"
                 f"📝 Latest commit: {repo_data['commits'][0]['commit']['message'][:50] + '...' if repo_data['commits'] and len(repo_data['commits'][0]['commit']['message']) > 50 else repo_data['commits'][0]['commit']['message'] if repo_data['commits'] else 'None'}\n\n"
                 f"**Notifications:** {'🔔 Enabled' if ping_me else '🔕 Disabled'}\n"
-                f"**Tracking:** Commits from main branches, stars, and branch changes"
+                f"**Tracking:** Commits from ALL branches, stars, and branch changes"
             )
             await interaction.followup.send(embed=embed)
             
@@ -531,7 +529,7 @@ class GitHubIntegrations(commands.Cog):
                 })
                 update_descriptions.append(f"{star_diff} stars")
         
-        # Check for new commits across all tracked branches
+        # Check for new commits across ALL tracked branches
         stored_tracked_commits = stored_data.get('tracked_commits', {})
         current_tracked_commits = {}
         
@@ -566,15 +564,31 @@ class GitHubIntegrations(commands.Cog):
             commits_to_show = new_commits_found[:3]  # Show max 3 commits
             
             for commit in commits_to_show:
-                commit_message = commit['message'].split('\n')[0]  # First line only
+                # Show full commit message (with proper formatting)
+                full_message = commit['message']
+                lines = full_message.split('\n')
+                commit_title = lines[0]  # First line (title)
+                commit_description = '\n'.join(lines[1:]).strip() if len(lines) > 1 else ""
+                
                 commit_author = commit['author']
                 commit_date = datetime.fromisoformat(commit['date'].replace('Z', '+00:00'))
                 branch_name = commit['branch']
                 
+                # Format the commit details
+                details_parts = [f"**{commit_title}**"]
+                if commit_description:
+                    # Limit description to 200 chars to avoid embed limits
+                    if len(commit_description) > 200:
+                        commit_description = commit_description[:200] + "..."
+                    details_parts.append(f"\n{commit_description}")
+                
+                details_parts.append(f"\nBy {commit_author} • <t:{int(commit_date.timestamp())}:R>")
+                details_parts.append(f"[View commit](https://github.com/{repo_name}/commit/{commit['sha']})")
+                
                 updates.append({
                     'type': 'commit',
                     'message': f"📝 **New commit** on `{branch_name}`",
-                    'details': f"**{commit_message}**\nBy {commit_author} • <t:{int(commit_date.timestamp())}:R>\n[View commit](https://github.com/{repo_name}/commit/{commit['sha']})"
+                    'details': '\n'.join(details_parts)
                 })
                 update_descriptions.append(f"New commit on {branch_name}")
             
@@ -640,7 +654,7 @@ class GitHubIntegrations(commands.Cog):
             return True, update_descriptions
         else:
             logger.info(f"No updates found for {repo_name}")
-            return False, ["No updates found"]
+            return False, ["Repository is up to date"]
     
     async def _send_updates(self, repo_name: str, channel: discord.TextChannel, guild_id: str, updates: List[Dict]):
         """Send update notifications to the channel"""
@@ -720,7 +734,7 @@ class GitHubIntegrations(commands.Cog):
             
             embed.add_field(
                 name="🔔 Notifications",
-                value="You'll receive updates about:\n• ⭐ Star changes\n• 📝 New commits (all main branches)\n• 🌿 New/deleted branches",
+                value="You'll receive updates about:\n• ⭐ Star changes\n• 📝 New commits (ALL branches)\n• 🌿 New/deleted branches",
                 inline=False
             )
             
@@ -957,44 +971,56 @@ class RepoUpdateDropdown(discord.ui.Select):
                 await interaction.followup.send("GitHub integration not available!", ephemeral=True)
                 return
             
-            # Send initial feedback
-            embed = EmbedBuilder.info(
-                "Checking Repository",
-                f"🔍 Checking **{selected_repo}** for updates...\nThis may take a few seconds."
+            # Send initial "checking" embed
+            checking_embed = discord.Embed(
+                title="🔍 Checking Repository",
+                description=f"Checking **{selected_repo}** for updates...\nThis may take a few seconds.",
+                color=0xFEE75C  # Yellow/warning color for "in progress"
             )
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            await interaction.followup.send(embed=checking_embed, ephemeral=True)
         
             # Force check this specific repository
             logger.info(f"Manual update requested for {selected_repo} by {interaction.user}")
             has_updates, update_descriptions = await github_cog._check_single_repo_updates(repo_data)
             
-            # Send detailed feedback based on results
+            # Update the SAME embed with results
             if has_updates:
                 updates_text = "\n".join([f"• {desc}" for desc in update_descriptions[:5]])
                 if len(update_descriptions) > 5:
                     updates_text += f"\n• ... and {len(update_descriptions) - 5} more"
                 
-                embed = EmbedBuilder.success(
-                    "Updates Found!",
-                    f"✅ **{selected_repo}** has been updated!\n\n"
+                # Update to success embed
+                checking_embed.title = "✅ Updates Found!"
+                checking_embed.description = (
+                    f"**{selected_repo}** has been updated!\n\n"
                     f"**Found Updates:**\n{updates_text}\n\n"
                     f"📢 Notifications have been sent to the tracking channel."
                 )
+                checking_embed.color = 0x57F287  # Green for success
             else:
                 reason = update_descriptions[0] if update_descriptions else "Unknown reason"
-                embed = EmbedBuilder.info(
-                    "No Updates Found",
-                    f"🔍 **{selected_repo}** has been checked.\n\n"
+                
+                # Update to info embed
+                checking_embed.title = "ℹ️ No Updates Found"
+                checking_embed.description = (
+                    f"**{selected_repo}** has been checked.\n\n"
                     f"**Result:** {reason}\n\n"
                     f"The repository is up to date with the last check."
                 )
+                checking_embed.color = 0x5865F2  # Blue for info
             
-            await interaction.edit_original_response(embed=embed)
+            # Update the original embed
+            await interaction.edit_original_response(embed=checking_embed)
             
         except Exception as e:
             logger.error(f"Error updating repo {selected_repo}: {e}")
-            embed = EmbedBuilder.error("Update Failed", f"Failed to update repository: {str(e)}")
-            await interaction.edit_original_response(embed=embed)
+            
+            # Update to error embed
+            checking_embed.title = "❌ Update Failed"
+            checking_embed.description = f"Failed to update repository: {str(e)}"
+            checking_embed.color = 0xED4245  # Red for error
+            
+            await interaction.edit_original_response(embed=checking_embed)
 
 class TrackRepoButtonView(discord.ui.View):
     def __init__(self, repo_name):
@@ -1046,7 +1072,7 @@ class TrackRepoButtonView(discord.ui.View):
                     f"✅ You're now tracking **{self.repo_name}**!\n\n"
                     f"You'll receive notifications for:\n"
                     f"• ⭐ Star changes\n"
-                    f"• 📝 New commits (all main branches)\n"
+                    f"• 📝 New commits (ALL branches)\n"
                     f"• 🌿 New/deleted branches"
                 )
             
