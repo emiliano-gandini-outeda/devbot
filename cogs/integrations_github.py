@@ -760,3 +760,4 @@ class RepoToggleView(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(GitHubIntegrations(bot))
+ 
