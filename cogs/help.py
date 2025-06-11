@@ -278,7 +278,8 @@ class HelpDropdown(discord.ui.Select):
         commands = [
             "`/add-keyword <keyword>` - Add keyword to monitor for mentions",
             "`/remove-keyword <keyword>` - Remove keyword from monitoring list",
-            "`/list-keywords` - List all your monitored keywords in this server"
+            "`/list-keywords` - List all your monitored keywords in this server",
+            "`/clear-keywords` - Remove all your keywords from this server"
         ]
         
         embed.add_field(
@@ -289,7 +290,7 @@ class HelpDropdown(discord.ui.Select):
         
         embed.add_field(
             name="How It Works",
-            value="• Get notified when your keywords are mentioned\n• Notifications sent via DM\n• Keywords are case-insensitive",
+            value="• Get notified when your keywords are mentioned\n• Notifications sent via DM\n• Keywords are case-insensitive\n• Maximum 20 keywords per server",
             inline=False
         )
         

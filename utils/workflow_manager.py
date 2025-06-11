@@ -3,56 +3,74 @@ from discord.ext import commands
 import json
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
+import asyncio
 
 class WorkflowManager:
     def __init__(self, bot):
         self.bot = bot
+        self._workflow_lock = asyncio.Lock()
+        self._processing_workflows = set()
     
     async def load_workflows(self):
         """Load workflows from database on startup"""
         try:
-            if self.bot.db.is_postgresql:
-                workflows = await self.bot.db.connection.fetch(
-                    "SELECT * FROM workflows WHERE status = 'active'"
-                )
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM workflows WHERE status = 'active'"
-                )
-                workflows = await cursor.fetchall()
-            
-            print(f"Loaded {len(workflows)} active workflows from database")
+            async with self._workflow_lock:
+                if self.bot.db.is_postgresql:
+                    workflows = await self.bot.db.connection.fetch(
+                        "SELECT * FROM workflows WHERE status = 'active'"
+                    )
+                else:
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT * FROM workflows WHERE status = 'active'"
+                    )
+                    workflows = await cursor.fetchall()
+                
+                print(f"Loaded {len(workflows)} active workflows from database")
             
         except Exception as e:
             print(f"Error loading workflows: {e}")
     
     async def execute_workflow_actions(self, workflow: Dict[str, Any], trigger_data: Dict[str, Any]):
         """Execute all actions in a workflow"""
+        workflow_key = f"{workflow['guild_id']}:{workflow['id']}"
+        
+        # Prevent duplicate execution of the same workflow
+        if workflow_key in self._processing_workflows:
+            return
+        
+        self._processing_workflows.add(workflow_key)
+        
         try:
-            actions = workflow.get('actions', [])
-            if isinstance(actions, str):
-                actions = json.loads(actions)
-            
-            guild = self.bot.get_guild(int(workflow['guild_id']))
-            if not guild:
-                return
-            
-            # Log workflow execution if log channel is configured
-            trigger_data_raw = workflow.get('trigger_data', {})
-            if isinstance(trigger_data_raw, str):
-                trigger_conditions = json.loads(trigger_data_raw)
-            else:
-                trigger_conditions = trigger_data_raw or {}
-            
-            log_channel_id = trigger_conditions.get('log_channel_id')
-            if log_channel_id:
-                await self.log_workflow_execution(guild, workflow, trigger_data, log_channel_id)
-            
-            for action in actions:
-                await self.execute_single_action(guild, action, trigger_data)
+            async with self._workflow_lock:
+                actions = workflow.get('actions', [])
+                if isinstance(actions, str):
+                    actions = json.loads(actions)
                 
+                guild = self.bot.get_guild(int(workflow['guild_id']))
+                if not guild:
+                    return
+                
+                # Log workflow execution if log channel is configured
+                trigger_data_raw = workflow.get('trigger_data', {})
+                if isinstance(trigger_data_raw, str):
+                    trigger_conditions = json.loads(trigger_data_raw)
+                else:
+                    trigger_conditions = trigger_data_raw or {}
+                
+                log_channel_id = trigger_conditions.get('log_channel_id')
+                if log_channel_id:
+                    await self.log_workflow_execution(guild, workflow, trigger_data, log_channel_id)
+                
+                # Execute actions sequentially to prevent conflicts
+                for action in actions:
+                    await self.execute_single_action(guild, action, trigger_data)
+                    # Small delay between actions to prevent rate limiting
+                    await asyncio.sleep(0.1)
+                    
         except Exception as e:
             print(f"Error executing workflow: {e}")
+        finally:
+            self._processing_workflows.discard(workflow_key)
     
     async def execute_single_action(self, guild: discord.Guild, action: Dict[str, Any], trigger_data: Dict[str, Any]):
         """Execute a single workflow action"""
@@ -260,7 +278,7 @@ class WorkflowManager:
         try:
             # If no specific log channel provided, get from workflow config
             if not log_channel_id:
-                config_row = await self.bot.db.connection.fetch(
+                config_row = await self.bot.db.connection.fetchrow(
                     "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
                     str(guild.id), 'workflow_config'
                 )
@@ -326,18 +344,19 @@ class WorkflowManager:
             return
         
         try:
-            # Get workflows for this guild
-            if self.bot.db.is_postgresql:
-                workflows = await self.bot.db.connection.fetch(
-                    "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type LIKE 'message%'",
-                    str(message.guild.id)
-                )
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type LIKE 'message%'",
-                    (str(message.guild.id),)
-                )
-                workflows = await cursor.fetchall()
+            async with self._workflow_lock:
+                # Get workflows for this guild
+                if self.bot.db.is_postgresql:
+                    workflows = await self.bot.db.connection.fetch(
+                        "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type LIKE 'message%'",
+                        str(message.guild.id)
+                    )
+                else:
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type LIKE 'message%'",
+                        (str(message.guild.id),)
+                    )
+                    workflows = await cursor.fetchall()
             
             for workflow in workflows:
                 # Check if workflow conditions are met
@@ -384,7 +403,8 @@ class WorkflowManager:
                     'status': workflow[7]
                 }
                 
-                await self.execute_workflow_actions(workflow_dict, trigger_data)
+                # Execute workflow asynchronously without blocking
+                asyncio.create_task(self.execute_workflow_actions(workflow_dict, trigger_data))
                 
         except Exception as e:
             print(f"Error checking message triggers: {e}")
@@ -392,18 +412,19 @@ class WorkflowManager:
     async def process_member_join_triggers(self, member: discord.Member):
         """Check if member join triggers any workflows"""
         try:
-            # Get workflows for this guild
-            if self.bot.db.is_postgresql:
-                workflows = await self.bot.db.connection.fetch(
-                    "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type = 'member_join'",
-                    str(member.guild.id)
-                )
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type = 'member_join'",
-                    (str(member.guild.id),)
-                )
-                workflows = await cursor.fetchall()
+            async with self._workflow_lock:
+                # Get workflows for this guild
+                if self.bot.db.is_postgresql:
+                    workflows = await self.bot.db.connection.fetch(
+                        "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type = 'member_join'",
+                        str(member.guild.id)
+                    )
+                else:
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type = 'member_join'",
+                        (str(member.guild.id),)
+                    )
+                    workflows = await cursor.fetchall()
             
             for workflow in workflows:
                 trigger_data_raw = workflow['trigger_data'] if self.bot.db.is_postgresql else workflow[5]
@@ -431,7 +452,8 @@ class WorkflowManager:
                     'status': workflow[7]
                 }
                 
-                await self.execute_workflow_actions(workflow_dict, trigger_data)
+                # Execute workflow asynchronously without blocking
+                asyncio.create_task(self.execute_workflow_actions(workflow_dict, trigger_data))
                 
         except Exception as e:
             print(f"Error checking member join triggers: {e}")
@@ -439,18 +461,19 @@ class WorkflowManager:
     async def process_thread_create_triggers(self, thread: discord.Thread):
         """Check if thread creation triggers any workflows"""
         try:
-            # Get workflows for this guild
-            if self.bot.db.is_postgresql:
-                workflows = await self.bot.db.connection.fetch(
-                    "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type = 'thread_create'",
-                    str(thread.guild.id)
-                )
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type = 'thread_create'",
-                    (str(thread.guild.id),)
-                )
-                workflows = await cursor.fetchall()
+            async with self._workflow_lock:
+                # Get workflows for this guild
+                if self.bot.db.is_postgresql:
+                    workflows = await self.bot.db.connection.fetch(
+                        "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type = 'thread_create'",
+                        str(thread.guild.id)
+                    )
+                else:
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type = 'thread_create'",
+                        (str(thread.guild.id),)
+                    )
+                    workflows = await cursor.fetchall()
             
             for workflow in workflows:
                 trigger_data = {
@@ -479,7 +502,8 @@ class WorkflowManager:
                     'status': workflow[7]
                 }
                 
-                await self.execute_workflow_actions(workflow_dict, trigger_data)
+                # Execute workflow asynchronously without blocking
+                asyncio.create_task(self.execute_workflow_actions(workflow_dict, trigger_data))
                 
         except Exception as e:
             print(f"Error checking thread create triggers: {e}")
@@ -487,18 +511,19 @@ class WorkflowManager:
     async def process_channel_create_triggers(self, channel: discord.abc.GuildChannel):
         """Check if channel creation triggers any workflows."""
         try:
-            # Get workflows for this guild
-            if self.bot.db.is_postgresql:
-                workflows = await self.bot.db.connection.fetch(
-                    "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type = 'channel_create'",
-                    str(channel.guild.id)
-                )
-            else:
-                cursor = await self.bot.db.connection.execute(
-                    "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type = 'channel_create'",
-                    (str(channel.guild.id),)
-                )
-                workflows = await cursor.fetchall()
+            async with self._workflow_lock:
+                # Get workflows for this guild
+                if self.bot.db.is_postgresql:
+                    workflows = await self.bot.db.connection.fetch(
+                        "SELECT * FROM workflows WHERE guild_id = $1 AND status = 'active' AND trigger_type = 'channel_create'",
+                        str(channel.guild.id)
+                    )
+                else:
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT * FROM workflows WHERE guild_id = ? AND status = 'active' AND trigger_type = 'channel_create'",
+                        (str(channel.guild.id),)
+                    )
+                    workflows = await cursor.fetchall()
 
             for workflow in workflows:
                 trigger_data = {
@@ -519,7 +544,8 @@ class WorkflowManager:
                     'status': workflow[7]
                 }
 
-                await self.execute_workflow_actions(workflow_dict, trigger_data)
+                # Execute workflow asynchronously without blocking
+                asyncio.create_task(self.execute_workflow_actions(workflow_dict, trigger_data))
 
         except Exception as e:
             print(f"Error checking channel create triggers: {e}")
