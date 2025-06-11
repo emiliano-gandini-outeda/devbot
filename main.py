@@ -212,8 +212,11 @@ class DiscordBot(commands.Bot):
                 if self.db:
                     self.workflow_manager = WorkflowManager(self)
                     
-                    # Load workflows directly without using the database operation manager to avoid deadlocks
-                    await self.workflow_manager.load_workflows()
+                    # Use the database operation manager for workflow operations
+                    async def load_workflows_safe():
+                        return await self.workflow_manager.load_workflows()
+                    
+                    await self.execute_db_operation(load_workflows_safe)
                     logger.info("✅ Workflow manager initialized")
                 else:
                     logger.warning("⚠️ Skipping workflow manager initialization (no database)")
@@ -381,7 +384,7 @@ class DiscordBot(commands.Bot):
         await self.process_commands(message)
         
         # Process workflow triggers using database operation manager
-        if self.workflow_manager and self.workflow_manager._initialized:
+        if self.workflow_manager:
             try:
                 async def process_triggers():
                     return await self.workflow_manager.process_message_triggers(message)
@@ -392,7 +395,7 @@ class DiscordBot(commands.Bot):
     
     async def on_member_join(self, member):
         """Handle member join events for workflow triggers"""
-        if self.workflow_manager and self.workflow_manager._initialized:
+        if self.workflow_manager:
             try:
                 async def process_triggers():
                     return await self.workflow_manager.process_member_join_triggers(member)
@@ -403,7 +406,7 @@ class DiscordBot(commands.Bot):
     
     async def on_thread_create(self, thread):
         """Handle thread creation events for workflow triggers"""
-        if self.workflow_manager and self.workflow_manager._initialized:
+        if self.workflow_manager:
             try:
                 async def process_triggers():
                     return await self.workflow_manager.process_thread_create_triggers(thread)
@@ -414,7 +417,7 @@ class DiscordBot(commands.Bot):
     
     async def on_guild_channel_create(self, channel):
         """Handle channel creation events for workflow triggers"""
-        if self.workflow_manager and self.workflow_manager._initialized:
+        if self.workflow_manager:
             try:
                 async def process_triggers():
                     return await self.workflow_manager.process_channel_create_triggers(channel)
