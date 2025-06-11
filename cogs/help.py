@@ -464,6 +464,7 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             admin_commands = [
                 "`/create-workflow <name> <trigger> [trigger_channel] [log_channel]` - Create automation workflow",
+                "`/add-workflow-action <workflow_name>` - Add an action to an existing workflow",
                 "`/list-workflows` - List all server workflows with status",
                 "`/toggle-workflow <workflow_name>` - Enable/disable a workflow"
             ]
@@ -476,13 +477,13 @@ class HelpDropdown(discord.ui.Select):
         
             embed.add_field(
                 name="Trigger Types",
-                value="• `message` - When a message is sent\n• `member_join` - When a member joins\n• `thread_create` - When a thread is created\n• `channel_create` - When a channel is created\n• `message:text` - When specific text is mentioned",
+                value="• `message:text` - When a message contains specific text (case insensitive)\n• `member_join` - When a member joins\n• `thread_create` - When a thread is created\n• `channel_create` - When a channel is created",
                 inline=False
             )
         
             embed.add_field(
-                name="Features",
-                value="• Custom trigger conditions\n• Channel-specific triggers\n• Workflow logging\n• Enable/disable workflows\n• Action chaining support",
+                name="Available Actions",
+                value="• Send a message (with ping support)\n• Send an embed (with up to 3 fields)\n• Delete the trigger message\n• Timeout the user (60s, 5m, 10m, 1h, 1d, 1w)\n• Add role to user\n• Create channel\n• Send DM to user",
                 inline=False
             )
         else:
