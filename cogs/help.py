@@ -441,7 +441,8 @@ class HelpDropdown(discord.ui.Select):
             "`/remove-admin-role <role>` - Remove role from admin permissions",
             "`/list-admin-roles` - List all roles with admin access",
             "`/admin-panel` - View bot status and server configuration dashboard",
-            "`/get-data <user>` - Export user's data in JSON format (Admin only)"
+            "`/get-data <user>` - Export user's data in JSON format (Admin only)",
+            "`/create-admin-meeting <name> <time> <description> <voice_channel>` - Create admin meeting with ping options"
         ]
         
         embed.add_field(
@@ -542,7 +543,8 @@ class HelpDropdown(discord.ui.Select):
         
         if self.is_admin:
             admin_commands = [
-                "`/setup-meetings <announcement_channel> <voice_channel>` - Configure meeting system"
+                "`/setup-meetings <announcement_channel> <voice_channel>` - Configure meeting system",
+                "`/create-admin-meeting <name> <time> <description> <voice_channel>` - Create admin meeting with ping options (@everyone/@here)"
             ]
             
             embed.add_field(

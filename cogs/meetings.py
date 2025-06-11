@@ -6,6 +6,130 @@ import asyncio
 from datetime import datetime, timedelta
 from utils.helpers import EmbedBuilder, TimeParser, generate_meeting_id
 
+class PingChoice(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(
+                label="@everyone",
+                description="Ping everyone in the server",
+                emoji="📢",
+                value="everyone"
+            ),
+            discord.SelectOption(
+                label="@here", 
+                description="Ping only online members",
+                emoji="👥",
+                value="here"
+            )
+        ]
+        
+        super().__init__(
+            placeholder="Select ping type (required)",
+            min_values=1,
+            max_values=1,
+            options=options
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        # Store the selected ping type in the view
+        self.view.selected_ping = self.values[0]
+        
+        # Update the embed to show selection
+        embed = discord.Embed(
+            title="📅 Admin Meeting Creation",
+            description=f"**Ping Type Selected:** {'@everyone' if self.values[0] == 'everyone' else '@here'}\n\nClick 'Create Meeting' to proceed.",
+            color=0x5865F2
+        )
+        
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+class AdminMeetingView(discord.ui.View):
+    def __init__(self, bot, meeting_data):
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.meeting_data = meeting_data
+        self.selected_ping = None
+        
+        # Add ping selection dropdown
+        self.add_item(PingChoice())
+    
+    @discord.ui.button(label="Create Meeting", style=discord.ButtonStyle.success, emoji="✅")
+    async def create_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self.selected_ping:
+            embed = EmbedBuilder.error(
+                "Ping Required",
+                "You must select a ping type (@everyone or @here) before creating the meeting."
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        await interaction.response.defer()
+        
+        try:
+            # Create meeting in database
+            meeting_id = generate_meeting_id()
+            await self.bot.db.connection.execute(
+                """INSERT INTO meetings (meeting_id, guild_id, creator_id, title, description, scheduled_time, voice_channel_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                meeting_id, str(interaction.guild.id), str(interaction.user.id),
+                self.meeting_data['name'], self.meeting_data['description'], 
+                self.meeting_data['start_time'], str(self.meeting_data['voice_channel'].id)
+            )
+            
+            # Create meeting announcement embed
+            embed = discord.Embed(
+                title=f"📅 Admin Meeting: {self.meeting_data['name']}",
+                description=self.meeting_data['description'],
+                color=0xED4245  # Red color to indicate admin meeting
+            )
+
+            embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
+            embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
+            embed.add_field(name="Voice Channel", value=self.meeting_data['voice_channel'].mention, inline=True)
+
+            # Format start time
+            time_str = self.meeting_data['start_time'].strftime("%Y-%m-%d %H:%M UTC")
+            time_until = TimeParser.format_timedelta(self.meeting_data['start_time'] - datetime.utcnow())
+            embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
+
+            embed.add_field(
+                name="How to Join",
+                value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
+                inline=False
+            )
+            
+            # Add admin indicator
+            embed.add_field(
+                name="🛡️ Admin Meeting",
+                value="This meeting was created by an administrator.",
+                inline=False
+            )
+
+            # Create view with join button for the actual meeting
+            meeting_view = MeetingView(self.bot, meeting_id)
+
+            # Send the meeting announcement with the selected ping
+            ping_text = "@everyone" if self.selected_ping == "everyone" else "@here"
+            content = f"{ping_text} - New admin meeting scheduled!"
+
+            await interaction.followup.send(content=content, embed=embed, view=meeting_view)
+            
+            # Send confirmation to the admin
+            confirm_embed = EmbedBuilder.success(
+                "Admin Meeting Created",
+                f"Meeting '{self.meeting_data['name']}' has been created with {ping_text} ping."
+            )
+            await interaction.followup.send(embed=confirm_embed, ephemeral=True)
+            
+        except Exception as e:
+            embed = EmbedBuilder.error("Error", f"Failed to create admin meeting: {str(e)}")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def cancel_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
+        embed = EmbedBuilder.info("Cancelled", "Admin meeting creation has been cancelled.")
+        await interaction.response.edit_message(embed=embed, view=None)
+
 class MeetingView(discord.ui.View):
     def __init__(self, bot, meeting_id: str):
         super().__init__(timeout=None)
@@ -98,6 +222,59 @@ class Meetings(commands.Cog):
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to create meeting: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
+    
+    @app_commands.command(name="create-admin-meeting", description="Create an admin meeting with ping options (Admin only)")
+    @app_commands.describe(
+        name="Meeting name",
+        time="When to start the meeting (e.g., '1h', '30m', '2d')",
+        description="Meeting description", 
+        voice_channel="Voice channel for the meeting"
+    )
+    async def create_admin_meeting(self, interaction: discord.Interaction, name: str, time: str,
+                                 description: str, voice_channel: discord.VoiceChannel):
+        # Check if user is admin
+        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
+            embed = EmbedBuilder.error("Permission Denied", "Only administrators can create admin meetings")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        # Parse time
+        duration = TimeParser.parse_duration(time)
+        if not duration:
+            embed = EmbedBuilder.error(
+                "Invalid Time Format",
+                "Please use format like: `1h`, `30m`, `2d`, `1h30m`"
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+        
+        start_time = datetime.utcnow() + duration
+        
+        # Store meeting data
+        meeting_data = {
+            'name': name,
+            'time': time,
+            'description': description,
+            'voice_channel': voice_channel,
+            'start_time': start_time
+        }
+        
+        # Create initial embed
+        embed = discord.Embed(
+            title="📅 Admin Meeting Creation",
+            description=f"**Meeting:** {name}\n**Description:** {description}\n**Voice Channel:** {voice_channel.mention}\n\n**⚠️ You must select a ping type before creating the meeting.**",
+            color=0x5865F2
+        )
+        
+        # Format start time
+        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+        time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
+        embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
+        
+        # Create view with ping selection
+        view = AdminMeetingView(self.bot, meeting_data)
+        
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
     
     @app_commands.command(name="join-meeting", description="Join a scheduled meeting")
     @app_commands.describe(meeting_id="ID of the meeting to join")
