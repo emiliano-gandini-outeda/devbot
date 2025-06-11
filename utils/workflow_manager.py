@@ -4,36 +4,41 @@ import json
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 import asyncio
-from collections import deque
 
 class WorkflowManager:
     def __init__(self, bot):
         self.bot = bot
         self._processing_workflows = set()
         self._workflow_semaphore = asyncio.Semaphore(3)  # Limit concurrent workflows
+        self._initialized = False
     
     async def load_workflows(self):
-        """Load workflows from database on startup"""
+        """Load workflows from database on startup - simplified version"""
         try:
-            async def fetch_workflows():
-                if self.bot.db.is_postgresql:
-                    return await self.bot.db.connection.fetch(
-                        "SELECT * FROM workflows WHERE status = 'active'"
-                    )
-                else:
-                    cursor = await self.bot.db.connection.execute(
-                        "SELECT * FROM workflows WHERE status = 'active'"
-                    )
-                    return await cursor.fetchall()
+            # Don't use the database operation manager during initialization to avoid deadlocks
+            if self.bot.db.is_postgresql:
+                workflows = await self.bot.db.connection.fetch(
+                    "SELECT * FROM workflows WHERE status = 'active'"
+                )
+            else:
+                cursor = await self.bot.db.connection.execute(
+                    "SELECT * FROM workflows WHERE status = 'active'"
+                )
+                workflows = await cursor.fetchall()
             
-            workflows = await self.bot.execute_db_operation(fetch_workflows)
             print(f"Loaded {len(workflows)} active workflows from database")
+            self._initialized = True
             
         except Exception as e:
             print(f"Error loading workflows: {e}")
+            # Don't fail initialization, just mark as not initialized
+            self._initialized = False
     
     async def execute_workflow_actions(self, workflow: Dict[str, Any], trigger_data: Dict[str, Any]):
         """Execute all actions in a workflow"""
+        if not self._initialized:
+            return
+            
         workflow_key = f"{workflow['guild_id']}:{workflow['id']}"
         
         # Prevent duplicate execution of the same workflow
@@ -281,16 +286,22 @@ class WorkflowManager:
         try:
             # If no specific log channel provided, get from workflow config
             if not log_channel_id:
-                async def get_config():
-                    return await self.bot.db.connection.fetchrow(
+                # Use direct database access for logging to avoid deadlocks
+                if self.bot.db.is_postgresql:
+                    config_row = await self.bot.db.connection.fetchrow(
                         "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
                         str(guild.id), 'workflow_config'
                     )
-                
-                config_row = await self.bot.execute_db_operation(get_config)
+                else:
+                    cursor = await self.bot.db.connection.execute(
+                        "SELECT data_content FROM user_data WHERE user_id = ? AND data_type = ?",
+                        (str(guild.id), 'workflow_config')
+                    )
+                    config_row = await cursor.fetchone()
                 
                 if config_row:
-                    config = json.loads(config_row['data_content'])
+                    config_data = config_row['data_content'] if self.bot.db.is_postgresql else config_row[0]
+                    config = json.loads(config_data)
                     log_channel_id = config.get('workflow_log_channel_id')
         
             if not log_channel_id:
@@ -346,11 +357,11 @@ class WorkflowManager:
     
     async def process_message_triggers(self, message: discord.Message):
         """Check if message triggers any workflows"""
-        if not message.guild or message.author.bot:
+        if not message.guild or message.author.bot or not self._initialized:
             return
         
         try:
-            # Get workflows using database operation manager
+            # Use database operation manager for workflow fetching
             async def get_workflows():
                 if self.bot.db.is_postgresql:
                     return await self.bot.db.connection.fetch(
@@ -419,6 +430,9 @@ class WorkflowManager:
     
     async def process_member_join_triggers(self, member: discord.Member):
         """Check if member join triggers any workflows"""
+        if not self._initialized:
+            return
+            
         try:
             # Get workflows using database operation manager
             async def get_workflows():
@@ -470,6 +484,9 @@ class WorkflowManager:
     
     async def process_thread_create_triggers(self, thread: discord.Thread):
         """Check if thread creation triggers any workflows"""
+        if not self._initialized:
+            return
+            
         try:
             # Get workflows using database operation manager
             async def get_workflows():
@@ -522,6 +539,9 @@ class WorkflowManager:
 
     async def process_channel_create_triggers(self, channel: discord.abc.GuildChannel):
         """Check if channel creation triggers any workflows."""
+        if not self._initialized:
+            return
+            
         try:
             # Get workflows using database operation manager
             async def get_workflows():
