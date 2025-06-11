@@ -6,8 +6,6 @@ import os
 import sys
 from pathlib import Path
 import signal
-from collections import deque
-from typing import Callable, Any, Optional
 
 # Add the project root to the Python path
 project_root = Path(__file__).parent
@@ -34,90 +32,6 @@ logger = logging.getLogger(__name__)
 # Global flag to prevent shutdown
 SHUTDOWN_REQUESTED = False
 
-class DatabaseOperationManager:
-    """Centralized database operation manager to prevent concurrent operation conflicts"""
-    
-    def __init__(self):
-        self._operation_queue = deque()
-        self._processing = False
-        self._lock = asyncio.Lock()
-        self._active_operations = 0
-        self._max_concurrent = 1  # Only allow 1 operation at a time for PostgreSQL
-        
-    async def execute_operation(self, operation: Callable, *args, **kwargs) -> Any:
-        """Execute a database operation through the queue system"""
-        future = asyncio.Future()
-        operation_data = {
-            'operation': operation,
-            'args': args,
-            'kwargs': kwargs,
-            'future': future,
-            'timestamp': asyncio.get_event_loop().time()
-        }
-        
-        # Add to queue
-        self._operation_queue.append(operation_data)
-        
-        # Start processing if not already running
-        asyncio.create_task(self._process_queue())
-        
-        # Wait for result
-        return await future
-    
-    async def _process_queue(self):
-        """Process queued database operations sequentially"""
-        async with self._lock:
-            if self._processing:
-                return
-            
-            self._processing = True
-            
-            try:
-                while self._operation_queue and self._active_operations < self._max_concurrent:
-                    operation_data = self._operation_queue.popleft()
-                    
-                    # Execute operation
-                    asyncio.create_task(self._execute_single_operation(operation_data))
-                    
-                    # Small delay between operations
-                    await asyncio.sleep(0.01)
-                    
-            finally:
-                self._processing = False
-    
-    async def _execute_single_operation(self, operation_data: dict):
-        """Execute a single database operation"""
-        self._active_operations += 1
-        
-        try:
-            operation = operation_data['operation']
-            args = operation_data['args']
-            kwargs = operation_data['kwargs']
-            future = operation_data['future']
-            
-            # Execute the operation
-            result = await operation(*args, **kwargs)
-            future.set_result(result)
-            
-        except Exception as e:
-            logger.error(f"Database operation failed: {e}")
-            operation_data['future'].set_exception(e)
-            
-        finally:
-            self._active_operations -= 1
-            
-            # Continue processing queue if there are more operations
-            if self._operation_queue and not self._processing:
-                asyncio.create_task(self._process_queue())
-    
-    def get_queue_status(self) -> dict:
-        """Get current queue status for monitoring"""
-        return {
-            'queue_length': len(self._operation_queue),
-            'active_operations': self._active_operations,
-            'processing': self._processing
-        }
-
 class DiscordBot(commands.Bot):
     def __init__(self):
         # Configure intents
@@ -142,13 +56,6 @@ class DiscordBot(commands.Bot):
         self.ticket_manager = None
         self.workflow_manager = None
         self.startup_complete = False
-        
-        # Initialize database operation manager
-        self.db_manager = DatabaseOperationManager()
-    
-    async def execute_db_operation(self, operation: Callable, *args, **kwargs) -> Any:
-        """Public method for cogs to execute database operations safely"""
-        return await self.db_manager.execute_operation(operation, *args, **kwargs)
     
     async def setup_hook(self):
         """Called when the bot is starting up"""
@@ -177,12 +84,7 @@ class DiscordBot(commands.Bot):
             try:
                 if self.db:
                     self.admin_manager = AdminManager(self)
-                    
-                    # Use the database operation manager for admin operations
-                    async def load_admin_roles_safe():
-                        return await self.admin_manager.load_admin_roles()
-                    
-                    await self.execute_db_operation(load_admin_roles_safe)
+                    await self.admin_manager.load_admin_roles()
                     logger.info("✅ Admin manager initialized")
                 else:
                     logger.warning("⚠️ Skipping admin manager initialization (no database)")
@@ -194,12 +96,7 @@ class DiscordBot(commands.Bot):
             try:
                 if self.db:
                     self.logging_manager = LoggingManager(self)
-                    
-                    # Use the database operation manager for logging operations
-                    async def load_log_configs_safe():
-                        return await self.logging_manager.load_log_configs()
-                    
-                    await self.execute_db_operation(load_log_configs_safe)
+                    await self.logging_manager.load_log_configs()
                     logger.info("✅ Logging manager initialized")
                 else:
                     logger.warning("⚠️ Skipping logging manager initialization (no database)")
@@ -211,12 +108,7 @@ class DiscordBot(commands.Bot):
             try:
                 if self.db:
                     self.workflow_manager = WorkflowManager(self)
-                    
-                    # Use the database operation manager for workflow operations
-                    async def load_workflows_safe():
-                        return await self.workflow_manager.load_workflows()
-                    
-                    await self.execute_db_operation(load_workflows_safe)
+                    await self.workflow_manager.load_workflows()
                     logger.info("✅ Workflow manager initialized")
                 else:
                     logger.warning("⚠️ Skipping workflow manager initialization (no database)")
@@ -229,12 +121,7 @@ class DiscordBot(commands.Bot):
                 if self.db:
                     from utils.ticket_manager import TicketManager
                     self.ticket_manager = TicketManager(self)
-                    
-                    # Use the database operation manager for ticket operations
-                    async def load_ticket_configs_safe():
-                        return await self.ticket_manager.load_ticket_configs()
-                    
-                    await self.execute_db_operation(load_ticket_configs_safe)
+                    await self.ticket_manager.load_ticket_configs()
                     logger.info("✅ Ticket manager initialized")
                 else:
                     logger.warning("⚠️ Skipping ticket manager initialization (no database)")
@@ -262,7 +149,7 @@ class DiscordBot(commands.Bot):
             'cogs.admin',
             'cogs.help',
             'cogs.setup',
-            'cogs.tickets',
+            'cogs.tickets',  # This should work with our new tickets.py
             'cogs.reminders',
             'cogs.workflows',
             'cogs.roles',
@@ -373,23 +260,16 @@ class DiscordBot(commands.Bot):
             await self.change_presence(activity=activity, status=discord.Status.online)
         except Exception as e:
             logger.error(f"Failed to set bot status: {e}")
-        
-        # Log database operation manager status
-        queue_status = self.db_manager.get_queue_status()
-        logger.info(f"📊 Database Operation Manager: {queue_status}")
     
     async def on_message(self, message):
         """Handle message events for workflow triggers"""
         # Process commands first
         await self.process_commands(message)
         
-        # Process workflow triggers using database operation manager
+        # Process workflow triggers
         if self.workflow_manager:
             try:
-                async def process_triggers():
-                    return await self.workflow_manager.process_message_triggers(message)
-                
-                await self.execute_db_operation(process_triggers)
+                await self.workflow_manager.process_message_triggers(message)
             except Exception as e:
                 logger.error(f"Error processing workflow message triggers: {e}")
     
@@ -397,10 +277,7 @@ class DiscordBot(commands.Bot):
         """Handle member join events for workflow triggers"""
         if self.workflow_manager:
             try:
-                async def process_triggers():
-                    return await self.workflow_manager.process_member_join_triggers(member)
-                
-                await self.execute_db_operation(process_triggers)
+                await self.workflow_manager.process_member_join_triggers(member)
             except Exception as e:
                 logger.error(f"Error processing workflow member join triggers: {e}")
     
@@ -408,10 +285,7 @@ class DiscordBot(commands.Bot):
         """Handle thread creation events for workflow triggers"""
         if self.workflow_manager:
             try:
-                async def process_triggers():
-                    return await self.workflow_manager.process_thread_create_triggers(thread)
-                
-                await self.execute_db_operation(process_triggers)
+                await self.workflow_manager.process_thread_create_triggers(thread)
             except Exception as e:
                 logger.error(f"Error processing workflow thread create triggers: {e}")
     
@@ -419,10 +293,7 @@ class DiscordBot(commands.Bot):
         """Handle channel creation events for workflow triggers"""
         if self.workflow_manager:
             try:
-                async def process_triggers():
-                    return await self.workflow_manager.process_channel_create_triggers(channel)
-                
-                await self.execute_db_operation(process_triggers)
+                await self.workflow_manager.process_channel_create_triggers(channel)
             except Exception as e:
                 logger.error(f"Error processing workflow channel create triggers: {e}")
     
@@ -490,25 +361,6 @@ class DiscordBot(commands.Bot):
             return
             
         logger.info("🔄 Shutting down bot...")
-        
-        # Log final database operation manager status
-        queue_status = self.db_manager.get_queue_status()
-        logger.info(f"📊 Final Database Operation Manager status: {queue_status}")
-        
-        # Wait for any remaining database operations to complete
-        if queue_status['queue_length'] > 0 or queue_status['active_operations'] > 0:
-            logger.info("⏳ Waiting for remaining database operations to complete...")
-            max_wait = 10  # Maximum 10 seconds
-            waited = 0
-            while (queue_status['queue_length'] > 0 or queue_status['active_operations'] > 0) and waited < max_wait:
-                await asyncio.sleep(0.5)
-                waited += 0.5
-                queue_status = self.db_manager.get_queue_status()
-            
-            if waited >= max_wait:
-                logger.warning("⚠️ Timeout waiting for database operations to complete")
-            else:
-                logger.info("✅ All database operations completed")
         
         # Close database connection
         if self.db:
