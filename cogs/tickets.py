@@ -8,581 +8,782 @@ from typing import Optional
 
 import discord
 from discord import ButtonStyle, Interaction, SelectOption, app_commands
-from discord.app_commands import Choice
 from discord.ext import commands, tasks
 from discord.ui import Button, Select, View
 
-# from cogs.utils.embed_builder import EmbedBuilder  # Assuming this is in utils
-# from cogs.utils.views import ConfirmView  # Assuming this is in utils
-
-# Assuming EmbedBuilder and ConfirmView are defined elsewhere or imported correctly
-# For demonstration purposes, let's define them as placeholders:
-class EmbedBuilder:
-    @staticmethod
-    def success(title, description):
-        embed = discord.Embed(title=title, description=description, color=discord.Color.green())
-        return embed
-
-    @staticmethod
-    def error(title, description):
-        embed = discord.Embed(title=title, description=description, color=discord.Color.red())
-        return embed
-
-    @staticmethod
-    def warning(title, description):
-        embed = discord.Embed(title=title, description=description, color=discord.Color.orange())
-        return embed
-
-class ConfirmView(View):
-    def __init__(self, user):
-        super().__init__(timeout=60)
-        self.user = user
-        self.value = None
-
-    async def interaction_check(self, interaction):
-        if interaction.user != self.user:
-            await interaction.response.send_message("This is not for you!", ephemeral=True)
-            return False
-        return True
-
-    async def on_timeout(self):
-        for child in self.children:
-            child.disabled = True
-        await self.message.edit(view=self)
-
-    @discord.ui.button(label="Confirm", style=ButtonStyle.green)
-    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.value = True
-        await interaction.response.defer()
-        self.stop()
-
-    @discord.ui.button(label="Cancel", style=ButtonStyle.red)
-    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.value = False
-        await interaction.response.defer()
-        self.stop()
+# from cogs.utils.embed_builder import EmbedBuilder
+from utils.embed_builder import EmbedBuilder
+from utils.helper import (
+    FieldNotFound,
+    get_expiry_date,
+    get_role,
+    get_ticket_channel,
+    get_ticket_owner,
+    get_ticket_type,
+    has_permissions,
+    is_support_staff,
+    log_to_channel,
+    parse_expiry_date,
+    send_dm,
+    update_expiry_date,
+)
 
 log = logging.getLogger(__name__)
 
-class TicketJoinRequestView(discord.ui.View):
-    def __init__(self, bot, user, channel):
-        super().__init__(timeout=None)
+
+class TicketButton(Button):
+    def __init__(self, bot, ticket_type, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.bot = bot
+        self.ticket_type = ticket_type
+
+    async def callback(self, interaction: Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        user = interaction.user
+
+        # Check if the user already has an open ticket
+        existing_ticket = await get_ticket_channel(self.bot, guild.id, user.id)
+        if existing_ticket:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"You already have an open ticket at {existing_ticket.mention}. Please close that ticket before creating a new one.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Get ticket config
+        ticket_config = await self.bot.db.get_ticket_config(guild.id, self.ticket_type)
+        if not ticket_config:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"This ticket type is not configured. Please contact a server administrator.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Get category
+        category_id = ticket_config.get("category_id")
+        if not category_id:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"This ticket type is not configured with a category. Please contact a server administrator.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        category = guild.get_channel(int(category_id))
+        if not category:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"The category for this ticket type is invalid. Please contact a server administrator.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Get support role
+        support_role_id = ticket_config.get("support_role_id")
+        if not support_role_id:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"This ticket type is not configured with a support role. Please contact a server administrator.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        support_role = guild.get_role(int(support_role_id))
+        if not support_role:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"The support role for this ticket type is invalid. Please contact a server administrator.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Get ticket name
+        ticket_name = ticket_config.get("name")
+        if not ticket_name:
+            ticket_name = "ticket-{user_name}"
+
+        ticket_name = ticket_name.replace("{user_name}", user.name)
+        ticket_name = ticket_name.replace("{user_id}", str(user.id))
+
+        # Get overwrites
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            user: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, attach_files=True
+            ),
+            support_role: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, attach_files=True
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, attach_files=True
+            ),
+        }
+
+        # Create the ticket
+        try:
+            channel = await guild.create_text_channel(
+                ticket_name, category=category, overwrites=overwrites
+            )
+        except Exception as e:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"There was an error creating the ticket. Please contact a server administrator.\n\n`{e}`",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Set ticket topic
+        await channel.edit(topic=f"Ticket for {user.mention} | User ID: {user.id}")
+
+        # Set slowmode
+        slowmode = ticket_config.get("slowmode")
+        if slowmode:
+            try:
+                await channel.edit(slowmode_delay=int(slowmode))
+            except Exception as e:
+                log.error(f"Error setting slowmode for ticket {channel.id}: {e}")
+
+        # Send intro message
+        intro_message = ticket_config.get("intro_message")
+        if intro_message:
+            intro_message = intro_message.replace("{user_mention}", user.mention)
+            intro_message = intro_message.replace("{user_name}", user.name)
+            intro_message = intro_message.replace("{user_id}", str(user.id))
+            intro_message = intro_message.replace("{support_role}", support_role.mention)
+
+            try:
+                await channel.send(intro_message)
+            except Exception as e:
+                log.error(f"Error sending intro message for ticket {channel.id}: {e}")
+
+        # Add close button
+        close_button = Button(
+            label="Close Ticket",
+            style=ButtonStyle.danger,
+            emoji="🔒",
+            custom_id="close_ticket",
+        )
+        view = View()
+        view.add_item(close_button)
+
+        # Send embed
+        embed = EmbedBuilder.success(
+            "Ticket Created", f"Your ticket has been created at {channel.mention}."
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Send ticket created message to ticket channel
+        embed = EmbedBuilder.success(
+            "Ticket Created",
+            f"{user.mention} has created a ticket. {support_role.mention} will be with you shortly.",
+        )
+        await channel.send(embed=embed, view=view)
+
+        # Log ticket creation
+        await self.bot.db.create_ticket(
+            guild.id, channel.id, user.id, self.ticket_type
+        )
+
+        # Log to log channel
+        log_message = f"{user.mention} created ticket {channel.mention} ({self.ticket_type})"
+        await log_to_channel(self.bot, guild.id, log_message, "ticket")
+
+
+class TicketModal(discord.ui.Modal):
+    def __init__(self, bot, ticket_type, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.bot = bot
+        self.ticket_type = ticket_type
+        self.add_item(
+            discord.ui.TextInput(
+                label="Please describe your issue",
+                style=discord.TextStyle.paragraph,
+                placeholder="Please be as detailed as possible.",
+                required=True,
+                max_length=2000,
+            )
+        )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        guild = interaction.guild
+        user = interaction.user
+        description = self.children[0].value
+
+        # Check if the user already has an open ticket
+        existing_ticket = await get_ticket_channel(self.bot, guild.id, user.id)
+        if existing_ticket:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"You already have an open ticket at {existing_ticket.mention}. Please close that ticket before creating a new one.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Get ticket config
+        ticket_config = await self.bot.db.get_ticket_config(guild.id, self.ticket_type)
+        if not ticket_config:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"This ticket type is not configured. Please contact a server administrator.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Get category
+        category_id = ticket_config.get("category_id")
+        if not category_id:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"This ticket type is not configured with a category. Please contact a server administrator.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        category = guild.get_channel(int(category_id))
+        if not category:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"The category for this ticket type is invalid. Please contact a server administrator.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Get support role
+        support_role_id = ticket_config.get("support_role_id")
+        if not support_role_id:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"This ticket type is not configured with a support role. Please contact a server administrator.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        support_role = guild.get_role(int(support_role_id))
+        if not support_role:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"The support role for this ticket type is invalid. Please contact a server administrator.",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Get ticket name
+        ticket_name = ticket_config.get("name")
+        if not ticket_name:
+            ticket_name = "ticket-{user_name}"
+
+        ticket_name = ticket_name.replace("{user_name}", user.name)
+        ticket_name = ticket_name.replace("{user_id}", str(user.id))
+
+        # Get overwrites
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            user: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, attach_files=True
+            ),
+            support_role: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, attach_files=True
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True, attach_files=True
+            ),
+        }
+
+        # Create the ticket
+        try:
+            channel = await guild.create_text_channel(
+                ticket_name, category=category, overwrites=overwrites
+            )
+        except Exception as e:
+            embed = EmbedBuilder.error(
+                "Ticket Creation Failed",
+                f"There was an error creating the ticket. Please contact a server administrator.\n\n`{e}`",
+            )
+            return await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Set ticket topic
+        await channel.edit(topic=f"Ticket for {user.mention} | User ID: {user.id}")
+
+        # Set slowmode
+        slowmode = ticket_config.get("slowmode")
+        if slowmode:
+            try:
+                await channel.edit(slowmode_delay=int(slowmode))
+            except Exception as e:
+                log.error(f"Error setting slowmode for ticket {channel.id}: {e}")
+
+        # Send intro message
+        intro_message = ticket_config.get("intro_message")
+        if intro_message:
+            intro_message = intro_message.replace("{user_mention}", user.mention)
+            intro_message = intro_message.replace("{user_name}", user.name)
+            intro_message = intro_message.replace("{user_id}", str(user.id))
+            intro_message = intro_message.replace("{support_role}", support_role.mention)
+
+            try:
+                await channel.send(intro_message)
+            except Exception as e:
+                log.error(f"Error sending intro message for ticket {channel.id}: {e}")
+
+        # Add close button
+        close_button = Button(
+            label="Close Ticket",
+            style=ButtonStyle.danger,
+            emoji="🔒",
+            custom_id="close_ticket",
+        )
+        view = View()
+        view.add_item(close_button)
+
+        # Send embed
+        embed = EmbedBuilder.success(
+            "Ticket Created", f"Your ticket has been created at {channel.mention}."
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Send ticket created message to ticket channel
+        embed = EmbedBuilder.success(
+            "Ticket Created",
+            f"{user.mention} has created a ticket. {support_role.mention} will be with you shortly.",
+        )
+        embed.add_field(name="Description", value=description, inline=False)
+        await channel.send(embed=embed, view=view)
+
+        # Log ticket creation
+        await self.bot.db.create_ticket(
+            guild.id, channel.id, user.id, self.ticket_type
+        )
+
+        # Log to log channel
+        log_message = f"{user.mention} created ticket {channel.mention} ({self.ticket_type})"
+        await log_to_channel(self.bot, guild.id, log_message, "ticket")
+
+
+class TicketSelect(Select):
+    def __init__(self, bot, ticket_types, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.bot = bot
+        self.ticket_types = ticket_types
+        options = []
+        for ticket_type in ticket_types:
+            options.append(
+                SelectOption(
+                    label=ticket_type.get("display_name"),
+                    value=ticket_type.get("ticket_type"),
+                    description=ticket_type.get("description"),
+                    emoji=ticket_type.get("emoji"),
+                )
+            )
+        self.options = options
+
+    async def callback(self, interaction: Interaction):
+        await interaction.response.defer(ephemeral=True)
+        ticket_type = interaction.data.get("values")[0]
+        for t in self.ticket_types:
+            if t.get("ticket_type") == ticket_type:
+                selected_ticket_type = t
+                break
+
+        use_modal = selected_ticket_type.get("use_modal")
+        if use_modal:
+            modal = TicketModal(
+                self.bot,
+                ticket_type,
+                title=f"{selected_ticket_type.get('display_name')} Request",
+            )
+            await interaction.response.send_modal(modal)
+        else:
+            button = TicketButton(
+                self.bot,
+                ticket_type,
+                label=selected_ticket_type.get("display_name"),
+                style=ButtonStyle.primary,
+                emoji=selected_ticket_type.get("emoji"),
+            )
+            await button.callback(interaction)
+
+
+class TicketView(View):
+    def __init__(self, bot, ticket_types, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.add_item(TicketSelect(bot, ticket_types))
+
+
+class TicketJoinRequestView(View):
+    def __init__(self, bot, user, channel, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.bot = bot
         self.user = user
         self.channel = channel
-        self.message = None
 
-    @discord.ui.button(label="Accept", style=discord.ButtonStyle.green, custom_id="ticket_join_accept")
-    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Check if the user has manage channel permissions
-        permissions = interaction.channel.permissions_for(interaction.user)
-        if not permissions.manage_channels:
-            await interaction.response.send_message("You do not have permission to accept this request.", ephemeral=True)
-            return
+        accept_button = Button(
+            label="Accept",
+            style=ButtonStyle.success,
+            emoji="✅",
+            custom_id="accept_ticket_join",
+        )
+        deny_button = Button(
+            label="Deny", style=ButtonStyle.danger, emoji="❌", custom_id="deny_ticket_join"
+        )
 
-        # Grant the user access to the channel
-        await self.channel.set_permissions(self.user, send_messages=True, read_messages=True, view_channel=True)
+        accept_button.callback = self.accept_ticket_join
+        deny_button.callback = self.deny_ticket_join
 
-        # Edit the embed to show that the request was accepted
-        embed = interaction.message.embeds[0]
-        embed.color = discord.Color.green()
-        embed.title = "🎫 Ticket Join Request - Accepted"
-        embed.description = f"Request to join this ticket was accepted by {interaction.user.mention}"
+        self.add_item(accept_button)
+        self.add_item(deny_button)
 
-        # Disable the buttons
-        for child in self.children:
-            child.disabled = True
+    async def accept_ticket_join(self, interaction: Interaction):
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel
+        user = self.user
 
-        # Update the message
-        await interaction.response.edit_message(embed=embed, view=self)
+        # Add user to ticket
+        await channel.set_permissions(
+            user, view_channel=True, send_messages=True, attach_files=True
+        )
 
-    @discord.ui.button(label="Deny", style=discord.ButtonStyle.red, custom_id="ticket_join_deny")
-    async def deny(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Check if the user has manage channel permissions
-        permissions = interaction.channel.permissions_for(interaction.user)
-        if not permissions.manage_channels:
-            await interaction.response.send_message("You do not have permission to deny this request.", ephemeral=True)
-            return
+        # Send message to ticket channel
+        embed = EmbedBuilder.success(
+            "Ticket Join Request Accepted", f"{user.mention} has been added to the ticket."
+        )
+        await interaction.followup.send(embed=embed)
 
-        # Edit the embed to show that the request was denied
-        embed = interaction.message.embeds[0]
-        embed.color = discord.Color.red()
-        embed.title = "🎫 Ticket Join Request - Denied"
-        embed.description = f"Request to join this ticket was denied by {interaction.user.mention}"
+        # Send message to user
+        embed = EmbedBuilder.success(
+            "Ticket Join Request Accepted",
+            f"Your request to join ticket {channel.mention} has been accepted.",
+        )
+        await send_dm(user, embed=embed)
 
-        # Disable the buttons
-        for child in self.children:
-            child.disabled = True
+        # Disable buttons
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
 
-        # Update the message
-        await interaction.response.edit_message(embed=embed, view=self)
+        # Remove request from database
+        try:
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3",
+                    str(user.id),
+                    str(interaction.guild.id),
+                    "ticket_join_request",
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ?",
+                    (str(user.id), str(interaction.guild.id), "ticket_join_request"),
+                )
+                await self.bot.db.connection.commit()
+        except Exception as e:
+            log.error(f"Error deleting join request: {e}")
 
-class Ticket(commands.Cog):
+    async def deny_ticket_join(self, interaction: Interaction):
+        await interaction.response.defer(ephemeral=True)
+        channel = interaction.channel
+        user = self.user
+
+        # Send message to ticket channel
+        embed = EmbedBuilder.error(
+            "Ticket Join Request Denied", f"{user.mention}'s request to join has been denied."
+        )
+        await interaction.followup.send(embed=embed)
+
+        # Send message to user
+        embed = EmbedBuilder.error(
+            "Ticket Join Request Denied",
+            f"Your request to join ticket {channel.mention} has been denied.",
+        )
+        await send_dm(user, embed=embed)
+
+        # Disable buttons
+        for item in self.children:
+            item.disabled = True
+        await interaction.message.edit(view=self)
+
+        # Remove request from database
+        try:
+            if self.bot.db.is_postgresql:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = $1 AND guild_id = $2 AND data_type = $3",
+                    str(user.id),
+                    str(interaction.guild.id),
+                    "ticket_join_request",
+                )
+            else:
+                await self.bot.db.connection.execute(
+                    "DELETE FROM user_data WHERE user_id = ? AND guild_id = ? AND data_type = ?",
+                    (str(user.id), str(interaction.guild.id), "ticket_join_request"),
+                )
+                await self.bot.db.connection.commit()
+        except Exception as e:
+            log.error(f"Error deleting join request: {e}")
+
+
+class Tickets(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.ticket_message_cache = {}  # Store message content for editing
-        self.check_inactive_tickets.start()
 
-    async def cog_load(self):
-        log.info(f"{self.__class__.__name__} loaded!")
+    @commands.group(name="ticket", invoke_without_command=True, aliases=["tickets"])
+    @has_permissions(manage_guild=True)
+    async def ticket_group(self, ctx):
+        """
+        Ticket management commands.
+        """
+        await ctx.send_help(ctx.command)
 
-    async def cog_unload(self):
-        self.check_inactive_tickets.cancel()
-        log.info(f"{self.__class__.__name__} unloaded!")
+    @ticket_group.command(name="createpanel", aliases=["panel"])
+    @has_permissions(manage_guild=True)
+    async def create_panel(self, ctx, channel: discord.TextChannel = None):
+        """
+        Creates a ticket panel in the specified channel.
+        """
+        if not channel:
+            channel = ctx.channel
+
+        ticket_types = await self.bot.db.get_ticket_types(ctx.guild.id)
+        if not ticket_types:
+            embed = EmbedBuilder.error(
+                "Ticket Panel Creation Failed",
+                "There are no ticket types configured for this server. Please add some ticket types using the `ticket type` commands.",
+            )
+            return await ctx.send(embed=embed)
+
+        view = TicketView(self.bot, ticket_types)
+        embed = EmbedBuilder.success(
+            "Ticket Panel", "Please select the type of ticket you would like to create."
+        )
+        await channel.send(embed=embed, view=view)
+
+        embed = EmbedBuilder.success(
+            "Ticket Panel Created", f"Ticket panel created in {channel.mention}."
+        )
+        await ctx.send(embed=embed)
+
+        # Log to log channel
+        log_message = f"{ctx.author.mention} created a ticket panel in {channel.mention}"
+        await log_to_channel(self.bot, ctx.guild.id, log_message, "ticket")
+
+    @ticket_group.group(name="type", aliases=["types"], invoke_without_command=True)
+    @has_permissions(manage_guild=True)
+    async def ticket_type_group(self, ctx):
+        """
+        Ticket type management commands.
+        """
+        await ctx.send_help(ctx.command)
+
+    @ticket_type_group.command(name="add")
+    @has_permissions(manage_guild=True)
+    async def add_ticket_type(
+        self,
+        ctx,
+        ticket_type: str,
+        display_name: str,
+        description: str,
+        emoji: str,
+        category: discord.CategoryChannel,
+        support_role: discord.Role,
+        use_modal: bool = False,
+        slowmode: int = 0,
+        intro_message: str = None,
+        name: str = None,
+    ):
+        """
+        Adds a ticket type to the server.
+        """
+        if await self.bot.db.get_ticket_config(ctx.guild.id, ticket_type):
+            embed = EmbedBuilder.error(
+                "Ticket Type Creation Failed",
+                "A ticket type with that name already exists. Please use a different name.",
+            )
+            return await ctx.send(embed=embed)
+
+        try:
+            await self.bot.db.add_ticket_config(
+                ctx.guild.id,
+                ticket_type,
+                display_name,
+                description,
+                emoji,
+                category.id,
+                support_role.id,
+                use_modal,
+                slowmode,
+                intro_message,
+                name,
+            )
+        except Exception as e:
+            embed = EmbedBuilder.error(
+                "Ticket Type Creation Failed",
+                f"There was an error creating the ticket type. Please contact a server administrator.\n\n`{e}`",
+            )
+            return await ctx.send(embed=embed)
+
+        embed = EmbedBuilder.success(
+            "Ticket Type Created", f"Ticket type `{ticket_type}` has been created."
+        )
+        await ctx.send(embed=embed)
+
+        # Log to log channel
+        log_message = f"{ctx.author.mention} created ticket type `{ticket_type}`"
+        await log_to_channel(self.bot, ctx.guild.id, log_message, "ticket")
+
+    @ticket_type_group.command(name="remove", aliases=["delete", "del"])
+    @has_permissions(manage_guild=True)
+    async def remove_ticket_type(self, ctx, ticket_type: str):
+        """
+        Removes a ticket type from the server.
+        """
+        if not await self.bot.db.get_ticket_config(ctx.guild.id, ticket_type):
+            embed = EmbedBuilder.error(
+                "Ticket Type Removal Failed",
+                "A ticket type with that name does not exist. Please use a different name.",
+            )
+            return await ctx.send(embed=embed)
+
+        try:
+            await self.bot.db.remove_ticket_config(ctx.guild.id, ticket_type)
+        except Exception as e:
+            embed = EmbedBuilder.error(
+                "Ticket Type Removal Failed",
+                f"There was an error removing the ticket type. Please contact a server administrator.\n\n`{e}`",
+            )
+            return await ctx.send(embed=embed)
+
+        embed = EmbedBuilder.success(
+            "Ticket Type Removed", f"Ticket type `{ticket_type}` has been removed."
+        )
+        await ctx.send(embed=embed)
+
+        # Log to log channel
+        log_message = f"{ctx.author.mention} removed ticket type `{ticket_type}`"
+        await log_to_channel(self.bot, ctx.guild.id, log_message, "ticket")
+
+    @ticket_type_group.command(name="edit")
+    @has_permissions(manage_guild=True)
+    async def edit_ticket_type(
+        self,
+        ctx,
+        ticket_type: str,
+        *,
+        options: str,
+    ):
+        """
+        Edits a ticket type.
+
+        Usage:
+            !ticket type edit <ticket_type> option1=value1 option2=value2
+
+        Options:
+            display_name: The name that will be displayed on the ticket panel.
+            description: The description that will be displayed on the ticket panel.
+            emoji: The emoji that will be displayed on the ticket panel.
+            category: The category that the ticket will be created in.
+            support_role: The role that will be pinged when a ticket is created.
+            use_modal: Whether or not to use a modal when creating a ticket. (True/False)
+            slowmode: The slowmode delay in seconds.
+            intro_message: The message that will be sent when a ticket is created.
+            name: The name of the ticket channel.
+        """
+        if not await self.bot.db.get_ticket_config(ctx.guild.id, ticket_type):
+            embed = EmbedBuilder.error(
+                "Ticket Type Edit Failed",
+                "A ticket type with that name does not exist. Please use a different name.",
+            )
+            return await ctx.send(embed=embed)
+
+        # Parse options
+        option_dict = {}
+        options = options.split(" ")
+        for option in options:
+            try:
+                option_name, option_value = option.split("=")
+                option_dict[option_name] = option_value
+            except ValueError:
+                embed = EmbedBuilder.error(
+                    "Ticket Type Edit Failed",
+                    "Invalid option format. Please use `option=value`.",
+                )
+                return await ctx.send(embed=embed)
+
+        # Edit ticket type
+        try:
+            await self.bot.db.edit_ticket_config(ctx.guild.id, ticket_type, option_dict)
+        except Exception as e:
+            embed = EmbedBuilder.error(
+                "Ticket Type Edit Failed",
+                f"There was an error editing the ticket type. Please contact a server administrator.\n\n`{e}`",
+            )
+            return await ctx.send(embed=embed)
+
+        embed = EmbedBuilder.success(
+            "Ticket Type Edited", f"Ticket type `{ticket_type}` has been edited."
+        )
+        await ctx.send(embed=embed)
+
+        # Log to log channel
+        log_message = f"{ctx.author.mention} edited ticket type `{ticket_type}`"
+        await log_to_channel(self.bot, ctx.guild.id, log_message, "ticket")
 
     @commands.Cog.listener()
-    async def on_message(self, message):
-        if message.author.bot:
-            return
+    async def on_interaction(self, interaction: Interaction):
+        if interaction.custom_id == "close_ticket":
+            channel = interaction.channel
+            guild = interaction.guild
+            user = interaction.user
 
-        if not message.guild:
-            return
+            # Check if the user has permission to close the ticket
+            ticket_owner = await get_ticket_owner(self.bot, channel.id)
+            if ticket_owner:
+                ticket_owner = guild.get_member(int(ticket_owner))
 
-        if not isinstance(message.channel, discord.Thread):
-            return
+            if not is_support_staff(interaction.guild, interaction.user):
+                if ticket_owner != user:
+                    embed = EmbedBuilder.error(
+                        "Ticket Close Failed",
+                        "You do not have permission to close this ticket.",
+                    )
+                    return await interaction.response.send_message(
+                        embed=embed, ephemeral=True
+                    )
 
-        ticket = await self.get_ticket_by_channel_id(message.channel.id)
-        if not ticket:
-            return
-
-        # Log the message to the database
-        try:
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "INSERT INTO ticket_messages (ticket_id, author_id, content, created_at) VALUES ($1, $2, $3, $4)",
-                    ticket['ticket_id'], str(message.author.id), message.content, message.created_at
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    "INSERT INTO ticket_messages (ticket_id, author_id, content, created_at) VALUES (?, ?, ?, ?)",
-                    (ticket['ticket_id'], str(message.author.id), message.content, message.created_at)
-                )
-                await self.bot.db.connection.commit()
-        except Exception as e:
-            log.error(f"Error logging ticket message: {e}")
-
-    async def get_ticket_by_channel_id(self, channel_id):
-        if self.bot.db.is_postgresql:
-            ticket = await self.bot.db.connection.fetchrow(
-                "SELECT * FROM tickets WHERE channel_id = $1",
-                str(channel_id)
+            # Close the ticket
+            embed = EmbedBuilder.success(
+                "Ticket Closed", f"This ticket has been closed by {user.mention}."
             )
-        else:
-            cursor = await self.bot.db.connection.execute(
-                "SELECT * FROM tickets WHERE channel_id = ?",
-                (str(channel_id),)
-            )
-            ticket = await cursor.fetchone()
-        return ticket
+            await interaction.response.send_message(embed=embed)
 
-    async def get_ticket_by_id(self, ticket_id):
-        if self.bot.db.is_postgresql:
-            ticket = await self.bot.db.connection.fetchrow(
-                "SELECT * FROM tickets WHERE ticket_id = $1",
-                ticket_id
-            )
-        else:
-            cursor = await self.bot.db.connection.execute(
-                "SELECT * FROM tickets WHERE ticket_id = ?",
-                (ticket_id,)
-            )
-            ticket = await cursor.fetchone()
-        return ticket
+            # Delete the ticket after 5 seconds
+            await asyncio.sleep(5)
+            try:
+                await channel.delete()
+            except Exception as e:
+                log.error(f"Error deleting ticket {channel.id}: {e}")
 
-    async def get_guild_config(self, guild_id):
-        if self.bot.db.is_postgresql:
-            config = await self.bot.db.connection.fetchrow(
-                "SELECT * FROM guild_config WHERE guild_id = $1",
-                str(guild_id)
-            )
-        else:
-            cursor = await self.bot.db.connection.execute(
-                "SELECT * FROM guild_config WHERE guild_id = ?",
-                (str(guild_id),)
-            )
-            config = await cursor.fetchone()
-        return config
+            # Remove ticket from database
+            try:
+                await self.bot.db.remove_ticket(channel.id)
+            except Exception as e:
+                log.error(f"Error removing ticket from database: {e}")
 
-    async def create_ticket(self, interaction, category, reason):
-        guild_config = await self.get_guild_config(interaction.guild.id)
-        if not guild_config:
-            embed = EmbedBuilder.error("Configuration Error", "Ticket system is not configured for this server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
+            # Log to log channel
+            log_message = f"{user.mention} closed ticket `{channel.name}`"
+            await log_to_channel(self.bot, guild.id, log_message, "ticket")
 
-        # Get the ticket number
-        if self.bot.db.is_postgresql:
-            ticket_number = await self.bot.db.connection.fetchval(
-                "SELECT COUNT(*) FROM tickets WHERE guild_id = $1",
-                str(interaction.guild.id)
-            )
-        else:
-            cursor = await self.bot.db.connection.execute(
-                "SELECT COUNT(*) FROM tickets WHERE guild_id = ?",
-                (str(interaction.guild.id),)
-            )
-            ticket_number = (await cursor.fetchone())[0]
-        ticket_number = ticket_number + 1
-
-        # Get the category
-        if self.bot.db.is_postgresql:
-            ticket_category = await self.bot.db.connection.fetchrow(
-                "SELECT * FROM ticket_categories WHERE category_id = $1 AND guild_id = $2",
-                category, str(interaction.guild.id)
-            )
-        else:
-            cursor = await self.bot.db.connection.execute(
-                "SELECT * FROM ticket_categories WHERE category_id = ? AND guild_id = ?",
-                (category, str(interaction.guild.id))
-            )
-            ticket_category = await cursor.fetchone()
-
-        if not ticket_category:
-            embed = EmbedBuilder.error("Category Not Found", "The selected category does not exist.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Get the category object
-        category_obj = interaction.guild.get_channel(int(ticket_category['category_id']))
-        if not category_obj:
-            embed = EmbedBuilder.error("Category Not Found", "The selected category does not exist in the server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Get the support role
-        support_role = interaction.guild.get_role(int(guild_config['support_role_id']))
-        if not support_role:
-            embed = EmbedBuilder.error("Role Not Found", "The support role does not exist in the server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Create the ticket channel
-        try:
-            channel = await interaction.guild.create_thread(
-                name=f"ticket-{ticket_number:04d}",
-                message=None,
-                auto_archive_duration=1440,
-                type=discord.ChannelType.public_thread,
-                reason=f"Ticket created by {interaction.user}"
-            )
-            await channel.edit(category=category_obj)
-        except Exception as e:
-            embed = EmbedBuilder.error("Channel Creation Error", f"Failed to create the ticket channel.\n\`\`\`{e}\`\`\`")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Set channel permissions
-        await channel.set_permissions(interaction.user, send_messages=True, read_messages=True, view_channel=True)
-        await channel.set_permissions(support_role, send_messages=True, read_messages=True, view_channel=True)
-        await channel.set_permissions(interaction.guild.default_role, view_channel=False)
-
-        # Send the ticket embed
-        embed = discord.Embed(
-            title=f"Ticket #{ticket_number:04d} - {ticket_category['category_name']}",
-            description=f"{interaction.user.mention} has opened a ticket.\n\n**Reason:** {reason}",
-            color=0x84e1ff
-        )
-        embed.add_field(name="Category", value=ticket_category['category_name'], inline=True)
-        embed.add_field(name="Ticket ID", value=f"{ticket_number:04d}", inline=True)
-        embed.add_field(name="Opened By", value=interaction.user.mention, inline=False)
-        embed.set_footer(text="Railway Bot")
-        message = await channel.send(f"{interaction.user.mention} {support_role.mention}", embed=embed)
-        await message.pin()
-
-        # Add the ticket to the database
-        try:
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "INSERT INTO tickets (ticket_id, guild_id, channel_id, creator_id, category_id, reason, created_at, closed) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-                    ticket_number, str(interaction.guild.id), str(channel.id), str(interaction.user.id), category, reason, datetime.utcnow(), False
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    "INSERT INTO tickets (ticket_id, guild_id, channel_id, creator_id, category_id, reason, created_at, closed) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (ticket_number, str(interaction.guild.id), str(channel.id), str(interaction.user.id), category, reason, datetime.utcnow(), False)
-                )
-                await self.bot.db.connection.commit()
-        except Exception as e:
-            embed = EmbedBuilder.error("Database Error", f"Failed to add the ticket to the database.\n\`\`\`{e}\`\`\`")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            await channel.delete()
-            return
-
-        # Send confirmation to the user
-        embed = EmbedBuilder.success(
-            "Ticket Created",
-            f"Your ticket has been created in {channel.mention}."
-        )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="ticket", description="Opens a ticket")
-    @app_commands.describe(category="The category for the ticket")
-    @app_commands.describe(reason="The reason for opening the ticket")
-    @app_commands.choices(category=[])
-    async def ticket(self, interaction: discord.Interaction, category: str, reason: str):
-        await self.create_ticket(interaction, category, reason)
-
-    @ticket.autocomplete("category")
-    async def ticket_autocomplete(self, interaction: discord.Interaction, current: str):
-        guild_config = await self.get_guild_config(interaction.guild.id)
-        if not guild_config:
-            return []
-
-        if self.bot.db.is_postgresql:
-            categories = await self.bot.db.connection.fetch(
-                "SELECT * FROM ticket_categories WHERE guild_id = $1 AND category_name ILIKE $2 LIMIT 25",
-                str(interaction.guild.id), f"%{current}%"
-            )
-        else:
-            cursor = await self.bot.db.connection.execute(
-                "SELECT * FROM ticket_categories WHERE guild_id = ? AND category_name LIKE ? LIMIT 25",
-                (str(interaction.guild.id), f"%{current}%")
-            )
-            categories = await cursor.fetchall()
-
-        return [Choice(name=category['category_name'], value=category['category_id']) for category in categories]
-
-    @app_commands.command(name="close", description="Closes the ticket")
-    async def close(self, interaction: discord.Interaction):
-        ticket = await self.get_ticket_by_channel_id(interaction.channel.id)
-        if not ticket:
-            embed = EmbedBuilder.error("Not a Ticket", "This channel is not a ticket.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Check if the user has permission to close the ticket
-        guild_config = await self.get_guild_config(interaction.guild.id)
-        if not guild_config:
-            embed = EmbedBuilder.error("Configuration Error", "Ticket system is not configured for this server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        support_role = interaction.guild.get_role(int(guild_config['support_role_id']))
-        if not support_role:
-            embed = EmbedBuilder.error("Role Not Found", "The support role does not exist in the server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        if not (support_role in interaction.user.roles or interaction.user.guild_permissions.administrator):
-            embed = EmbedBuilder.error("Missing Permissions", "You do not have permission to close this ticket.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Confirm close
-        view = ConfirmView(interaction.user)
-        embed = EmbedBuilder.warning("Confirmation", "Are you sure you want to close this ticket?")
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-        await view.wait()
-
-        if view.value is None:
-            embed = EmbedBuilder.error("Timeout", "Ticket close timed out.")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-        elif not view.value:
-            embed = EmbedBuilder.error("Cancelled", "Ticket close cancelled.")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-
-        # Close the ticket
-        try:
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "UPDATE tickets SET closed = $1, closed_at = $2 WHERE ticket_id = $3",
-                    True, datetime.utcnow(), ticket['ticket_id']
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    "UPDATE tickets SET closed = ?, closed_at = ? WHERE ticket_id = ?",
-                    (True, datetime.utcnow(), ticket['ticket_id'])
-                )
-                await self.bot.db.connection.commit()
-        except Exception as e:
-            embed = EmbedBuilder.error("Database Error", f"Failed to update the ticket in the database.\n\`\`\`{e}\`\`\`")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-
-        embed = EmbedBuilder.success("Ticket Closed", "The ticket has been closed.")
-        await interaction.channel.send(embed=embed)
-        await interaction.channel.edit(archived=True, locked=True)
-
-    @app_commands.command(name="add", description="Adds a user to the ticket")
-    @app_commands.describe(user="The user to add to the ticket")
-    async def add(self, interaction: discord.Interaction, user: discord.Member):
-        ticket = await self.get_ticket_by_channel_id(interaction.channel.id)
-        if not ticket:
-            embed = EmbedBuilder.error("Not a Ticket", "This channel is not a ticket.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Check if the user has permission to add users to the ticket
-        guild_config = await self.get_guild_config(interaction.guild.id)
-        if not guild_config:
-            embed = EmbedBuilder.error("Configuration Error", "Ticket system is not configured for this server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        support_role = interaction.guild.get_role(int(guild_config['support_role_id']))
-        if not support_role:
-            embed = EmbedBuilder.error("Role Not Found", "The support role does not exist in the server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        if not (support_role in interaction.user.roles or interaction.user.guild_permissions.administrator):
-            embed = EmbedBuilder.error("Missing Permissions", "You do not have permission to add users to this ticket.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Add the user to the ticket
-        try:
-            await interaction.channel.set_permissions(user, send_messages=True, read_messages=True, view_channel=True)
-        except Exception as e:
-            embed = EmbedBuilder.error("Permission Error", f"Failed to add the user to the ticket.\n\`\`\`{e}\`\`\`")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        embed = EmbedBuilder.success("User Added", f"{user.mention} has been added to the ticket.")
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="remove", description="Removes a user from the ticket")
-    @app_commands.describe(user="The user to remove from the ticket")
-    async def remove(self, interaction: discord.Interaction, user: discord.Member):
-        ticket = await self.get_ticket_by_channel_id(interaction.channel.id)
-        if not ticket:
-            embed = EmbedBuilder.error("Not a Ticket", "This channel is not a ticket.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Check if the user has permission to remove users from the ticket
-        guild_config = await self.get_guild_config(interaction.guild.id)
-        if not guild_config:
-            embed = EmbedBuilder.error("Configuration Error", "Ticket system is not configured for this server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        support_role = interaction.guild.get_role(int(guild_config['support_role_id']))
-        if not support_role:
-            embed = EmbedBuilder.error("Role Not Found", "The support role does not exist in the server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        if not (support_role in interaction.user.roles or interaction.user.guild_permissions.administrator):
-            embed = EmbedBuilder.error("Missing Permissions", "You do not have permission to remove users from this ticket.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Remove the user from the ticket
-        try:
-            await interaction.channel.set_permissions(user, send_messages=False, read_messages=False, view_channel=False)
-        except Exception as e:
-            embed = EmbedBuilder.error("Permission Error", f"Failed to remove the user from the ticket.\n\`\`\`{e}\`\`\`")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        embed = EmbedBuilder.success("User Removed", f"{user.mention} has been removed from the ticket.")
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="rename", description="Renames the ticket")
-    @app_commands.describe(name="The new name for the ticket")
-    async def rename(self, interaction: discord.Interaction, name: str):
-        ticket = await self.get_ticket_by_channel_id(interaction.channel.id)
-        if not ticket:
-            embed = EmbedBuilder.error("Not a Ticket", "This channel is not a ticket.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Check if the user has permission to rename the ticket
-        guild_config = await self.get_guild_config(interaction.guild.id)
-        if not guild_config:
-            embed = EmbedBuilder.error("Configuration Error", "Ticket system is not configured for this server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        support_role = interaction.guild.get_role(int(guild_config['support_role_id']))
-        if not support_role:
-            embed = EmbedBuilder.error("Role Not Found", "The support role does not exist in the server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        if not (support_role in interaction.user.roles or interaction.user.guild_permissions.administrator):
-            embed = EmbedBuilder.error("Missing Permissions", "You do not have permission to rename this ticket.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Rename the ticket
-        try:
-            await interaction.channel.edit(name=name)
-        except Exception as e:
-            embed = EmbedBuilder.error("Channel Error", f"Failed to rename the ticket.\n\`\`\`{e}\`\`\`")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        embed = EmbedBuilder.success("Ticket Renamed", f"The ticket has been renamed to {name}.")
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="forceclose", description="Force closes a ticket, bypassing confirmation")
-    async def forceclose(self, interaction: discord.Interaction):
-        ticket = await self.get_ticket_by_channel_id(interaction.channel.id)
-        if not ticket:
-            embed = EmbedBuilder.error("Not a Ticket", "This channel is not a ticket.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Check if the user has permission to close the ticket
-        guild_config = await self.get_guild_config(interaction.guild.id)
-        if not guild_config:
-            embed = EmbedBuilder.error("Configuration Error", "Ticket system is not configured for this server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        support_role = interaction.guild.get_role(int(guild_config['support_role_id']))
-        if not support_role:
-            embed = EmbedBuilder.error("Role Not Found", "The support role does not exist in the server.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        if not (support_role in interaction.user.roles or interaction.user.guild_permissions.administrator):
-            embed = EmbedBuilder.error("Missing Permissions", "You do not have permission to close this ticket.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Close the ticket
-        try:
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "UPDATE tickets SET closed = $1, closed_at = $2 WHERE ticket_id = $3",
-                    True, datetime.utcnow(), ticket['ticket_id']
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    "UPDATE tickets SET closed = ?, closed_at = ? WHERE ticket_id = ?",
-                    (True, datetime.utcnow(), ticket['ticket_id'])
-                )
-                await self.bot.db.connection.commit()
-        except Exception as e:
-            embed = EmbedBuilder.error("Database Error", f"Failed to update the ticket in the database.\n\`\`\`{e}\`\`\`")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        embed = EmbedBuilder.success("Ticket Closed", "The ticket has been closed.")
-        await interaction.response.send_message(embed=embed)
-        await interaction.channel.edit(archived=True, locked=True)
-
-    @app_commands.command(name="ticket_join", description="Request to join a ticket")
-    @app_commands.describe(ticket_id="The ID of the ticket you want to join")
-    async def ticket_join(self, interaction: discord.Interaction, ticket_id: int):
-        # Get the ticket
-        ticket = await self.get_ticket_by_id(ticket_id)
-        if not ticket:
-            embed = EmbedBuilder.error("Ticket Not Found", "The specified ticket does not exist.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
+    @app_commands.command(name="join", description="Request to join a ticket")
+    @app_commands.describe(ticket_id="ID of the ticket to join (optional, not needed if in ticket channel)")
+    async def ticket_join(self, interaction: discord.Interaction, ticket_id: str = None):
+        # If no ticket ID provided, check if we're in a ticket channel
+        if not ticket_id:
+            if not interaction.channel.topic or "Support ticket:" not in interaction.channel.topic:
+                embed = EmbedBuilder.error("Not a Ticket", "This command can only be used in ticket channels or with a ticket ID")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
         
-        # Check if ticket is closed
-        if ticket['closed']:
-            embed = EmbedBuilder.error("Ticket Closed", "This ticket is closed.")
+            # Extract ticket ID from channel topic
+            ticket_id = interaction.channel.topic.split("|")[0].replace("Support ticket:", "").strip()
+    
+        # Get ticket information
+        ticket = await self.bot.db.connection.fetchrow(
+            "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
+        )
+    
+        if not ticket:
+            embed = EmbedBuilder.error("Not Found", f"Ticket with ID {ticket_id} not found")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-
+    
         # Check if user has already made too many requests for this ticket
         if self.bot.db.is_postgresql:
             request_count = await self.bot.db.connection.fetchval(
@@ -600,27 +801,35 @@ class Ticket(commands.Cog):
             embed = EmbedBuilder.error("Request Limit Reached", "You have already made 5 join requests for this ticket. Please wait for a response.")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        
+    
         # Get ticket channel
         channel_id = ticket['channel_id']
         if not channel_id:
             embed = EmbedBuilder.error("Channel Not Found", "The ticket channel no longer exists")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        
+    
         channel = interaction.guild.get_channel(int(channel_id))
         if not channel:
             embed = EmbedBuilder.error("Channel Not Found", "The ticket channel no longer exists")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        
+    
         # Check if user already has access
         permissions = channel.permissions_for(interaction.user)
         if permissions.send_messages:
             embed = EmbedBuilder.warning("Already Joined", "You already have access to this ticket")
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
-        
+    
+        # Respond to user first to avoid timeout
+        response_embed = EmbedBuilder.success(
+            "Request Sent",
+            f"Your request to join ticket {ticket_id} has been sent. You'll be notified if it's accepted.\n"
+            f"Requests made: {request_count + 1}/5"
+        )
+        await interaction.response.send_message(embed=response_embed, ephemeral=True)
+    
         # Create join request embed
         embed = discord.Embed(
             title="🎫 Ticket Join Request",
@@ -631,23 +840,21 @@ class Ticket(commands.Cog):
         embed.add_field(name="Requested", value=datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC'), inline=True)
         embed.set_thumbnail(url=interaction.user.display_avatar.url)
         embed.set_footer(text="Railway Bot")
-        
+    
         view = TicketJoinRequestView(self.bot, interaction.user, channel)
-        
+    
         # Send request to ticket channel
         await channel.send(embed=embed, view=view)
-        
-        # Log the request to prevent spam - use UPSERT to avoid duplicate key errors
+    
+        # Log the request to prevent spam - use UPSERT to handle duplicates
         request_data = {
             'ticket_id': ticket_id,
             'requested_at': datetime.utcnow().isoformat(),
-            'channel_id': str(channel.id),
-            'request_count': request_count + 1
+            'channel_id': str(channel.id)
         }
 
         try:
             if self.bot.db.is_postgresql:
-                # Use ON CONFLICT DO UPDATE for PostgreSQL
                 await self.bot.db.connection.execute(
                     """INSERT INTO user_data (user_id, guild_id, data_type, data_content)
                        VALUES ($1, $2, $3, $4)
@@ -656,7 +863,6 @@ class Ticket(commands.Cog):
                     str(interaction.user.id), str(interaction.guild.id), 'ticket_join_request', json.dumps(request_data)
                 )
             else:
-                # Use INSERT OR REPLACE for SQLite
                 await self.bot.db.connection.execute(
                     """INSERT OR REPLACE INTO user_data (user_id, guild_id, data_type, data_content)
                        VALUES (?, ?, ?, ?)""",
@@ -664,192 +870,8 @@ class Ticket(commands.Cog):
                 )
                 await self.bot.db.connection.commit()
         except Exception as e:
-            # If there's still an error, log it but don't fail the request
-            print(f"Warning: Could not log join request: {e}")
-        
-        # Notify user
-        response_embed = EmbedBuilder.success(
-            "Request Sent",
-            f"Your request to join ticket {ticket_id} has been sent. You'll be notified if it's accepted.\n"
-            f"Requests made for this ticket: {request_count + 1}/5"
-        )
-        await interaction.response.send_message(embed=response_embed, ephemeral=True)
-
-    @app_commands.command(name="config", description="Configures the ticket system")
-    @app_commands.describe(support_role="The role that can manage tickets")
-    @app_commands.describe(log_channel="The channel to log ticket activity")
-    async def config(self, interaction: discord.Interaction, support_role: discord.Role, log_channel: discord.TextChannel = None):
-        # Check if the user has administrator permissions
-        if not interaction.user.guild_permissions.administrator:
-            embed = EmbedBuilder.error("Missing Permissions", "You do not have permission to configure the ticket system.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Configure the ticket system
-        try:
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    """INSERT INTO guild_config (guild_id, support_role_id, log_channel_id)
-                       VALUES ($1, $2, $3)
-                       ON CONFLICT (guild_id)
-                       DO UPDATE SET support_role_id = $2, log_channel_id = $3""",
-                    str(interaction.guild.id), str(support_role.id), str(log_channel.id) if log_channel else None
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    """INSERT OR REPLACE INTO guild_config (guild_id, support_role_id, log_channel_id)
-                       VALUES (?, ?, ?)""",
-                    (str(interaction.guild.id), str(support_role.id), str(log_channel.id) if log_channel else None)
-                )
-                await self.bot.db.connection.commit()
-        except Exception as e:
-            embed = EmbedBuilder.error("Database Error", f"Failed to configure the ticket system.\n\`\`\`{e}\`\`\`")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        embed = EmbedBuilder.success("Ticket System Configured", f"The ticket system has been configured.\nSupport Role: {support_role.mention}\nLog Channel: {log_channel.mention if log_channel else 'None'}")
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="category_add", description="Adds a ticket category")
-    @app_commands.describe(name="The name of the category")
-    @app_commands.describe(category="The category channel")
-    async def category_add(self, interaction: discord.Interaction, name: str, category: discord.CategoryChannel):
-        # Check if the user has administrator permissions
-        if not interaction.user.guild_permissions.administrator:
-            embed = EmbedBuilder.error("Missing Permissions", "You do not have permission to add ticket categories.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Add the ticket category
-        try:
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "INSERT INTO ticket_categories (category_id, guild_id, category_name) VALUES ($1, $2, $3)",
-                    str(category.id), str(interaction.guild.id), name
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    "INSERT INTO ticket_categories (category_id, guild_id, category_name) VALUES (?, ?, ?)",
-                    (str(category.id), str(interaction.guild.id), name)
-                )
-                await self.bot.db.connection.commit()
-        except Exception as e:
-            embed = EmbedBuilder.error("Database Error", f"Failed to add the ticket category.\n\`\`\`{e}\`\`\`")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        embed = EmbedBuilder.success("Ticket Category Added", f"The ticket category {name} has been added.")
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(name="category_remove", description="Removes a ticket category")
-    @app_commands.describe(category="The category channel")
-    async def category_remove(self, interaction: discord.Interaction, category: discord.CategoryChannel):
-        # Check if the user has administrator permissions
-        if not interaction.user.guild_permissions.administrator:
-            embed = EmbedBuilder.error("Missing Permissions", "You do not have permission to remove ticket categories.")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        # Remove the ticket category
-        try:
-            if self.bot.db.is_postgresql:
-                await self.bot.db.connection.execute(
-                    "DELETE FROM ticket_categories WHERE category_id = $1 AND guild_id = $2",
-                    str(category.id), str(interaction.guild.id)
-                )
-            else:
-                await self.bot.db.connection.execute(
-                    "DELETE FROM ticket_categories WHERE category_id = ? AND guild_id = ?",
-                    (str(category.id), str(interaction.guild.id))
-                )
-                await self.bot.db.connection.commit()
-        except Exception as e:
-            embed = EmbedBuilder.error("Database Error", f"Failed to remove the ticket category.\n\`\`\`{e}\`\`\`")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-
-        embed = EmbedBuilder.success("Ticket Category Removed", f"The ticket category {category.name} has been removed.")
-        await interaction.response.send_message(embed=embed)
-
-    @tasks.loop(minutes=60)
-    async def check_inactive_tickets(self):
-        log.info("Checking for inactive tickets...")
-        # Define the inactivity threshold (e.g., 7 days)
-        inactivity_threshold = 7  # days
-
-        # Get all open tickets
-        if self.bot.db.is_postgresql:
-            open_tickets = await self.bot.db.connection.fetch(
-                "SELECT * FROM tickets WHERE closed = $1",
-                False
-            )
-        else:
-            cursor = await self.bot.db.connection.execute(
-                "SELECT * FROM tickets WHERE closed = ?",
-                (False,)
-            )
-            open_tickets = await cursor.fetchall()
-
-        for ticket in open_tickets:
-            # Get the channel
-            guild = self.bot.get_guild(int(ticket['guild_id']))
-            if not guild:
-                log.warning(f"Guild not found for ticket {ticket['ticket_id']}")
-                continue
-
-            channel = guild.get_channel(int(ticket['channel_id']))
-            if not channel:
-                log.warning(f"Channel not found for ticket {ticket['ticket_id']}")
-                continue
-
-            # Get the last message in the channel
-            try:
-                if isinstance(channel, discord.Thread):
-                    last_message = None
-                    async for message in channel.history(limit=1):
-                        last_message = message
-                    if last_message:
-                        time_difference = datetime.utcnow() - last_message.created_at
-                    else:
-                        # If there are no messages, consider it inactive since creation
-                        time_difference = datetime.utcnow() - ticket['created_at']
-                else:
-                    log.warning(f"Channel is not a thread for ticket {ticket['ticket_id']}")
-                    continue
-            except Exception as e:
-                log.error(f"Error getting last message for ticket {ticket['ticket_id']}: {e}")
-                continue
-
-            # Check if the ticket is inactive
-            if time_difference.days >= inactivity_threshold:
-                log.info(f"Closing inactive ticket {ticket['ticket_id']}")
-                try:
-                    # Close the ticket in the database
-                    if self.bot.db.is_postgresql:
-                        await self.bot.db.connection.execute(
-                            "UPDATE tickets SET closed = $1, closed_at = $2 WHERE ticket_id = $3",
-                            True, datetime.utcnow(), ticket['ticket_id']
-                        )
-                    else:
-                        await self.bot.db.connection.execute(
-                            "UPDATE tickets SET closed = ?, closed_at = ? WHERE ticket_id = ?",
-                            (True, datetime.utcnow(), ticket['ticket_id'])
-                        )
-                        await self.bot.db.connection.commit()
-
-                    # Send a message to the channel
-                    embed = EmbedBuilder.warning("Inactive Ticket", "This ticket has been closed due to inactivity.")
-                    await channel.send(embed=embed)
-
-                    # Archive the channel
-                    await channel.edit(archived=True, locked=True)
-
-                except Exception as e:
-                    log.error(f"Error closing ticket {ticket['ticket_id']}: {e}")
-
-    @check_inactive_tickets.before_loop
-    async def before_check_inactive_tickets(self):
-        await self.bot.wait_until_ready()
+            print(f"Error logging join request: {e}")
+            # Continue anyway since the request was already sent and user was notified
 
 async def setup(bot):
-    await bot.add_cog(Ticket(bot))
+    await bot.add_cog(Tickets(bot))
