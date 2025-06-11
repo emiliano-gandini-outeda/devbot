@@ -3,14 +3,57 @@ from discord.ext import commands
 from discord import app_commands
 from utils.helpers import EmbedBuilder
 import asyncio
+from collections import deque
+
+class DatabaseQueue:
+    """Queue system for database operations to prevent concurrent access"""
+    
+    def __init__(self):
+        self._queue = deque()
+        self._processing = False
+        self._lock = asyncio.Lock()
+    
+    async def execute(self, operation):
+        """Add operation to queue and wait for result"""
+        future = asyncio.Future()
+        await self._queue_operation(operation, future)
+        return await future
+    
+    async def _queue_operation(self, operation, future):
+        """Add operation to queue"""
+        self._queue.append((operation, future))
+        await self._process_queue()
+    
+    async def _process_queue(self):
+        """Process queued operations sequentially"""
+        async with self._lock:
+            if self._processing:
+                return
+            
+            self._processing = True
+            
+            try:
+                while self._queue:
+                    operation, future = self._queue.popleft()
+                    try:
+                        result = await operation()
+                        future.set_result(result)
+                    except Exception as e:
+                        future.set_exception(e)
+                    
+                    # Small delay between operations
+                    await asyncio.sleep(0.01)
+            finally:
+                self._processing = False
 
 class Notifications(commands.Cog):
     """Keyword notification system"""
     
     def __init__(self, bot):
         self.bot = bot
-        self._notification_lock = asyncio.Lock()
+        self._db_queue = DatabaseQueue()
         self._processing_messages = set()
+        self._notification_semaphore = asyncio.Semaphore(5)  # Limit concurrent notifications
     
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -26,21 +69,33 @@ class Notifications(commands.Cog):
         self._processing_messages.add(message_key)
         
         try:
-            async with self._notification_lock:
+            # Process notifications asynchronously without blocking
+            asyncio.create_task(self._process_keyword_notifications_async(message, message_key))
+        except Exception as e:
+            print(f"Error starting keyword notification processing: {e}")
+            self._processing_messages.discard(message_key)
+    
+    async def _process_keyword_notifications_async(self, message, message_key):
+        """Process keyword notifications asynchronously"""
+        try:
+            async with self._notification_semaphore:
                 await self._process_keyword_notifications(message)
         except Exception as e:
-            print(f"Error in keyword listener: {e}")
+            print(f"Error processing keyword notifications: {e}")
         finally:
             self._processing_messages.discard(message_key)
     
     async def _process_keyword_notifications(self, message):
         """Process keyword notifications for a message"""
         try:
-            # Get keywords for this guild with a single query
-            keywords = await self.bot.db.connection.fetch(
-                "SELECT * FROM keywords WHERE guild_id = $1",
-                str(message.guild.id)
-            )
+            # Get keywords using the database queue
+            async def get_keywords():
+                return await self.bot.db.connection.fetch(
+                    "SELECT * FROM keywords WHERE guild_id = $1",
+                    str(message.guild.id)
+                )
+            
+            keywords = await self._db_queue.execute(get_keywords)
             
             if not keywords:
                 return
@@ -62,8 +117,8 @@ class Notifications(commands.Cog):
                     if user:
                         notifications_to_send.append((user, keyword))
             
-            # Send all notifications sequentially to avoid conflicts
-            for user, keyword in notifications_to_send:
+            # Send all notifications with rate limiting
+            for i, (user, keyword) in enumerate(notifications_to_send):
                 try:
                     embed = discord.Embed(
                         title="🔔 Keyword Mentioned",
@@ -78,19 +133,24 @@ class Notifications(commands.Cog):
                     
                     await user.send(embed=embed)
                     
-                    # Small delay between notifications to prevent rate limiting
-                    await asyncio.sleep(0.1)
+                    # Progressive delay to prevent rate limiting
+                    if i < len(notifications_to_send) - 1:
+                        await asyncio.sleep(0.2 + (i * 0.1))
                     
                 except discord.Forbidden:
                     # User has DMs disabled, skip
                     pass
                 except discord.HTTPException as e:
-                    print(f"HTTP error sending keyword notification to {user.display_name}: {e}")
+                    if e.status == 429:  # Rate limited
+                        print(f"Rate limited sending notification to {user.display_name}, waiting...")
+                        await asyncio.sleep(5)
+                    else:
+                        print(f"HTTP error sending keyword notification to {user.display_name}: {e}")
                 except Exception as e:
                     print(f"Error sending keyword notification to {user.display_name}: {e}")
         
         except Exception as e:
-            print(f"Error processing keyword notifications: {e}")
+            print(f"Error in keyword notification processing: {e}")
     
     @app_commands.command(name="add-keyword", description="Add a keyword to get notified when it's mentioned")
     @app_commands.describe(keyword="Keyword to watch for")
@@ -110,37 +170,47 @@ class Notifications(commands.Cog):
             return
         
         try:
-            async with self._notification_lock:
-                # Check if keyword already exists for this user
+            # Check if keyword already exists and get count using database queue
+            async def check_keyword_and_count():
                 existing = await self.bot.db.connection.fetchrow(
                     "SELECT * FROM keywords WHERE guild_id = $1 AND user_id = $2 AND keyword = $3",
                     str(interaction.guild.id), str(interaction.user.id), keyword
                 )
                 
                 if existing:
-                    embed = EmbedBuilder.warning("Already Exists", f"You're already watching for the keyword **{keyword}**")
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-                    return
+                    return "exists", 0
                 
-                # Check user's keyword limit (max 20 per server)
-                user_keywords = await self.bot.db.connection.fetchval(
+                count = await self.bot.db.connection.fetchval(
                     "SELECT COUNT(*) FROM keywords WHERE guild_id = $1 AND user_id = $2",
                     str(interaction.guild.id), str(interaction.user.id)
                 )
                 
-                if user_keywords >= 20:
-                    embed = EmbedBuilder.error(
-                        "Keyword Limit Reached", 
-                        "You can only watch up to 20 keywords per server. Remove some keywords first."
-                    )
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-                    return
-                
-                # Add keyword
+                return "new", count
+            
+            status, user_keywords = await self._db_queue.execute(check_keyword_and_count)
+            
+            if status == "exists":
+                embed = EmbedBuilder.warning("Already Exists", f"You're already watching for the keyword **{keyword}**")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+            
+            if user_keywords >= 20:
+                embed = EmbedBuilder.error(
+                    "Keyword Limit Reached", 
+                    "You can only watch up to 20 keywords per server. Remove some keywords first."
+                )
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
+            
+            # Add keyword using database queue
+            async def add_keyword_to_db():
                 await self.bot.db.connection.execute(
                     "INSERT INTO keywords (guild_id, user_id, keyword) VALUES ($1, $2, $3)",
                     str(interaction.guild.id), str(interaction.user.id), keyword
                 )
+                return True
+            
+            await self._db_queue.execute(add_keyword_to_db)
             
             embed = EmbedBuilder.success(
                 "Keyword Added",
@@ -161,11 +231,14 @@ class Notifications(commands.Cog):
         keyword = keyword.lower().strip()
         
         try:
-            async with self._notification_lock:
+            async def remove_keyword_from_db():
                 result = await self.bot.db.connection.execute(
                     "DELETE FROM keywords WHERE guild_id = $1 AND user_id = $2 AND keyword = $3",
                     str(interaction.guild.id), str(interaction.user.id), keyword
                 )
+                return result
+            
+            result = await self._db_queue.execute(remove_keyword_from_db)
             
             if "DELETE 0" in str(result):
                 embed = EmbedBuilder.error("Not Found", f"You're not watching for the keyword **{keyword}**")
@@ -187,11 +260,13 @@ class Notifications(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         
         try:
-            async with self._notification_lock:
-                keywords = await self.bot.db.connection.fetch(
+            async def get_user_keywords():
+                return await self.bot.db.connection.fetch(
                     "SELECT keyword, created_at FROM keywords WHERE guild_id = $1 AND user_id = $2 ORDER BY keyword",
                     str(interaction.guild.id), str(interaction.user.id)
                 )
+            
+            keywords = await self._db_queue.execute(get_user_keywords)
             
             if not keywords:
                 embed = EmbedBuilder.info("No Keywords", "You're not watching any keywords in this server")
@@ -233,7 +308,7 @@ class Notifications(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         
         try:
-            async with self._notification_lock:
+            async def clear_user_keywords():
                 # Get count first
                 count = await self.bot.db.connection.fetchval(
                     "SELECT COUNT(*) FROM keywords WHERE guild_id = $1 AND user_id = $2",
@@ -241,15 +316,22 @@ class Notifications(commands.Cog):
                 )
                 
                 if count == 0:
-                    embed = EmbedBuilder.info("No Keywords", "You don't have any keywords to clear")
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-                    return
+                    return 0
                 
                 # Delete all keywords
                 await self.bot.db.connection.execute(
                     "DELETE FROM keywords WHERE guild_id = $1 AND user_id = $2",
                     str(interaction.guild.id), str(interaction.user.id)
                 )
+                
+                return count
+            
+            count = await self._db_queue.execute(clear_user_keywords)
+            
+            if count == 0:
+                embed = EmbedBuilder.info("No Keywords", "You don't have any keywords to clear")
+                await interaction.followup.send(embed=embed, ephemeral=True)
+                return
             
             embed = EmbedBuilder.success(
                 "Keywords Cleared",
