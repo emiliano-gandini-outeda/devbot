@@ -101,7 +101,7 @@ class Intelligence(commands.Cog):
             embed.add_field(name="Question", value=question, inline=False)
             embed.add_field(name="Answer", value=answer, inline=False)
             
-            embed.set_footer(text="Powered by Railway AI")
+            embed.set_footer(text="Powered by devBot")
             
             await interaction.followup.send(embed=embed)
             
@@ -193,7 +193,7 @@ class Intelligence(commands.Cog):
         question = question.lower()
         
         if "who are you" in question:
-            return "I am Railway Bot, an AI assistant designed to help with various tasks in your Discord server."
+            return "I am devBot, an AI assistant designed to help with various tasks in your Discord server."
         
         if "what can you do" in question:
             return "I can help with various tasks like summarizing conversations, translating text, answering questions, and analyzing message tone. Use the /help command to see all available commands."

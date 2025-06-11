@@ -17,7 +17,7 @@ class EmbedBuilder:
             description=description,
             color=0x57F287
         )
-        embed.set_footer(text="Railway Bot")
+        embed.set_footer(text="devBot")
         return embed
     
     @staticmethod
@@ -27,7 +27,7 @@ class EmbedBuilder:
             description=description,
             color=0xED4245
         )
-        embed.set_footer(text="Railway Bot")
+        embed.set_footer(text="devBot")
         return embed
     
     @staticmethod
@@ -37,7 +37,7 @@ class EmbedBuilder:
             description=description,
             color=0xFEE75C
         )
-        embed.set_footer(text="Railway Bot")
+        embed.set_footer(text="devBot")
         return embed
     
     @staticmethod
@@ -47,7 +47,7 @@ class EmbedBuilder:
             description=description,
             color=0x5865F2
         )
-        embed.set_footer(text="Railway Bot")
+        embed.set_footer(text="devBot")
         return embed
 
 class TimeParser:
