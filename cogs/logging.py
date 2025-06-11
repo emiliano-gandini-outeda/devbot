@@ -65,7 +65,7 @@ class Logging(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to configure logging: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="logging-export", description="Export server logging data (Admin only)")
+    @app_commands.command(name="export-data", description="Export server data (Admin only)")
     @app_commands.describe(data_type="Type of data to export (logs, tickets, reminders, all)")
     async def export_data(self, interaction: discord.Interaction, data_type: str = "all"):
         if not self.bot.admin_manager.is_admin(interaction.user):
@@ -75,7 +75,7 @@ class Logging(commands.Cog):
         
         await interaction.response.defer()
         
-        valid_types = ["logs", "tickets", "reminders", "all"]
+        valid_types = ["tickets", "reminders", "all"]
         if data_type not in valid_types:
             embed = EmbedBuilder.error(
                 "Invalid Data Type",
@@ -87,10 +87,6 @@ class Logging(commands.Cog):
         try:
             export_data = {}
             guild_id = str(interaction.guild.id)
-            
-            if data_type in ["logs", "all"]:
-                # Export logs (if any logging system is implemented)
-                export_data["logs"] = {"message": "Logs export not yet implemented"}
             
             if data_type in ["tickets", "all"]:
                 # Export tickets

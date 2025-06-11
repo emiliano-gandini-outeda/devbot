@@ -503,7 +503,7 @@ class HelpDropdown(discord.ui.Select):
         if self.is_admin:
             admin_commands = [
                 "`/logging-setup <log_channel> [events]` - Configure server logging system",
-                "`/logging-export [data_type]` - Export server data (logs/tickets/reminders/all)",
+                "`/export-data [data_type]` - Export server data (tickets/reminders/all)",
                 "`/delete-data <data_type> <confirm>` - Delete server data (requires CONFIRM)",
                 "`/setup-logs <log_channel>` - Setup basic logging channel"
             ]
