@@ -68,12 +68,6 @@ class HelpDropdown(discord.ui.Select):
                 description="Meeting scheduling and management",
                 emoji="📅",
                 value="meetings"
-            ),
-            discord.SelectOption(
-                label="⚙️ Setup Commands",
-                description="Server configuration and setup",
-                emoji="⚙️",
-                value="setup"
             )
         ]
         
@@ -96,6 +90,13 @@ class HelpDropdown(discord.ui.Select):
                     description="Server logging configuration",
                     emoji="📊",
                     value="logging"
+                )
+                ,
+                discord.SelectOption(
+                    label="⚙️ Setup Commands",
+                    description="Server configuration and setup",
+                    emoji="⚙️",
+                    value="setup"
                 )
             ])
         
@@ -302,9 +303,9 @@ class HelpDropdown(discord.ui.Select):
         )
         
         google_commands = [
-            "`/google-connect` - Connect your Google account for calendar access",
-            "`/calendar-events [count]` - Show your upcoming Google Calendar events",
-            "`/create-event <title> <date> <time> [duration]` - Create new calendar event"
+            "`/google-connect` - Connect your Google account for calendar access (Coming Soon)",
+            "`/calendar-events [count]` - Show your upcoming Google Calendar events (Coming Soon)",
+            "`/create-event <title> <date> <time> [duration]` - Create new calendar event (Coming Soon)"
         ]
         
         github_commands = [
@@ -325,10 +326,10 @@ class HelpDropdown(discord.ui.Select):
             "`/board-cards <board_id>` - View cards in a Trello board (Coming Soon)"
         ]
         
-        embed.add_field(name="📅 Google Calendar", value="\n".join(google_commands), inline=False)
+        embed.add_field(name="📅 Google Calendar (WIP)", value="\n".join(google_commands), inline=False)
         embed.add_field(name="🐙 GitHub", value="\n".join(github_commands), inline=False)
-        embed.add_field(name="📝 Notion", value="\n".join(notion_commands), inline=False)
-        embed.add_field(name="📋 Trello", value="\n".join(trello_commands), inline=False)
+        embed.add_field(name="📝 Notion (WIP)", value="\n".join(notion_commands), inline=False)
+        embed.add_field(name="📋 Trello (WIP)", value="\n".join(trello_commands), inline=False)
         
         if self.is_admin:
             embed.add_field(
@@ -341,16 +342,16 @@ class HelpDropdown(discord.ui.Select):
     
     def get_ai_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="🤖 AI Features",
+            title="🤖 AI Features (WIP)",
             description="AI-powered productivity and analysis tools",
             color=0x5865F2
         )
         
         commands = [
-            "`/summarize [count] [user]` - Summarize recent messages (max 50 messages)",
-            "`/translate <text> <target_language>` - Translate text to another language",
-            "`/ask-ai <question>` - Ask the AI assistant a question",
-            "`/analyze-tone [count]` - Analyze tone/sentiment of recent messages"
+            "`/summarize [count] [user]` - Summarize recent messages (max 50 messages) (Coming Soon)",
+            "`/translate <text> <target_language>` - Translate text to another language (Coming Soon)",
+            "`/ask-ai <question>` - Ask the AI assistant a question (Coming Soon)",
+            "`/analyze-tone [count]` - Analyze tone/sentiment of recent messages (Coming Soon)"
         ]
         
         embed.add_field(
@@ -621,7 +622,7 @@ class Help(commands.Cog):
             title="🤖 Bot Help Menu",
             description="Welcome to the devBot help system! Use the dropdown menu below to explore different command categories.\n\n"
                        f"**Your Access Level:** {'Administrator' if is_admin else 'User'}\n"
-                       f"**Total Categories:** {14 if is_admin else 11}",
+                       f"**Total Categories:** {14 if is_admin else 10}",
             color=0x5865F2
         )
         
