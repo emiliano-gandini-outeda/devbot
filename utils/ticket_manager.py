@@ -1,6 +1,6 @@
 """
-FIXED Ticket Manager - Uses database type conversion
-All timestamp issues resolved
+FIXED Ticket Manager - Uses correct database methods
+All database calls now use the proper DatabaseManager interface
 """
 
 import discord
@@ -122,7 +122,7 @@ class TicketJoinRequestView(discord.ui.View):
             pass
 
 class TicketManager:
-    """FIXED Ticket Manager with proper timestamp handling"""
+    """FIXED Ticket Manager with correct database method calls"""
     
     def __init__(self, bot):
         self.bot = bot
@@ -131,7 +131,7 @@ class TicketManager:
     async def load_ticket_configs(self) -> bool:
         """Load all ticket configurations from database"""
         try:
-            rows = await self.bot.db.fetch(
+            rows = await self.bot.db.connection.fetch(
                 "SELECT user_id, data_content FROM user_data WHERE data_type = $1",
                 'ticket_config'
             )
@@ -159,7 +159,7 @@ class TicketManager:
     async def get_ticket_config(self, guild_id: str) -> Optional[Dict[str, Any]]:
         """Get ticket configuration for a guild"""
         try:
-            row = await self.bot.db.fetchrow(
+            row = await self.bot.db.connection.fetchrow(
                 "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
                 guild_id, 'ticket_config'
             )
@@ -179,7 +179,7 @@ class TicketManager:
             config['updated_at'] = self.current_timestamp()
             current_time = self.current_timestamp()
             
-            await self.bot.db.execute(
+            await self.bot.db.connection.execute(
                 """INSERT INTO user_data (user_id, guild_id, data_type, data_content, created_at, updated_at)
                    VALUES ($1, $1, $2, $3, $4, $4)
                    ON CONFLICT (user_id, guild_id, data_type) DO UPDATE SET
@@ -213,7 +213,7 @@ class TicketManager:
             # FIXED: Database will automatically convert Unix timestamp to datetime
             logger.info(f"🔧 Creating ticket with timestamp: {current_time}")
             
-            await self.bot.db.execute(
+            await self.bot.db.connection.execute(
                 """INSERT INTO tickets (ticket_id, guild_id, user_id, channel_id, title, description, 
                    status, priority, created_at, updated_at)
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
@@ -280,10 +280,10 @@ class TicketManager:
     async def get_ticket(self, ticket_id: str) -> Optional[Dict[str, Any]]:
         """Get ticket by ID"""
         try:
-            row = await self.bot.db.fetchrow(
+            row = await self.bot.db.connection.fetchrow(
                 "SELECT * FROM tickets WHERE ticket_id = $1", ticket_id
             )
-            return row
+            return dict(row) if row else None
         except Exception as e:
             logger.error(f"Error getting ticket {ticket_id}: {e}")
             return None
@@ -292,17 +292,17 @@ class TicketManager:
         """Get tickets for a specific user"""
         try:
             if status:
-                rows = await self.bot.db.fetch(
+                rows = await self.bot.db.connection.fetch(
                     "SELECT * FROM tickets WHERE guild_id = $1 AND user_id = $2 AND status = $3 ORDER BY created_at DESC",
                     guild_id, user_id, status
                 )
             else:
-                rows = await self.bot.db.fetch(
+                rows = await self.bot.db.connection.fetch(
                     "SELECT * FROM tickets WHERE guild_id = $1 AND user_id = $2 ORDER BY created_at DESC",
                     guild_id, user_id
                 )
             
-            return rows
+            return [dict(row) for row in rows]
         except Exception as e:
             logger.error(f"Error getting user tickets: {e}")
             return []
@@ -311,17 +311,17 @@ class TicketManager:
         """Get all tickets for a guild"""
         try:
             if status:
-                rows = await self.bot.db.fetch(
+                rows = await self.bot.db.connection.fetch(
                     "SELECT * FROM tickets WHERE guild_id = $1 AND status = $2 ORDER BY created_at DESC LIMIT $3",
                     guild_id, status, limit
                 )
             else:
-                rows = await self.bot.db.fetch(
+                rows = await self.bot.db.connection.fetch(
                     "SELECT * FROM tickets WHERE guild_id = $1 ORDER BY created_at DESC LIMIT $2",
                     guild_id, limit
                 )
             
-            return rows
+            return [dict(row) for row in rows]
         except Exception as e:
             logger.error(f"Error getting guild tickets: {e}")
             return []
@@ -330,7 +330,7 @@ class TicketManager:
         """Assign a user to a ticket"""
         try:
             current_time = self.current_timestamp()
-            await self.bot.db.execute(
+            await self.bot.db.connection.execute(
                 "UPDATE tickets SET assignee_id = $1, updated_at = $2 WHERE ticket_id = $3",
                 user_id, current_time, ticket_id
             )
@@ -344,7 +344,7 @@ class TicketManager:
         """Update ticket status"""
         try:
             current_time = self.current_timestamp()
-            await self.bot.db.execute(
+            await self.bot.db.connection.execute(
                 "UPDATE tickets SET status = $1, updated_at = $2 WHERE ticket_id = $3",
                 status, current_time, ticket_id
             )
