@@ -262,38 +262,7 @@ class Reminders(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to fetch reminders: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="delete-reminder", description="Delete a reminder by its number")
-    @app_commands.describe(reminder_number="Number of the reminder to delete (from /list-reminders)")
-    async def delete_reminder(self, interaction: discord.Interaction, reminder_number: int):
-        try:
-            reminder = await self.bot.db.connection.fetchrow(
-                "SELECT * FROM reminders WHERE user_id = $1 ORDER BY remind_at ASC LIMIT 1 OFFSET $2",
-                str(interaction.user.id), reminder_number - 1
-            )
-            
-            if not reminder:
-                embed = EmbedBuilder.error("Not Found", f"Reminder #{reminder_number} not found")
-                await interaction.response.send_message(embed=embed, ephemeral=True)
-                return
-            
-            reminder_id = reminder['id']
-            reminder_message = reminder['message']
-            
-            await self.bot.db.connection.execute(
-                "DELETE FROM reminders WHERE id = $1", reminder_id
-            )
-            
-            embed = EmbedBuilder.success(
-                "Reminder Deleted",
-                f"Deleted reminder: **{reminder_message}**"
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            
-        except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to delete reminder: {str(e)}")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-
-    @app_commands.command(name="delete-reminder-by-id", description="Delete a reminder by its ID")
+    @app_commands.command(name="delete-reminder", description="Delete a reminder by its ID")
     @app_commands.describe(reminder_id="ID of the reminder to delete")
     async def delete_reminder_by_id(self, interaction: discord.Interaction, reminder_id: int):
         try:

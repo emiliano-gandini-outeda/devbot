@@ -239,7 +239,7 @@ class HelpDropdown(discord.ui.Select):
         commands = [
             "`/remind <time> <message> [send_dm]` - Set personal reminder with DM option",
             "`/list-reminders` - List all your active reminders with details", 
-            "`/delete-reminder <number>` - Delete a reminder by its list number"
+            "`/delete-reminder <number>` - Delete a reminder by its ID"
         ]
         
         embed.add_field(
