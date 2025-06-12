@@ -223,28 +223,40 @@ class Meetings(commands.Cog):
     def cog_unload(self):
         self.check_meeting_notifications.cancel()  # Stop the task when cog unloads
     
-    @tasks.loop(minutes=1)  # Check every minute
+    @tasks.loop(seconds=30)  # Check every 30 seconds
     async def check_meeting_notifications(self):
         """Background task to check for meetings starting soon and send notifications"""
         try:
-            # Get meetings starting in the next 5 minutes that haven't been notified
+            # Get meetings starting in the next 30 seconds that haven't been notified
             now = datetime.utcnow()
-            notification_time = now + timedelta(minutes=5)
+            notification_time = now + timedelta(seconds=30)
         
-            # Use the database manager's connection lock to prevent conflicts
-            async with self.bot.db._connection_lock:
-                meetings = await self.bot.db.connection.fetch(
-                    """SELECT * FROM meetings 
+            # Use execute_with_retry to avoid connection conflicts
+            query = """SELECT * FROM meetings 
                        WHERE scheduled_time <= $1 AND scheduled_time > $2 
-                       AND status = 'scheduled'""",
-                    notification_time, now
-                )
+                       AND status = 'scheduled'"""
         
-            for meeting in meetings:
+            # Get meetings using a separate query execution
+            meetings = []
+            try:
+                async with asyncio.timeout(10):  # 10 second timeout
+                    meetings = await self.bot.db.connection.fetch(query, notification_time, now)
+            except asyncio.TimeoutError:
+                print("Meeting notification query timed out")
+                return
+            except Exception as e:
+                print(f"Database query error in meeting notifications: {e}")
+                return
+        
+        # Process each meeting
+        for meeting in meetings:
+            try:
                 await self.send_meeting_starting_notification(meeting)
-            
-        except Exception as e:
-            print(f"Error in meeting notification task: {e}")
+            except Exception as e:
+                print(f"Error processing meeting {meeting.get('meeting_id', 'unknown')}: {e}")
+                
+    except Exception as e:
+        print(f"Error in meeting notification task: {e}")
     
     @check_meeting_notifications.before_loop
     async def before_check_meeting_notifications(self):
@@ -258,113 +270,121 @@ class Meetings(commands.Cog):
             if not guild:
                 return
         
-            # Get meeting config - use connection lock
-            async with self.bot.db._connection_lock:
+        # Get meeting config with timeout
+        config_row = None
+        try:
+            async with asyncio.timeout(5):
                 config_row = await self.bot.db.connection.fetchrow(
                     "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
                     meeting['guild_id'], 'meeting_config'
                 )
+        except Exception as e:
+            print(f"Error getting meeting config: {e}")
+            return
         
-            if not config_row:
-                return
+        if not config_row:
+            return
         
-            config = json.loads(config_row['data_content'])
-            announcement_channel_id = config.get('announcement_channel_id')
+        config = json.loads(config_row['data_content'])
+        announcement_channel_id = config.get('announcement_channel_id')
         
-            if not announcement_channel_id:
-                return
+        if not announcement_channel_id:
+            return
         
-            announcement_channel = guild.get_channel(int(announcement_channel_id))
-            if not announcement_channel:
-                return
+        announcement_channel = guild.get_channel(int(announcement_channel_id))
+        if not announcement_channel:
+            return
         
-            # Get voice channel
-            voice_channel = guild.get_channel(int(meeting['voice_channel_id']))
+        # Get voice channel
+        voice_channel = guild.get_channel(int(meeting['voice_channel_id']))
         
-            # Create meeting starting embed
-            embed = discord.Embed(
-                title=f"🔔 Meeting Starting: {meeting['title']}",
-                description=f"{meeting['description']}\n\n**The meeting is starting now!**",
-                color=0xFEE75C  # Yellow for starting notification
-            )
+        # Create meeting starting embed
+        embed = discord.Embed(
+            title=f"🔔 Meeting Starting: {meeting['title']}",
+            description=f"{meeting['description']}\n\n**The meeting is starting now!**",
+            color=0xFEE75C  # Yellow for starting notification
+        )
         
-            embed.add_field(name="Meeting ID", value=meeting['meeting_id'], inline=True)
-            if voice_channel:
-                embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
+        embed.add_field(name="Meeting ID", value=meeting['meeting_id'], inline=True)
+        if voice_channel:
+            embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
         
-            # Get organizer
-            organizer = guild.get_member(int(meeting['creator_id']))
-            if organizer:
-                embed.add_field(name="Organizer", value=organizer.mention, inline=True)
+        # Get organizer
+        organizer = guild.get_member(int(meeting['creator_id']))
+        if organizer:
+            embed.add_field(name="Organizer", value=organizer.mention, inline=True)
         
-            embed.add_field(
-                name="Join Now",
-                value=f"Click {voice_channel.mention if voice_channel else 'the voice channel'} to join!",
-                inline=False
-            )
+        embed.add_field(
+            name="Join Now",
+            value=f"Click {voice_channel.mention if voice_channel else 'the voice channel'} to join!",
+            inline=False
+        )
         
-            # Get attendees
-            attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
+        # Get attendees
+        attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
         
-            # Create mention string for attendees
-            mentions = []
-            valid_attendees = []
+        # Create mention string for attendees
+        mentions = []
+        valid_attendees = []
         
-            for user_id in attendees:
-                member = guild.get_member(int(user_id))
-                if member:
-                    mentions.append(member.mention)
-                    valid_attendees.append(member)
+        for user_id in attendees:
+            member = guild.get_member(int(user_id))
+            if member:
+                mentions.append(member.mention)
+                valid_attendees.append(member)
         
-            # Send to announcement channel with pings
-            if mentions:
-                content = f"🔔 **Meeting Starting!** {' '.join(mentions)}"
-                allowed_mentions = discord.AllowedMentions(users=valid_attendees)
-            else:
-                content = "🔔 **Meeting Starting!**"
-                allowed_mentions = discord.AllowedMentions.none()
+        # Send to announcement channel with pings
+        if mentions:
+            content = f"🔔 **Meeting Starting!** {' '.join(mentions)}"
+            allowed_mentions = discord.AllowedMentions(users=valid_attendees)
+        else:
+            content = "🔔 **Meeting Starting!**"
+            allowed_mentions = discord.AllowedMentions.none()
         
-            await announcement_channel.send(
-                content=content,
-                embed=embed,
-                allowed_mentions=allowed_mentions
-            )
+        await announcement_channel.send(
+            content=content,
+            embed=embed,
+            allowed_mentions=allowed_mentions
+        )
         
-            # Send DMs to attendees
-            for member in valid_attendees:
-                try:
-                    dm_embed = discord.Embed(
-                        title=f"🔔 Meeting Starting: {meeting['title']}",
-                        description=f"Your meeting is starting now!\n\n**Server:** {guild.name}",
-                        color=0xFEE75C
+        # Send DMs to attendees
+        for member in valid_attendees:
+            try:
+                dm_embed = discord.Embed(
+                    title=f"🔔 Meeting Starting: {meeting['title']}",
+                    description=f"Your meeting is starting now!\n\n**Server:** {guild.name}",
+                    color=0xFEE75C
+                )
+                
+                if voice_channel:
+                    dm_embed.add_field(
+                        name="Join Voice Channel",
+                        value=f"Join {voice_channel.name} in {guild.name}",
+                        inline=False
                     )
                 
-                    if voice_channel:
-                        dm_embed.add_field(
-                            name="Join Voice Channel",
-                            value=f"Join {voice_channel.name} in {guild.name}",
-                            inline=False
-                        )
+                dm_embed.add_field(name="Meeting ID", value=meeting['meeting_id'], inline=True)
                 
-                    dm_embed.add_field(name="Meeting ID", value=meeting['meeting_id'], inline=True)
+                await member.send(embed=dm_embed)
                 
-                    await member.send(embed=dm_embed)
-                
-                except discord.Forbidden:
+            except discord.Forbidden:
                 # User has DMs disabled
-                    pass
-                except Exception as e:
-                    print(f"Error sending DM to {member}: {e}")
+                pass
+            except Exception as e:
+                print(f"Error sending DM to {member}: {e}")
         
-            # Mark meeting as notified by updating status - use connection lock
-            async with self.bot.db._connection_lock:
+        # Mark meeting as notified by updating status with timeout
+        try:
+            async with asyncio.timeout(5):
                 await self.bot.db.connection.execute(
                     "UPDATE meetings SET status = 'starting' WHERE meeting_id = $1",
                     meeting['meeting_id']
                 )
-        
         except Exception as e:
-            print(f"Error sending meeting starting notification: {e}")
+            print(f"Error updating meeting status: {e}")
+        
+    except Exception as e:
+        print(f"Error sending meeting starting notification: {e}")
     
     @app_commands.command(name="create-meeting", description="Schedule a new meeting")
     @app_commands.describe(
