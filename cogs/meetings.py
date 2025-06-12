@@ -248,15 +248,15 @@ class Meetings(commands.Cog):
                 print(f"Database query error in meeting notifications: {e}")
                 return
         
-        # Process each meeting
-        for meeting in meetings:
-            try:
-                await self.send_meeting_starting_notification(meeting)
-            except Exception as e:
-                print(f"Error processing meeting {meeting.get('meeting_id', 'unknown')}: {e}")
+            # Process each meeting
+            for meeting in meetings:
+                try:
+                    await self.send_meeting_starting_notification(meeting)
+                except Exception as e:
+                    print(f"Error processing meeting {meeting.get('meeting_id', 'unknown')}: {e}")
                 
-    except Exception as e:
-        print(f"Error in meeting notification task: {e}")
+        except Exception as e:
+            print(f"Error in meeting notification task: {e}")
     
     @check_meeting_notifications.before_loop
     async def before_check_meeting_notifications(self):
@@ -367,11 +367,11 @@ class Meetings(commands.Cog):
                 
                     await member.send(embed=dm_embed)
                 
-            except discord.Forbidden:
-                # User has DMs disabled
-                pass
-            except Exception as e:
-                print(f"Error sending DM to {member}: {e}")
+                except discord.Forbidden:
+                    # User has DMs disabled
+                    pass
+                except Exception as e:
+                    print(f"Error sending DM to {member}: {e}")
         
             # Mark meeting as notified by updating status with timeout
             try:
