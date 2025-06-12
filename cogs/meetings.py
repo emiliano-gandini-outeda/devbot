@@ -248,15 +248,15 @@ class Meetings(commands.Cog):
                 print(f"Database query error in meeting notifications: {e}")
                 return
         
-            # Process each meeting
-            for meeting in meetings:
-                try:
-                    await self.send_meeting_starting_notification(meeting)
-                except Exception as e:
-                    print(f"Error processing meeting {meeting.get('meeting_id', 'unknown')}: {e}")
+        # Process each meeting
+        for meeting in meetings:
+            try:
+                await self.send_meeting_starting_notification(meeting)
+            except Exception as e:
+                print(f"Error processing meeting {meeting.get('meeting_id', 'unknown')}: {e}")
                 
-        except Exception as e:
-            print(f"Error in meeting notification task: {e}")
+    except Exception as e:
+        print(f"Error in meeting notification task: {e}")
     
     @check_meeting_notifications.before_loop
     async def before_check_meeting_notifications(self):
@@ -367,17 +367,17 @@ class Meetings(commands.Cog):
                 
                     await member.send(embed=dm_embed)
                 
-                except discord.Forbidden:
-                    # User has DMs disabled
-                    pass
-                except Exception as e:
-                    print(f"Error sending DM to {member}: {e}")
+            except discord.Forbidden:
+                # User has DMs disabled
+                pass
+            except Exception as e:
+                print(f"Error sending DM to {member}: {e}")
         
             # Mark meeting as notified by updating status with timeout
             try:
                 async with asyncio.timeout(5):
                     await self.bot.db.connection.execute(
-                        "UPDATE meetings SET status = 'starting' WHERE meeting_id = $1",
+                        "UPDATE meetings SET status = 'started', updated_at = CURRENT_TIMESTAMP WHERE meeting_id = $1",
                         meeting['meeting_id']
                     )
             except Exception as e:
@@ -587,50 +587,96 @@ class Meetings(commands.Cog):
         try:
             # Filter meetings for this guild
             guild_id = str(interaction.guild.id)
-            meetings = await self.bot.db.connection.fetch(
-                "SELECT * FROM meetings WHERE guild_id = $1 AND status IN ('scheduled', 'starting') ORDER BY scheduled_time ASC",
+            now = datetime.utcnow()
+            one_hour_ago = now - timedelta(hours=1)
+            
+            # Get scheduled meetings
+            scheduled_meetings = await self.bot.db.connection.fetch(
+                "SELECT * FROM meetings WHERE guild_id = $1 AND status = 'scheduled' ORDER BY scheduled_time ASC",
                 guild_id
             )
             
-            if not meetings:
-                embed = EmbedBuilder.info("No Meetings", "No meetings are currently scheduled")
+            # Get recently started meetings (started less than 1 hour ago)
+            started_meetings = await self.bot.db.connection.fetch(
+                """SELECT * FROM meetings WHERE guild_id = $1 AND status = 'started' 
+                   AND updated_at > $2 ORDER BY scheduled_time ASC""",
+                guild_id, one_hour_ago
+            )
+            
+            if not scheduled_meetings and not started_meetings:
+                embed = EmbedBuilder.info("No Meetings", "No meetings are currently scheduled or recently started")
                 await interaction.followup.send(embed=embed)
                 return
-            
+        
             embed = discord.Embed(
-                title="📅 Scheduled Meetings",
-                description=f"There are {len(meetings)} upcoming meetings",
+                title="📅 Meetings",
+                description=f"**Scheduled:** {len(scheduled_meetings)} | **Recently Started:** {len(started_meetings)}",
                 color=0x5865F2
             )
             
-            for meeting in meetings[:10]:  # Show up to 10 meetings
-                start_time = meeting['scheduled_time']
-                time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+            # Add scheduled meetings section
+            if scheduled_meetings:
+                scheduled_text = ""
+                for meeting in scheduled_meetings[:5]:  # Show up to 5 scheduled meetings
+                    start_time = meeting['scheduled_time']
+                    time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+                    
+                    if start_time > now:
+                        time_until = TimeParser.format_timedelta(start_time - now)
+                        time_field = f"{time_str} (in {time_until})"
+                    else:
+                        time_field = f"{time_str} (starting now)"
+                    
+                    creator = interaction.guild.get_member(int(meeting['creator_id']))
+                    creator_name = creator.display_name if creator else "Unknown"
+                    
+                    voice_channel = interaction.guild.get_channel(int(meeting['voice_channel_id']))
+                    voice_name = voice_channel.name if voice_channel else "Unknown Channel"
+                    
+                    attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
+                    attendee_count = len(attendees)
+                    
+                    scheduled_text += f"**{meeting['title']}** (ID: {meeting['meeting_id']})\n"
+                    scheduled_text += f"⏰ {time_field}\n"
+                    scheduled_text += f"🎤 {voice_name} | 👤 {creator_name} | 👥 {attendee_count}\n\n"
                 
-                if start_time > datetime.utcnow():
-                    time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-                    time_field = f"{time_str}\n(in {time_until})"
-                else:
-                    time_field = f"{time_str}\n(starting now)"
-                
-                creator = interaction.guild.get_member(int(meeting['creator_id']))
-                creator_name = creator.display_name if creator else "Unknown"
-                
-                voice_channel = interaction.guild.get_channel(int(meeting['voice_channel_id']))
-                voice_name = voice_channel.name if voice_channel else "Unknown Channel"
-                
-                # Count attendees
-                attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
-                attendee_count = len(attendees)
+                if len(scheduled_meetings) > 5:
+                    scheduled_text += f"*... and {len(scheduled_meetings) - 5} more*\n"
                 
                 embed.add_field(
-                    name=f"{meeting['title']} (ID: {meeting['meeting_id']})",
-                    value=f"**Time:** {time_field}\n**Voice:** {voice_name}\n**Organizer:** {creator_name}\n**Attendees:** {attendee_count}",
+                    name="📋 Scheduled Meetings",
+                    value=scheduled_text if scheduled_text else "None",
                     inline=False
                 )
             
-            if len(meetings) > 10:
-                embed.set_footer(text=f"Showing 10 of {len(meetings)} meetings")
+            # Add recently started meetings section
+            if started_meetings:
+                started_text = ""
+                for meeting in started_meetings[:5]:  # Show up to 5 started meetings
+                    start_time = meeting['scheduled_time']
+                    time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+                    
+                    creator = interaction.guild.get_member(int(meeting['creator_id']))
+                    creator_name = creator.display_name if creator else "Unknown"
+                    
+                    voice_channel = interaction.guild.get_channel(int(meeting['voice_channel_id']))
+                    voice_name = voice_channel.name if voice_channel else "Unknown Channel"
+                    
+                    attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
+                    attendee_count = len(attendees)
+                    
+                    started_text += f"**{meeting['title']}** (ID: {meeting['meeting_id']})\n"
+                    started_text += f"🟢 Started at {time_str}\n"
+                    started_text += f"🎤 {voice_name} | 👤 {creator_name} | 👥 {attendee_count}\n\n"
+                
+                if len(started_meetings) > 5:
+                    started_text += f"*... and {len(started_meetings) - 5} more*\n"
+                
+                embed.add_field(
+                    name="🔴 Recently Started Meetings",
+                    value=started_text if started_text else "None",
+                    inline=False
+                )
             
             await interaction.followup.send(embed=embed)
             
