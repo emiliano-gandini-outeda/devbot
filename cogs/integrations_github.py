@@ -284,10 +284,20 @@ class GitHubIntegrations(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to track repository: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="untrack-repo", description="Stop tracking a GitHub repository")
+    @app_commands.command(name="untrack-repo", description="Stop tracking a GitHub repository (Admin only)")
     @app_commands.describe(repo="Repository name (format: owner/repo)")
+    @app_commands.default_permissions(administrator=True)  # Add this line
     async def untrack_repo(self, interaction: discord.Interaction, repo: str):
         await interaction.response.defer()
+        
+        # Additional runtime check for admin permissions
+        if not interaction.user.guild_permissions.administrator:
+            embed = EmbedBuilder.error(
+                "Permission Denied",
+                "Only administrators can untrack repositories. You can toggle pings using /list-repos"
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
         
         try:
             # Remove from database
@@ -318,7 +328,7 @@ class GitHubIntegrations(commands.Cog):
             
             embed = EmbedBuilder.success(
                 "Tracking Stopped",
-                f"Stopped tracking `{repo}`"
+                f"Stopped tracking `{repo}` (Admin action by {interaction.user.mention})"
             )
             await interaction.followup.send(embed=embed)
             
@@ -1044,3 +1054,4 @@ class TrackRepoButtonView(discord.ui.View):
 
 async def setup(bot):
     await bot.add_cog(GitHubIntegrations(bot))
+ 

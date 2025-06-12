@@ -3,6 +3,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from datetime import datetime, timedelta
 import asyncio
+import json
 from utils.helpers import EmbedBuilder, TimeParser
 from config.constants import ReminderType
 import logging
@@ -67,6 +68,7 @@ class Reminders(commands.Cog):
             remind_at = reminder['remind_at']
             reminder_type = reminder['type']
             send_dm = reminder.get('send_dm', True)
+            reminder_id = reminder['id']
             
             user = self.bot.get_user(int(user_id))
             if not user:
@@ -77,34 +79,40 @@ class Reminders(commands.Cog):
                 description=message,
                 color=0xFEE75C
             )
-            embed.set_footer(text=f"Reminder set for {remind_at} • devBot")
+            embed.set_footer(text=f"Reminder ID: {reminder_id} • Set for {remind_at} • devBot")
             
-            if reminder_type == ReminderType.PERSONAL.value:
-                # Send DM if enabled
-                if send_dm:
+            # Always try to send DM if enabled
+            if send_dm:
+                try:
+                    await user.send(embed=embed)
+                except discord.Forbidden:
+                    pass  # Will still send to channel below
+            
+            # Always send to channel regardless of DM status
+            if guild_id:
+                guild = self.bot.get_guild(int(guild_id))
+                if guild:
+                    # Try to get the configured reminder channel first
+                    reminder_config = None
                     try:
-                        await user.send(embed=embed)
-                    except discord.Forbidden:
-                        # If DM fails, try to send in guild channel
-                        if guild_id:
-                            guild = self.bot.get_guild(int(guild_id))
-                            if guild:
-                                channel = guild.system_channel or guild.text_channels[0]
-                                await channel.send(f"{user.mention}", embed=embed)
-                else:
-                    # Send in channel only
-                    if guild_id:
-                        guild = self.bot.get_guild(int(guild_id))
-                        if guild:
-                            channel = guild.get_channel(int(channel_id)) if channel_id else guild.system_channel or guild.text_channels[0]
-                            await channel.send(f"{user.mention}", embed=embed)
-            else:
-                # Send in channel
-                if channel_id:
-                    channel = self.bot.get_channel(int(channel_id))
+                        reminder_config_data = await self.bot.db.connection.fetchrow(
+                            "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                            str(guild_id), 'reminder_config'
+                        )
+                        if reminder_config_data:
+                            reminder_config = json.loads(reminder_config_data['data_content'])
+                    except Exception as e:
+                        logger.error(f"Error fetching reminder config: {e}")
+                    
+                    if reminder_config and 'reminder_channel_id' in reminder_config:
+                        channel = guild.get_channel(int(reminder_config['reminder_channel_id']))
+                    else:
+                        # Fall back to original channel or system channel
+                        channel = guild.get_channel(int(channel_id)) if channel_id else guild.system_channel or guild.text_channels[0]
+                    
                     if channel:
                         await channel.send(f"{user.mention}", embed=embed)
-                        
+                    
         except Exception as e:
             logger.error(f"Error sending reminder: {e}")
     
@@ -141,18 +149,21 @@ class Reminders(commands.Cog):
         remind_at = datetime.utcnow() + duration
         
         try:
-            await self.bot.db.connection.execute(
+            # Insert the reminder and get the ID
+            reminder_id = await self.bot.db.connection.fetchval(
                 """INSERT INTO reminders (user_id, guild_id, channel_id, message, remind_at, type, created_at, send_dm)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                   RETURNING id""",
                 str(interaction.user.id), str(interaction.guild.id), str(interaction.channel.id),
                 message, remind_at, ReminderType.PERSONAL.value, datetime.utcnow(), send_dm
             )
-            
+        
             embed = EmbedBuilder.success(
                 "Reminder Set",
                 f"I'll remind you about: **{message}**\n"
                 f"**When:** {remind_at.strftime('%Y-%m-%d %H:%M UTC')}\n"
-                f"**In:** {time}"
+                f"**In:** {time}\n"
+                f"**Reminder ID:** {reminder_id}"
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
             
@@ -251,36 +262,37 @@ class Reminders(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to fetch reminders: {str(e)}")
             await interaction.followup.send(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="delete-reminder", description="Delete a reminder by its number")
-    @app_commands.describe(reminder_number="Number of the reminder to delete (from /list-reminders)")
-    async def delete_reminder(self, interaction: discord.Interaction, reminder_number: int):
+    @app_commands.command(name="delete-reminder", description="Delete a reminder by its ID")
+    @app_commands.describe(reminder_id="ID of the reminder to delete")
+    async def delete_reminder_by_id(self, interaction: discord.Interaction, reminder_id: int):
         try:
+            # Check if the reminder exists and belongs to the user
             reminder = await self.bot.db.connection.fetchrow(
-                "SELECT * FROM reminders WHERE user_id = $1 ORDER BY remind_at ASC LIMIT 1 OFFSET $2",
-                str(interaction.user.id), reminder_number - 1
+                "SELECT * FROM reminders WHERE id = $1 AND user_id = $2",
+                reminder_id, str(interaction.user.id)
             )
-            
+        
             if not reminder:
-                embed = EmbedBuilder.error("Not Found", f"Reminder #{reminder_number} not found")
+                embed = EmbedBuilder.error("Not Found", f"Reminder with ID {reminder_id} not found or doesn't belong to you")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return
-            
-            reminder_id = reminder['id']
+        
             reminder_message = reminder['message']
-            
+        
+            # Delete the reminder
             await self.bot.db.connection.execute(
                 "DELETE FROM reminders WHERE id = $1", reminder_id
             )
-            
+        
             embed = EmbedBuilder.success(
                 "Reminder Deleted",
-                f"Deleted reminder: **{reminder_message}**"
+                f"Deleted reminder with ID {reminder_id}: **{reminder_message}**"
             )
             await interaction.response.send_message(embed=embed, ephemeral=True)
-            
+        
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to delete reminder: {str(e)}")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(Reminders(bot))

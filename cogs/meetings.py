@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import json
 import asyncio
@@ -76,6 +76,12 @@ class AdminMeetingView(discord.ui.View):
                 self.meeting_data['start_time'], str(self.meeting_data['voice_channel'].id)
             )
             
+            # Get meeting config for announcement channel
+            config_row = await self.bot.db.connection.fetchrow(
+                "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                str(interaction.guild.id), 'meeting_config'
+            )
+            
             # Create meeting announcement embed
             embed = discord.Embed(
                 title=f"📅 Admin Meeting: {self.meeting_data['name']}",
@@ -108,6 +114,14 @@ class AdminMeetingView(discord.ui.View):
             # Create view with join button for the actual meeting
             meeting_view = MeetingView(self.bot, meeting_id)
 
+            # Send to announcement channel if configured
+            announcement_channel = None
+            if config_row:
+                config = json.loads(config_row['data_content'])
+                announcement_channel_id = config.get('announcement_channel_id')
+                if announcement_channel_id:
+                    announcement_channel = interaction.guild.get_channel(int(announcement_channel_id))
+
             # Send the meeting announcement with the selected ping
             if self.selected_ping == "everyone":
                 allowed_mentions = discord.AllowedMentions(everyone=True)
@@ -116,12 +130,20 @@ class AdminMeetingView(discord.ui.View):
                 allowed_mentions = discord.AllowedMentions(everyone=False, here=True)
                 content = "@here - New admin meeting scheduled!"
 
-            await interaction.followup.send(
-                content=content, 
-                embed=embed, 
-                view=meeting_view,
-                allowed_mentions=allowed_mentions
-            )
+            if announcement_channel:
+                await announcement_channel.send(
+                    content=content, 
+                    embed=embed, 
+                    view=meeting_view,
+                    allowed_mentions=allowed_mentions
+                )
+            else:
+                await interaction.followup.send(
+                    content=content, 
+                    embed=embed, 
+                    view=meeting_view,
+                    allowed_mentions=allowed_mentions
+                )
             
             # Send confirmation to the admin
             ping_display = "@everyone" if self.selected_ping == "everyone" else "@here"
@@ -149,25 +171,220 @@ class MeetingView(discord.ui.View):
     
     @discord.ui.button(label="Join Meeting", style=discord.ButtonStyle.primary, emoji="📅")
     async def join_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Add user to participants
-        self.participants.add(interaction.user.id)
-        
-        # Get meeting data
-        meeting = await self.bot.db.connection.fetchrow(
-            "SELECT * FROM meetings WHERE meeting_id = $1", self.meeting_id
-        )
-        
-        if not meeting:
-            await interaction.response.send_message("This meeting no longer exists.", ephemeral=True)
-            return
-        
-        await interaction.response.send_message(f"You've joined the meeting: **{meeting['title']}**", ephemeral=True)
+        # Add user to participants in database
+        try:
+            # Get current attendees
+            meeting = await self.bot.db.connection.fetchrow(
+                "SELECT attendees FROM meetings WHERE meeting_id = $1", self.meeting_id
+            )
+            
+            if not meeting:
+                await interaction.response.send_message("This meeting no longer exists.", ephemeral=True)
+                return
+            
+            # Parse current attendees
+            current_attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
+            
+            # Add user if not already in list
+            user_id = str(interaction.user.id)
+            if user_id not in current_attendees:
+                current_attendees.append(user_id)
+                
+                # Update database
+                await self.bot.db.connection.execute(
+                    "UPDATE meetings SET attendees = $1 WHERE meeting_id = $2",
+                    json.dumps(current_attendees), self.meeting_id
+                )
+            
+            # Get meeting details for response
+            meeting_details = await self.bot.db.connection.fetchrow(
+                "SELECT * FROM meetings WHERE meeting_id = $1", self.meeting_id
+            )
+            
+            await interaction.response.send_message(
+                f"✅ You've joined the meeting: **{meeting_details['title']}**\n"
+                f"You'll receive a notification when the meeting starts!", 
+                ephemeral=True
+            )
+            
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Error joining meeting: {str(e)}", 
+                ephemeral=True
+            )
 
 class Meetings(commands.Cog):
     """Meeting scheduling and management"""
     
     def __init__(self, bot):
         self.bot = bot
+        self.check_meeting_notifications.start()  # Start the background task
+    
+    def cog_unload(self):
+        self.check_meeting_notifications.cancel()  # Stop the task when cog unloads
+    
+    @tasks.loop(seconds=30)  # Check every 30 seconds
+    async def check_meeting_notifications(self):
+        """Background task to check for meetings starting soon and send notifications"""
+        try:
+            # Get meetings starting in the next 30 seconds that haven't been notified
+            now = datetime.utcnow()
+            notification_time = now + timedelta(seconds=30)
+        
+            # Use execute_with_retry to avoid connection conflicts
+            query = """SELECT * FROM meetings 
+                       WHERE scheduled_time <= $1 AND scheduled_time > $2 
+                       AND status = 'scheduled'"""
+        
+            # Get meetings using a separate query execution
+            meetings = []
+            try:
+                async with asyncio.timeout(10):  # 10 second timeout
+                    meetings = await self.bot.db.connection.fetch(query, notification_time, now)
+            except asyncio.TimeoutError:
+                print("Meeting notification query timed out")
+                return
+            except Exception as e:
+                print(f"Database query error in meeting notifications: {e}")
+                return
+        
+            # Process each meeting
+            for meeting in meetings:
+                try:
+                    await self.send_meeting_starting_notification(meeting)
+                except Exception as e:
+                    print(f"Error processing meeting {meeting.get('meeting_id', 'unknown')}: {e}")
+                
+        except Exception as e:
+            print(f"Error in meeting notification task: {e}")
+    
+    @check_meeting_notifications.before_loop
+    async def before_check_meeting_notifications(self):
+        """Wait until the bot is ready before starting the task"""
+        await self.bot.wait_until_ready()
+    
+    async def send_meeting_starting_notification(self, meeting):
+        """Send meeting starting notification to announcement channel and participants"""
+        try:
+            guild = self.bot.get_guild(int(meeting['guild_id']))
+            if not guild:
+                return
+    
+            # Get meeting config with timeout
+            config_row = None
+            try:
+                async with asyncio.timeout(5):
+                    config_row = await self.bot.db.connection.fetchrow(
+                        "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                        meeting['guild_id'], 'meeting_config'
+                    )
+            except Exception as e:
+                print(f"Error getting meeting config: {e}")
+                return
+        
+            if not config_row:
+                return
+        
+            config = json.loads(config_row['data_content'])
+            announcement_channel_id = config.get('announcement_channel_id')
+        
+            if not announcement_channel_id:
+                return
+        
+            announcement_channel = guild.get_channel(int(announcement_channel_id))
+            if not announcement_channel:
+                return
+        
+            # Get voice channel
+            voice_channel = guild.get_channel(int(meeting['voice_channel_id']))
+        
+            # Create meeting starting embed
+            embed = discord.Embed(
+                title=f"🔔 Meeting Starting: {meeting['title']}",
+                description=f"{meeting['description']}\n\n**The meeting is starting now!**",
+                color=0xFEE75C  # Yellow for starting notification
+            )
+        
+            embed.add_field(name="Meeting ID", value=meeting['meeting_id'], inline=True)
+            if voice_channel:
+                embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
+        
+            # Get organizer
+            organizer = guild.get_member(int(meeting['creator_id']))
+            if organizer:
+                embed.add_field(name="Organizer", value=organizer.mention, inline=True)
+        
+            embed.add_field(
+                name="Join Now",
+                value=f"Click {voice_channel.mention if voice_channel else 'the voice channel'} to join!",
+                inline=False
+            )
+        
+            # Get attendees
+            attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
+        
+            # Create mention string for attendees
+            mentions = []
+            valid_attendees = []
+        
+            for user_id in attendees:
+                member = guild.get_member(int(user_id))
+                if member:
+                    mentions.append(member.mention)
+                    valid_attendees.append(member)
+        
+            # Send to announcement channel with pings
+            if mentions:
+                content = f"🔔 **Meeting Starting!** {' '.join(mentions)}"
+                allowed_mentions = discord.AllowedMentions(users=valid_attendees)
+            else:
+                content = "🔔 **Meeting Starting!**"
+                allowed_mentions = discord.AllowedMentions.none()
+        
+            await announcement_channel.send(
+                content=content,
+                embed=embed,
+                allowed_mentions=allowed_mentions
+            )
+        
+            # Send DMs to attendees
+            for member in valid_attendees:
+                try:
+                    dm_embed = discord.Embed(
+                        title=f"🔔 Meeting Starting: {meeting['title']}",
+                        description=f"Your meeting is starting now!\n\n**Server:** {guild.name}",
+                        color=0xFEE75C
+                    )
+                
+                    if voice_channel:
+                        dm_embed.add_field(
+                            name="Join Voice Channel",
+                            value=f"Join {voice_channel.name} in {guild.name}",
+                            inline=False
+                        )
+                
+                    dm_embed.add_field(name="Meeting ID", value=meeting['meeting_id'], inline=True)
+                
+                    await member.send(embed=dm_embed)
+                
+                except discord.Forbidden:
+                    # User has DMs disabled
+                    pass
+                except Exception as e:
+                    print(f"Error sending DM to {member}: {e}")
+        
+            # Mark meeting as notified by updating status with timeout
+            try:
+                async with asyncio.timeout(5):
+                    await self.bot.db.connection.execute(
+                        "UPDATE meetings SET status = 'started', updated_at = CURRENT_TIMESTAMP WHERE meeting_id = $1",
+                        meeting['meeting_id']
+                    )
+            except Exception as e:
+                print(f"Error updating meeting status: {e}")
+        
+        except Exception as e:
+            print(f"Error sending meeting starting notification: {e}")
     
     @app_commands.command(name="create-meeting", description="Schedule a new meeting")
     @app_commands.describe(
@@ -202,6 +419,12 @@ class Meetings(commands.Cog):
                 name, description, start_time, str(voice_channel.id)
             )
             
+            # Get meeting config for announcement channel
+            config_row = await self.bot.db.connection.fetchrow(
+                "SELECT data_content FROM user_data WHERE user_id = $1 AND data_type = $2",
+                str(interaction.guild.id), 'meeting_config'
+            )
+            
             # Create meeting announcement embed
             embed = discord.Embed(
                 title=f"📅 New Meeting: {name}",
@@ -227,7 +450,24 @@ class Meetings(commands.Cog):
             # Create view with join button
             view = MeetingView(self.bot, meeting_id)
 
-            await interaction.followup.send(embed=embed, view=view)
+            # Send to announcement channel if configured
+            announcement_channel = None
+            if config_row:
+                config = json.loads(config_row['data_content'])
+                announcement_channel_id = config.get('announcement_channel_id')
+                if announcement_channel_id:
+                    announcement_channel = interaction.guild.get_channel(int(announcement_channel_id))
+
+            if announcement_channel:
+                await announcement_channel.send(embed=embed, view=view)
+                # Send confirmation to user
+                confirm_embed = EmbedBuilder.success(
+                    "Meeting Created",
+                    f"Meeting '{name}' has been created and announced in {announcement_channel.mention}!"
+                )
+                await interaction.followup.send(embed=confirm_embed, ephemeral=True)
+            else:
+                await interaction.followup.send(embed=embed, view=view)
             
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to create meeting: {str(e)}")
@@ -299,13 +539,27 @@ class Meetings(commands.Cog):
             await interaction.response.send_message(embed=embed, ephemeral=True)
             return
         
+        # Add user to attendees
+        try:
+            current_attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
+            user_id = str(interaction.user.id)
+            
+            if user_id not in current_attendees:
+                current_attendees.append(user_id)
+                await self.bot.db.connection.execute(
+                    "UPDATE meetings SET attendees = $1 WHERE meeting_id = $2",
+                    json.dumps(current_attendees), meeting_id
+                )
+        except Exception as e:
+            print(f"Error updating attendees: {e}")
+        
         # Get voice channel
         guild = interaction.guild
         voice_channel = guild.get_channel(int(meeting['voice_channel_id']))
         
         embed = discord.Embed(
             title=f"✅ Joined Meeting: {meeting['title']}",
-            description=meeting['description'],
+            description=f"{meeting['description']}\n\n**You'll receive a notification when the meeting starts!**",
             color=0x57F287
         )
         
@@ -333,47 +587,134 @@ class Meetings(commands.Cog):
         try:
             # Filter meetings for this guild
             guild_id = str(interaction.guild.id)
-            meetings = await self.bot.db.connection.fetch(
+            now = datetime.utcnow()
+            one_hour_ago = now - timedelta(hours=1)
+            
+            # Get scheduled meetings
+            scheduled_meetings = await self.bot.db.connection.fetch(
                 "SELECT * FROM meetings WHERE guild_id = $1 AND status = 'scheduled' ORDER BY scheduled_time ASC",
                 guild_id
             )
             
-            if not meetings:
-                embed = EmbedBuilder.info("No Meetings", "No meetings are currently scheduled")
+            # Get recently started meetings (started less than 1 hour ago)
+            started_meetings = await self.bot.db.connection.fetch(
+                """SELECT * FROM meetings WHERE guild_id = $1 AND status = 'started' 
+                   AND updated_at > $2 ORDER BY scheduled_time ASC""",
+                guild_id, one_hour_ago
+            )
+            
+            if not scheduled_meetings and not started_meetings:
+                embed = EmbedBuilder.info("No Meetings", "No meetings are currently scheduled or recently started")
                 await interaction.followup.send(embed=embed)
                 return
-            
+        
             embed = discord.Embed(
-                title="📅 Scheduled Meetings",
-                description=f"There are {len(meetings)} upcoming meetings",
+                title="📅 Meetings Overview",
+                description=f"**Scheduled:** {len(scheduled_meetings)} | **Recently Started:** {len(started_meetings)}",
                 color=0x5865F2
             )
             
-            for meeting in meetings[:10]:  # Show up to 10 meetings
-                start_time = meeting['scheduled_time']
-                time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
-                
-                if start_time > datetime.utcnow():
-                    time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-                    time_field = f"{time_str}\n(in {time_until})"
-                else:
-                    time_field = f"{time_str}\n(starting now)"
-                
-                creator = interaction.guild.get_member(int(meeting['creator_id']))
-                creator_name = creator.display_name if creator else "Unknown"
-                
-                voice_channel = interaction.guild.get_channel(int(meeting['voice_channel_id']))
-                voice_name = voice_channel.name if voice_channel else "Unknown Channel"
-                
+            # Add scheduled meetings section
+            if scheduled_meetings:
                 embed.add_field(
-                    name=f"{meeting['title']} (ID: {meeting['meeting_id']})",
-                    value=f"**Time:** {time_field}\n**Voice:** {voice_name}\n**Organizer:** {creator_name}",
+                    name="⏳ Upcoming Meetings",
+                    value="*Meetings that are scheduled to start*",
                     inline=False
                 )
-            
-            if len(meetings) > 10:
-                embed.set_footer(text=f"Showing 10 of {len(meetings)} meetings")
-            
+                
+                # Add each scheduled meeting as a separate field for better spacing
+                for i, meeting in enumerate(scheduled_meetings[:5]):
+                    start_time = meeting['scheduled_time']
+                    time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+                    
+                    if start_time > now:
+                        time_until = TimeParser.format_timedelta(start_time - now)
+                        time_field = f"in {time_until}"
+                    else:
+                        time_field = "starting now"
+                    
+                    creator = interaction.guild.get_member(int(meeting['creator_id']))
+                    creator_name = creator.display_name if creator else "Unknown"
+                    
+                    voice_channel = interaction.guild.get_channel(int(meeting['voice_channel_id']))
+                    voice_name = voice_channel.name if voice_channel else "Unknown Channel"
+                    
+                    attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
+                    attendee_count = len(attendees)
+                    
+                    # Create a clean, well-spaced field for each meeting
+                    meeting_info = (
+                        f"**Time:** {time_str} ({time_field})\n"
+                        f"**Voice Channel:** {voice_name}\n"
+                        f"**Organizer:** {creator_name}\n"
+                        f"**Attendees:** {attendee_count}\n"
+                        f"**ID:** {meeting['meeting_id']}"
+                    )
+                    
+                    embed.add_field(
+                        name=f"📌 {meeting['title']}",
+                        value=meeting_info,
+                        inline=False
+                    )
+                
+                if len(scheduled_meetings) > 5:
+                    embed.add_field(
+                        name="",
+                        value=f"*... and {len(scheduled_meetings) - 5} more upcoming meetings*",
+                        inline=False
+                    )
+        
+            # Add recently started meetings section
+            if started_meetings:
+                embed.add_field(
+                    name="",
+                    value="_ _",  # Empty field for spacing
+                    inline=False
+                )
+                
+                embed.add_field(
+                    name="🔴 Recently Started Meetings",
+                    value="*Meetings that started within the last hour*",
+                    inline=False
+                )
+                
+                # Add each started meeting as a separate field for better spacing
+                for i, meeting in enumerate(started_meetings[:5]):
+                    start_time = meeting['scheduled_time']
+                    time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
+                    
+                    creator = interaction.guild.get_member(int(meeting['creator_id']))
+                    creator_name = creator.display_name if creator else "Unknown"
+                    
+                    voice_channel = interaction.guild.get_channel(int(meeting['voice_channel_id']))
+                    voice_name = voice_channel.name if voice_channel else "Unknown Channel"
+                    
+                    attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
+                    attendee_count = len(attendees)
+                    
+                    # Create a clean, well-spaced field for each meeting
+                    meeting_info = (
+                        f"**Started at:** {time_str}\n"
+                        f"**Voice Channel:** {voice_name}\n"
+                        f"**Organizer:** {creator_name}\n"
+                        f"**Attendees:** {attendee_count}\n"
+                        f"**ID:** {meeting['meeting_id']}"
+                    )
+                    
+                    embed.add_field(
+                        name=f"🎯 {meeting['title']}",
+                        value=meeting_info,
+                        inline=False
+                    )
+                
+                if len(started_meetings) > 5:
+                    embed.add_field(
+                        name="",
+                        value=f"*... and {len(started_meetings) - 5} more recently started meetings*",
+                        inline=False
+                    )
+        
+            embed.set_footer(text="Join a meeting with /join-meeting [ID]")
             await interaction.followup.send(embed=embed)
             
         except Exception as e:
