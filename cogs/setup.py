@@ -240,9 +240,9 @@ class Setup(commands.Cog):
             embed = EmbedBuilder.error("Error", f"Failed to setup meetings: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
     
-    @app_commands.command(name="setup-reminders", description="Setup reminder system (Admin only)")
+    @app_commands.command(name="setup-reminders", description="Setup reminder system with a channel for all reminders (Admin only)")
     @app_commands.describe(
-        reminder_channel="Channel where reminders will be sent when DMs fail"
+        reminder_channel="Channel where ALL reminders will be sent (in addition to DMs)"
     )
     async def setup_reminders(self, interaction: discord.Interaction, reminder_channel: discord.TextChannel):
         if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
@@ -270,13 +270,15 @@ class Setup(commands.Cog):
             embed = EmbedBuilder.success(
                 "Reminder System Setup",
                 f"Reminder system has been configured!\n\n"
-                f"**Fallback Channel:** {reminder_channel.mention}\n\n"
-                f"When DMs fail, reminders will be sent to this channel.\n"
-                f"Users can now create reminders using `/remind`"
+                f"**Reminder Channel:** {reminder_channel.mention}\n\n"
+                f"✅ **All reminders will now be sent to {reminder_channel.mention}**\n"
+                f"✅ **DMs will still be sent by default (users can opt out)**\n\n"
+                f"Users can now create reminders using `/remind`\n"
+                f"Users can delete reminders using `/delete-reminder` or `/delete-reminder-by-id`"
             )
-            
+        
             await interaction.response.send_message(embed=embed)
-            
+        
         except Exception as e:
             embed = EmbedBuilder.error("Error", f"Failed to setup reminders: {str(e)}")
             await interaction.response.send_message(embed=embed, ephemeral=True)
