@@ -1,384 +1,363 @@
-import discord
-from discord.ext import commands
-from discord import app_commands
+Now, let's make sure the database has the necessary structure to support the meeting attendees. Let's check if we need to modify the `db.py` file:
+
+```py file="db.py" isAttachmentQuickEdit
+[v0-no-op-code-block-prefix]import asyncio
+import asyncpg
 import json
-import asyncio
-from datetime import datetime, timedelta
-from utils.helpers import EmbedBuilder, TimeParser, generate_meeting_id
+from datetime import datetime
+from typing import Optional, List, Dict, Any
+from config.settings import Settings
+import logging
 
-class PingChoice(discord.ui.Select):
+logger = logging.getLogger(__name__)
+
+class DatabaseManager:
     def __init__(self):
-        options = [
-            discord.SelectOption(
-                label="@everyone",
-                description="Ping everyone in the server",
-                emoji="📢",
-                value="everyone"
-            ),
-            discord.SelectOption(
-                label="@here", 
-                description="Ping only online members",
-                emoji="👥",
-                value="here"
+        self.database_url = Settings.DATABASE_URL
+        self.connection = None
+        self._connection_lock = asyncio.Lock()
+        self.is_postgresql = True  # Add this attribute
+        
+        logger.info(f"Database URL: {self.database_url[:50]}...")
+    
+    async def init_database(self):
+        """Initialize database connection and create tables"""
+        async with self._connection_lock:
+            try:
+                # Connect to PostgreSQL
+                async with asyncio.timeout(10):
+                    self.connection = await asyncpg.connect(self.database_url)
+                logger.info("✅ Connected to PostgreSQL database")
+                
+                # Test the connection
+                async with asyncio.timeout(5):
+                    result = await self.connection.fetchval("SELECT version()")
+                    logger.info(f"PostgreSQL version: {result}")
+            
+            except Exception as e:
+                logger.error(f"❌ Failed to connect to PostgreSQL: {e}")
+                raise
+        
+        await self.create_tables()
+    
+    async def create_tables(self):
+        """Create all necessary database tables"""
+        try:
+            await self._create_postgresql_tables()
+            logger.info("✅ All database tables created successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to create database tables: {e}")
+            raise
+    
+    async def _create_postgresql_tables(self):
+        """Create tables for PostgreSQL - only if they don't exist"""
+    
+        # Create new tables only if they don't exist (preserve existing data)
+        tables = [
+            # Users table
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                discord_id TEXT UNIQUE NOT NULL,
+                username TEXT NOT NULL,
+                google_token TEXT,
+                notion_token TEXT,
+                trello_token TEXT,
+                preferences JSONB DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
+            """,
+        
+            # Admin roles table
+            """
+            CREATE TABLE IF NOT EXISTS admin_roles (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                role_id TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, role_id)
+            )
+            """,
+        
+            # Tickets table
+            """
+            CREATE TABLE IF NOT EXISTS tickets (
+                id SERIAL PRIMARY KEY,
+                ticket_id TEXT UNIQUE NOT NULL,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                assignee_id TEXT,
+                title TEXT NOT NULL,
+                description TEXT,
+                status TEXT DEFAULT 'open',
+                priority TEXT DEFAULT 'medium',
+                channel_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        
+            # Reminders table
+            """
+            CREATE TABLE IF NOT EXISTS reminders (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                guild_id TEXT,
+                channel_id TEXT,
+                message TEXT NOT NULL,
+                remind_at TIMESTAMP NOT NULL,
+                type TEXT DEFAULT 'personal',
+                recurring BOOLEAN DEFAULT FALSE,
+                send_dm BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        
+            # Workflows table
+            """
+            CREATE TABLE IF NOT EXISTS workflows (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL,
+                guild_id TEXT NOT NULL,
+                creator_id TEXT NOT NULL,
+                trigger_type TEXT NOT NULL,
+                trigger_data JSONB DEFAULT '{}',
+                actions JSONB DEFAULT '[]',
+                status TEXT DEFAULT 'active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        
+            # User data table for flexible storage
+            """
+            CREATE TABLE IF NOT EXISTS user_data (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                guild_id TEXT,
+                data_type TEXT NOT NULL,
+                data_content JSONB DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, guild_id, data_type)
+            )
+            """,
+        
+            # Meetings table
+            """
+            CREATE TABLE IF NOT EXISTS meetings (
+                id SERIAL PRIMARY KEY,
+                meeting_id TEXT UNIQUE NOT NULL,
+                guild_id TEXT NOT NULL,
+                creator_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT,
+                scheduled_time TIMESTAMP NOT NULL,
+                duration_minutes INTEGER DEFAULT 60,
+                attendees JSONB DEFAULT '[]',
+                status TEXT DEFAULT 'scheduled',
+                meeting_link TEXT,
+                voice_channel_id TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        
+            # Notifications table
+            """
+            CREATE TABLE IF NOT EXISTS notifications (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                guild_id TEXT,
+                type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                is_read BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+        
+            # Keywords table for notifications
+            """
+            CREATE TABLE IF NOT EXISTS keywords (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, user_id, keyword)
+            )
+            """,
+        
+            # GitHub tracked repositories table
+            """
+            CREATE TABLE IF NOT EXISTS github_tracked_repos (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT NOT NULL,
+                repo_name TEXT NOT NULL,
+                channel_id TEXT NOT NULL,
+                added_by TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(guild_id, repo_name, channel_id)
+            )
+            """,
+
+            # GitHub user subscriptions table  
+            """
+            CREATE TABLE IF NOT EXISTS github_subscriptions (
+                id SERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                guild_id TEXT NOT NULL,
+                repo_name TEXT NOT NULL,
+                enabled BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, guild_id, repo_name)
+            )
+            """,
+
+            # Log configs table
+            """
+            CREATE TABLE IF NOT EXISTS log_configs (
+                id SERIAL PRIMARY KEY,
+                guild_id TEXT UNIQUE NOT NULL,
+                log_channel_id TEXT NOT NULL,
+                log_types JSONB DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
         ]
-        
-        super().__init__(
-            placeholder="Select ping type (required)",
-            min_values=1,
-            max_values=1,
-            options=options
-        )
-    
-    async def callback(self, interaction: discord.Interaction):
-        # Store the selected ping type in the view
-        self.view.selected_ping = self.values[0]
-        
-        # Update the embed to show selection
-        embed = discord.Embed(
-            title="📅 Admin Meeting Creation",
-            description=f"**Ping Type Selected:** {'@everyone' if self.values[0] == 'everyone' else '@here'}\n\nClick 'Create Meeting' to proceed.",
-            color=0x5865F2
-        )
-        
-        await interaction.response.edit_message(embed=embed, view=self.view)
 
-class AdminMeetingView(discord.ui.View):
-    def __init__(self, bot, meeting_data):
-        super().__init__(timeout=300)
-        self.bot = bot
-        self.meeting_data = meeting_data
-        self.selected_ping = None
-        
-        # Add ping selection dropdown
-        self.add_item(PingChoice())
+        # Create tables only if they don't exist
+        for i, table_sql in enumerate(tables, 1):
+            try:
+                async with asyncio.timeout(5):
+                    await self.connection.execute(table_sql)
+                    table_name = table_sql.split("CREATE TABLE IF NOT EXISTS ")[1].split(" (")[0]
+                    logger.info(f"✅ Ensured table {i}/{len(tables)} exists: {table_name}")
+            except asyncio.TimeoutError:
+                logger.error(f"❌ Table creation timed out: table {i}")
+                raise
+            except Exception as e:
+                logger.error(f"❌ Failed to ensure table {i} exists: {e}")
+                raise
+
+        # Create essential indexes (only if they don't exist)
+        essential_indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_users_discord_id ON users(discord_id)",
+            "CREATE INDEX IF NOT EXISTS idx_admin_roles_guild_id ON admin_roles(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tickets_guild_id ON tickets(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_reminders_remind_at ON reminders(remind_at)",
+            "CREATE INDEX IF NOT EXISTS idx_workflows_guild_id ON workflows(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_meetings_guild_id ON meetings(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_keywords_guild_user ON keywords(guild_id, user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_github_repos_guild ON github_tracked_repos(guild_id)",
+            "CREATE INDEX IF NOT EXISTS idx_user_data_lookup ON user_data(user_id, guild_id, data_type)",
+            "CREATE INDEX IF NOT EXISTS idx_log_configs_guild ON log_configs(guild_id)"
+        ]
+
+        logger.info("Creating essential indexes (if not exists)...")
+        for index_sql in essential_indexes:
+            try:
+                async with asyncio.timeout(3):
+                    await self.connection.execute(index_sql)
+            except Exception as e:
+                logger.warning(f"Failed to create index: {e}")
+
+        logger.info("✅ PostgreSQL tables and indexes ensured (data preserved)")
     
-    @discord.ui.button(label="Create Meeting", style=discord.ButtonStyle.success, emoji="✅")
-    async def create_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not self.selected_ping:
-            embed = EmbedBuilder.error(
-                "Ping Required",
-                "You must select a ping type (@everyone or @here) before creating the meeting."
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        await interaction.response.defer()
-        
+    async def get_user(self, discord_id: str) -> Optional[Dict[str, Any]]:
+        """Get user from database"""
         try:
-            # Create meeting in database
-            meeting_id = generate_meeting_id()
-            await self.bot.db.connection.execute(
-                """INSERT INTO meetings (meeting_id, guild_id, creator_id, title, description, scheduled_time, voice_channel_id)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                meeting_id, str(interaction.guild.id), str(interaction.user.id),
-                self.meeting_data['name'], self.meeting_data['description'], 
-                self.meeting_data['start_time'], str(self.meeting_data['voice_channel'].id)
+            row = await self.connection.fetchrow(
+                "SELECT * FROM users WHERE discord_id = $1", discord_id
             )
+            return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Failed to get user {discord_id}: {e}")
+            return None
+    
+    async def create_user(self, discord_id: str, username: str) -> bool:
+        """Create new user in database"""
+        try:
+            await self.connection.execute(
+                "INSERT INTO users (discord_id, username) VALUES ($1, $2) ON CONFLICT (discord_id) DO NOTHING",
+                discord_id, username
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create user {discord_id}: {e}")
+            return False
+    
+    async def test_connection(self):
+        """Test database connection and basic operations"""
+        try:
+            result = await self.connection.fetchval("SELECT 1")
+            logger.info(f"✅ PostgreSQL connection test successful: {result}")
             
-            # Create meeting announcement embed
-            embed = discord.Embed(
-                title=f"📅 Admin Meeting: {self.meeting_data['name']}",
-                description=self.meeting_data['description'],
-                color=0xED4245  # Red color to indicate admin meeting
-            )
-
-            embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
-            embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
-            embed.add_field(name="Voice Channel", value=self.meeting_data['voice_channel'].mention, inline=True)
-
-            # Format start time
-            time_str = self.meeting_data['start_time'].strftime("%Y-%m-%d %H:%M UTC")
-            time_until = TimeParser.format_timedelta(self.meeting_data['start_time'] - datetime.utcnow())
-            embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
-
-            embed.add_field(
-                name="How to Join",
-                value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
-                inline=False
-            )
+            # Test table access
+            count = await self.connection.fetchval("SELECT COUNT(*) FROM users")
+            logger.info(f"✅ Users table accessible, contains {count} records")
             
-            # Add admin indicator
-            embed.add_field(
-                name="🛡️ Admin Meeting",
-                value="This meeting was created by an administrator.",
-                inline=False
-            )
-
-            # Create view with join button for the actual meeting
-            meeting_view = MeetingView(self.bot, meeting_id)
-
-            # Send the meeting announcement with the selected ping
-            if self.selected_ping == "everyone":
-                allowed_mentions = discord.AllowedMentions(everyone=True)
-                content = "@everyone - New admin meeting scheduled!"
-            else:  # here
-                allowed_mentions = discord.AllowedMentions(everyone=False, here=True)
-                content = "@here - New admin meeting scheduled!"
-
-            await interaction.followup.send(
-                content=content, 
-                embed=embed, 
-                view=meeting_view,
-                allowed_mentions=allowed_mentions
-            )
-            
-            # Send confirmation to the admin
-            ping_display = "@everyone" if self.selected_ping == "everyone" else "@here"
-            confirm_embed = EmbedBuilder.success(
-                "Admin Meeting Created",
-                f"Meeting '{self.meeting_data['name']}' has been created with {ping_display} ping."
-            )
-            await interaction.followup.send(embed=confirm_embed, ephemeral=True)
+            return True
             
         except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to create admin meeting: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
+            logger.error(f"❌ Database connection test failed: {e}")
+            return False
     
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
-    async def cancel_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
-        embed = EmbedBuilder.info("Cancelled", "Admin meeting creation has been cancelled.")
-        await interaction.response.edit_message(embed=embed, view=None)
+    async def close(self):
+        """Close database connection"""
+        if self.connection:
+            try:
+                await self.connection.close()
+                logger.info("✅ Database connection closed")
+            except Exception as e:
+                logger.error(f"Error closing database connection: {e}")
 
-class MeetingView(discord.ui.View):
-    def __init__(self, bot, meeting_id: str):
-        super().__init__(timeout=None)
-        self.bot = bot
-        self.meeting_id = meeting_id
-        self.participants = set()
-    
-    @discord.ui.button(label="Join Meeting", style=discord.ButtonStyle.primary, emoji="📅")
-    async def join_meeting(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Add user to participants
-        self.participants.add(interaction.user.id)
-        
-        # Get meeting data
-        meeting = await self.bot.db.connection.fetchrow(
-            "SELECT * FROM meetings WHERE meeting_id = $1", self.meeting_id
-        )
-        
-        if not meeting:
-            await interaction.response.send_message("This meeting no longer exists.", ephemeral=True)
-            return
-        
-        await interaction.response.send_message(f"You've joined the meeting: **{meeting['title']}**", ephemeral=True)
-
-class Meetings(commands.Cog):
-    """Meeting scheduling and management"""
-    
-    def __init__(self, bot):
-        self.bot = bot
-    
-    @app_commands.command(name="create-meeting", description="Schedule a new meeting")
-    @app_commands.describe(
-        name="Meeting name",
-        time="When to start the meeting (e.g., '1h', '30m', '2d')",
-        description="Meeting description",
-        voice_channel="Voice channel for the meeting"
-    )
-    async def create_meeting(self, interaction: discord.Interaction, name: str, time: str, 
-                           description: str, voice_channel: discord.VoiceChannel):
-        await interaction.response.defer()
-        
-        # Parse time
-        duration = TimeParser.parse_duration(time)
-        if not duration:
-            embed = EmbedBuilder.error(
-                "Invalid Time Format",
-                "Please use format like: `1h`, `30m`, `2d`, `1h30m`"
-            )
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-        
-        start_time = datetime.utcnow() + duration
-        meeting_id = generate_meeting_id()
-        
-        try:
-            # Create meeting in database
-            await self.bot.db.connection.execute(
-                """INSERT INTO meetings (meeting_id, guild_id, creator_id, title, description, scheduled_time, voice_channel_id)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                meeting_id, str(interaction.guild.id), str(interaction.user.id),
-                name, description, start_time, str(voice_channel.id)
-            )
-            
-            # Create meeting announcement embed
-            embed = discord.Embed(
-                title=f"📅 New Meeting: {name}",
-                description=description,
-                color=0x5865F2
-            )
-
-            embed.add_field(name="Organizer", value=interaction.user.mention, inline=True)
-            embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
-            embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
-
-            # Format start time
-            time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
-            time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-            embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
-
-            embed.add_field(
-                name="How to Join",
-                value=f"• Click the button below\n• Use `/join-meeting {meeting_id}`\n• Join the voice channel at the scheduled time",
-                inline=False
-            )
-
-            # Create view with join button
-            view = MeetingView(self.bot, meeting_id)
-
-            await interaction.followup.send(embed=embed, view=view)
-            
-        except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to create meeting: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-    
-    @app_commands.command(name="create-admin-meeting", description="Create an admin meeting with ping options (Admin only)")
-    @app_commands.describe(
-        name="Meeting name",
-        time="When to start the meeting (e.g., '1h', '30m', '2d')",
-        description="Meeting description", 
-        voice_channel="Voice channel for the meeting"
-    )
-    async def create_admin_meeting(self, interaction: discord.Interaction, name: str, time: str,
-                                 description: str, voice_channel: discord.VoiceChannel):
-        # Check if user is admin
-        if not self.bot.admin_manager or not self.bot.admin_manager.is_admin(interaction.user):
-            embed = EmbedBuilder.error("Permission Denied", "Only administrators can create admin meetings")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        # Parse time
-        duration = TimeParser.parse_duration(time)
-        if not duration:
-            embed = EmbedBuilder.error(
-                "Invalid Time Format",
-                "Please use format like: `1h`, `30m`, `2d`, `1h30m`"
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        start_time = datetime.utcnow() + duration
-        
-        # Store meeting data
-        meeting_data = {
-            'name': name,
-            'time': time,
-            'description': description,
-            'voice_channel': voice_channel,
-            'start_time': start_time
-        }
-        
-        # Create initial embed
-        embed = discord.Embed(
-            title="📅 Admin Meeting Creation",
-            description=f"**Meeting:** {name}\n**Description:** {description}\n**Voice Channel:** {voice_channel.mention}\n\n**⚠️ You must select a ping type before creating the meeting.**",
-            color=0x5865F2
-        )
-        
-        # Format start time
-        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
-        time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-        embed.add_field(name="Start Time", value=f"{time_str}\n(in {time_until})", inline=False)
-        
-        # Create view with ping selection
-        view = AdminMeetingView(self.bot, meeting_data)
-        
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
-    
-    @app_commands.command(name="join-meeting", description="Join a scheduled meeting")
-    @app_commands.describe(meeting_id="ID of the meeting to join")
-    async def join_meeting(self, interaction: discord.Interaction, meeting_id: str):
-        # Check if meeting exists
-        meeting = await self.bot.db.connection.fetchrow(
-            "SELECT * FROM meetings WHERE meeting_id = $1", meeting_id
-        )
-        
-        if not meeting:
-            embed = EmbedBuilder.error("Not Found", f"Meeting with ID {meeting_id} not found")
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
-        
-        # Get voice channel
-        guild = interaction.guild
-        voice_channel = guild.get_channel(int(meeting['voice_channel_id']))
-        
-        embed = discord.Embed(
-            title=f"✅ Joined Meeting: {meeting['title']}",
-            description=meeting['description'],
-            color=0x57F287
-        )
-        
-        embed.add_field(name="Meeting ID", value=meeting_id, inline=True)
-        
-        if voice_channel:
-            embed.add_field(name="Voice Channel", value=voice_channel.mention, inline=True)
-        
-        # Format start time
-        start_time = meeting['scheduled_time']
-        time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
-        
-        if start_time > datetime.utcnow():
-            time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-            embed.add_field(name="Starts", value=f"{time_str}\n(in {time_until})", inline=False)
-        else:
-            embed.add_field(name="Started", value=time_str, inline=False)
-        
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    
-    @app_commands.command(name="list-meetings", description="List all scheduled meetings")
-    async def list_meetings(self, interaction: discord.Interaction):
-        await interaction.response.defer()
-        
-        try:
-            # Filter meetings for this guild
-            guild_id = str(interaction.guild.id)
-            meetings = await self.bot.db.connection.fetch(
-                "SELECT * FROM meetings WHERE guild_id = $1 AND status = 'scheduled' ORDER BY scheduled_time ASC",
-                guild_id
-            )
-            
-            if not meetings:
-                embed = EmbedBuilder.info("No Meetings", "No meetings are currently scheduled")
-                await interaction.followup.send(embed=embed)
-                return
-            
-            embed = discord.Embed(
-                title="📅 Scheduled Meetings",
-                description=f"There are {len(meetings)} upcoming meetings",
-                color=0x5865F2
-            )
-            
-            for meeting in meetings[:10]:  # Show up to 10 meetings
-                start_time = meeting['scheduled_time']
-                time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
-                
-                if start_time > datetime.utcnow():
-                    time_until = TimeParser.format_timedelta(start_time - datetime.utcnow())
-                    time_field = f"{time_str}\n(in {time_until})"
+    async def execute_with_retry(self, query, *args, max_retries=3):
+        """Execute query with retry logic"""
+        for attempt in range(max_retries):
+            try:
+                async with self._connection_lock:
+                    if args:
+                        await self.connection.execute(query, *args)
+                    else:
+                        await self.connection.execute(query)
+                    return
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logger.warning(f"Database operation failed, retrying... (attempt {attempt + 1})")
+                    await asyncio.sleep(0.1 * (attempt + 1))
+                    continue
                 else:
-                    time_field = f"{time_str}\n(starting now)"
+                    raise e
+
+    async def add_meeting_attendee(self, meeting_id: str, user_id: str) -> bool:
+        """Add a user to a meeting's attendees list"""
+        try:
+            # Get current attendees
+            meeting = await self.connection.fetchrow(
+                "SELECT attendees FROM meetings WHERE meeting_id = $1", meeting_id
+            )
+            
+            if not meeting:
+                return False
                 
-                creator = interaction.guild.get_member(int(meeting['creator_id']))
-                creator_name = creator.display_name if creator else "Unknown"
+            # Parse attendees list
+            attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
+            
+            # Add user if not already in list
+            if user_id not in attendees:
+                attendees.append(user_id)
                 
-                voice_channel = interaction.guild.get_channel(int(meeting['voice_channel_id']))
-                voice_name = voice_channel.name if voice_channel else "Unknown Channel"
-                
-                embed.add_field(
-                    name=f"{meeting['title']} (ID: {meeting['meeting_id']})",
-                    value=f"**Time:** {time_field}\n**Voice:** {voice_name}\n**Organizer:** {creator_name}",
-                    inline=False
+                # Update meeting
+                await self.connection.execute(
+                    "UPDATE meetings SET attendees = $1 WHERE meeting_id = $2",
+                    json.dumps(attendees), meeting_id
                 )
-            
-            if len(meetings) > 10:
-                embed.set_footer(text=f"Showing 10 of {len(meetings)} meetings")
-            
-            await interaction.followup.send(embed=embed)
+                
+            return True
             
         except Exception as e:
-            embed = EmbedBuilder.error("Error", f"Failed to list meetings: {str(e)}")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-
-async def setup(bot):
-    await bot.add_cog(Meetings(bot))
+            logger.error(f"Failed to add meeting attendee: {e}")
+            return False
