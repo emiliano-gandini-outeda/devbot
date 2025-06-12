@@ -609,23 +609,29 @@ class Meetings(commands.Cog):
                 return
         
             embed = discord.Embed(
-                title="📅 Meetings",
+                title="📅 Meetings Overview",
                 description=f"**Scheduled:** {len(scheduled_meetings)} | **Recently Started:** {len(started_meetings)}",
                 color=0x5865F2
             )
             
             # Add scheduled meetings section
             if scheduled_meetings:
-                scheduled_text = ""
-                for meeting in scheduled_meetings[:5]:  # Show up to 5 scheduled meetings
+                embed.add_field(
+                    name="⏳ Upcoming Meetings",
+                    value="*Meetings that are scheduled to start*",
+                    inline=False
+                )
+                
+                # Add each scheduled meeting as a separate field for better spacing
+                for i, meeting in enumerate(scheduled_meetings[:5]):
                     start_time = meeting['scheduled_time']
                     time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
                     
                     if start_time > now:
                         time_until = TimeParser.format_timedelta(start_time - now)
-                        time_field = f"{time_str} (in {time_until})"
+                        time_field = f"in {time_until}"
                     else:
-                        time_field = f"{time_str} (starting now)"
+                        time_field = "starting now"
                     
                     creator = interaction.guild.get_member(int(meeting['creator_id']))
                     creator_name = creator.display_name if creator else "Unknown"
@@ -636,23 +642,44 @@ class Meetings(commands.Cog):
                     attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
                     attendee_count = len(attendees)
                     
-                    scheduled_text += f"**{meeting['title']}** (ID: {meeting['meeting_id']})\n"
-                    scheduled_text += f"⏰ {time_field}\n"
-                    scheduled_text += f"🎤 {voice_name} | 👤 {creator_name} | 👥 {attendee_count}\n\n"
+                    # Create a clean, well-spaced field for each meeting
+                    meeting_info = (
+                        f"**Time:** {time_str} ({time_field})\n"
+                        f"**Voice Channel:** {voice_name}\n"
+                        f"**Organizer:** {creator_name}\n"
+                        f"**Attendees:** {attendee_count}\n"
+                        f"**ID:** {meeting['meeting_id']}"
+                    )
+                    
+                    embed.add_field(
+                        name=f"📌 {meeting['title']}",
+                        value=meeting_info,
+                        inline=False
+                    )
                 
                 if len(scheduled_meetings) > 5:
-                    scheduled_text += f"*... and {len(scheduled_meetings) - 5} more*\n"
-                
-                embed.add_field(
-                    name="📋 Scheduled Meetings",
-                    value=scheduled_text if scheduled_text else "None",
-                    inline=False
-                )
-            
+                    embed.add_field(
+                        name="",
+                        value=f"*... and {len(scheduled_meetings) - 5} more upcoming meetings*",
+                        inline=False
+                    )
+        
             # Add recently started meetings section
             if started_meetings:
-                started_text = ""
-                for meeting in started_meetings[:5]:  # Show up to 5 started meetings
+                embed.add_field(
+                    name="",
+                    value="_ _",  # Empty field for spacing
+                    inline=False
+                )
+                
+                embed.add_field(
+                    name="🔴 Recently Started Meetings",
+                    value="*Meetings that started within the last hour*",
+                    inline=False
+                )
+                
+                # Add each started meeting as a separate field for better spacing
+                for i, meeting in enumerate(started_meetings[:5]):
                     start_time = meeting['scheduled_time']
                     time_str = start_time.strftime("%Y-%m-%d %H:%M UTC")
                     
@@ -665,19 +692,29 @@ class Meetings(commands.Cog):
                     attendees = json.loads(meeting['attendees']) if meeting['attendees'] else []
                     attendee_count = len(attendees)
                     
-                    started_text += f"**{meeting['title']}** (ID: {meeting['meeting_id']})\n"
-                    started_text += f"🟢 Started at {time_str}\n"
-                    started_text += f"🎤 {voice_name} | 👤 {creator_name} | 👥 {attendee_count}\n\n"
+                    # Create a clean, well-spaced field for each meeting
+                    meeting_info = (
+                        f"**Started at:** {time_str}\n"
+                        f"**Voice Channel:** {voice_name}\n"
+                        f"**Organizer:** {creator_name}\n"
+                        f"**Attendees:** {attendee_count}\n"
+                        f"**ID:** {meeting['meeting_id']}"
+                    )
+                    
+                    embed.add_field(
+                        name=f"🎯 {meeting['title']}",
+                        value=meeting_info,
+                        inline=False
+                    )
                 
                 if len(started_meetings) > 5:
-                    started_text += f"*... and {len(started_meetings) - 5} more*\n"
-                
-                embed.add_field(
-                    name="🔴 Recently Started Meetings",
-                    value=started_text if started_text else "None",
-                    inline=False
-                )
-            
+                    embed.add_field(
+                        name="",
+                        value=f"*... and {len(started_meetings) - 5} more recently started meetings*",
+                        inline=False
+                    )
+        
+            embed.set_footer(text="Join a meeting with /join-meeting [ID]")
             await interaction.followup.send(embed=embed)
             
         except Exception as e:
