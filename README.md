@@ -132,7 +132,7 @@ A comprehensive Discord bot designed to streamline community management with pow
 
 ## 🏗️ Architecture
 
-\`\`\`
+
 ├── main.py                 # Bot entry point and initialization
 ├── config/
 │   ├── settings.py        # Configuration management
@@ -157,7 +157,7 @@ A comprehensive Discord bot designed to streamline community management with pow
 │   ├── privacy.py        # Data management and GDPR
 │   ├── integrations_*.py # External service integrations
 │   └── logging.py        # Server activity logging
-\`\`\`
+
 
 ## 🗄️ Database Schema
 
