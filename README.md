@@ -35,7 +35,7 @@ A comprehensive Discord bot designed to streamline community management with pow
 - **Smart Filtering**: Avoid notification spam with intelligent filtering
 - **Multi-channel Support**: Monitor keywords across multiple channels
 
-### 🤖 AI-Powered Features
+### 🤖 AI-Powered Features *(Coming Soon)*
 - **Message Summarization**: Automatically summarize long conversations
 - **Multi-language Translation**: Real-time text translation
 - **AI Assistant**: Get help with questions and tasks
