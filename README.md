@@ -117,14 +117,13 @@ We welcome contributions from the community! Here's how you can help:
 
 ## 📄 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the AGPL-3.0 license - see the [LICENSE](LICENSE) file for details.
 
 ## 🙏 Acknowledgments
 
 - Built with [discord.py](https://discordpy.readthedocs.io/)
 - Database powered by PostgreSQL
-- AI features powered by various ML APIs
-- Integration APIs: GitHub, Google Calendar, Notion, Trello
+- Integration APIs: GitHub
 - Community feedback and contributions
 
 ---
